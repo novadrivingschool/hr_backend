@@ -1,0 +1,73 @@
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+
+@Entity('time_off_requests')
+export class TimeOffRequest {
+    @PrimaryGeneratedColumn('uuid')
+    id: string;
+
+    @Column({ type: 'varchar' })
+    timeType: string;
+
+    @Column({ type: 'date', nullable: true })
+    hourDate: string;
+
+    @Column({ type: 'time', nullable: true })
+    startTime: string;
+
+    @Column({ type: 'time', nullable: true })
+    endTime: string;
+
+    @Column({ type: 'date', nullable: true })
+    startDate: string;
+
+    @Column({ type: 'date', nullable: true })
+    endDate: string;
+
+    @Column({ type: 'varchar' })
+    requestType: string;
+
+    @Column({ type: 'text', nullable: true })
+    otherDescription: string;
+
+    @Column({ type: 'text', nullable: true })
+    comments: string;
+
+    @Column({ type: 'varchar' })
+    dateOrRange: string;
+
+    @Column({ type: 'varchar', default: 'Pending' })
+    status: string;
+
+    @Column({ type: 'date' })
+    createdDate: string;
+
+    @Column({ type: 'time' })
+    createdTime: string;
+
+    @Column({ type: 'jsonb' }) // ✅ se guarda como JSON completo
+    employee_data: {
+        name: string;
+        last_name: string;
+        employee_number: string;
+        department: string;
+    };
+
+    @Column({
+        type: 'jsonb',
+        default: () => `'{"approved": false, "by": ""}'`,
+    })
+    coordinator_approval: {
+        approved: boolean;
+        by: string;
+    };
+
+    @Column({
+        type: 'jsonb',
+        default: () => `'{"approved": false, "by": ""}'`,
+    })
+    hr_approval: {
+        approved: boolean;
+        by: string;
+    };
+
+}
