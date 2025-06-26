@@ -13,7 +13,7 @@ export class EmployeesService {
   async findAll(): Promise<Employee[]> {
     return this.employeeRepo.find({
       where: { status: 'Active' },
-      select: ['name', 'last_name', 'employee_number'],
+      select: ['name', 'last_name', 'employee_number', 'department', 'company', 'country'],
     });
   }
 

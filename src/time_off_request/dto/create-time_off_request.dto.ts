@@ -14,6 +14,12 @@ class EmployeeDataDto {
 
     @IsString()
     department: string;
+
+    @IsString()
+    country: string;
+
+    @IsString()
+    company: string;
 }
 
 class ApprovalDto {

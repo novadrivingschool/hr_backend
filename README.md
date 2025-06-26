@@ -58,21 +58,21 @@ $ npm run test:cov
 docker build -t hr_backend_dev .
 docker run --name hr_backend_dev \
   -d \
-  -p 5007:5007 \
+  -p 5006:5006 \
   --restart always \
   -v $(pwd)/.env:/usr/src/app/.env \
   hr_backend_dev
 
 docker logs hr_backend_dev -f
 
-docker run --name hr_backend_dev -d -p 5007:5007 --restart always hr_backend_dev
+docker run --name hr_backend_dev -d -p 5006:5006 --restart always hr_backend_dev
 
 
 ## Production
 docker build -t hr_backend .
 docker run --name hr_backend \
   -d \
-  -p 5007:5007 \
+  -p 5006:5006 \
   --restart always \
   -v $(pwd)/.env:/usr/src/app/.env \
   hr_backend

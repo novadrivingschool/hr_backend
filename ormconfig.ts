@@ -3,6 +3,12 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { TimeOffRequest } from 'src/time_off_request/entities/time_off_request.entity';
 import { Schedule } from 'src/schedule/entities/schedule.entity';
+import { Department } from 'src/departments/entities/department.entity';
+import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
+import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
+import { ScheduleEvent } from 'src/schedule_event/entities/schedule_event.entity';
+import { Employee } from 'src/employees/entities/employee.entity';
+import { Logbook } from 'src/logbook/entities/logbook.entity';
 
 dotenv.config();
 
@@ -26,6 +32,11 @@ export const AppDataSource = new DataSource({
   entities: [
     TimeOffRequest,
     Schedule,
+    Department,
+    FixedSchedule,
+    EmployeeSchedule,
+    ScheduleEvent,
+    Logbook 
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

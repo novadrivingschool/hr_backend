@@ -50,11 +50,12 @@ export class TimeOffRequest {
         last_name: string;
         employee_number: string;
         department: string;
+        country: string;
+        company: string;
     };
 
     @Column({
-        type: 'jsonb',
-        default: () => `'{"approved": false, "by": ""}'`,
+        type: 'jsonb'
     })
     coordinator_approval: {
         approved: boolean;
@@ -62,8 +63,7 @@ export class TimeOffRequest {
     };
 
     @Column({
-        type: 'jsonb',
-        default: () => `'{"approved": false, "by": ""}'`,
+        type: 'jsonb'
     })
     hr_approval: {
         approved: boolean;

@@ -19,4 +19,11 @@ export class Employee {
 
     @Column()
     department: string;
+
+    @Column()
+    country: string;
+
+    @Column()
+    company: string;
+
 }

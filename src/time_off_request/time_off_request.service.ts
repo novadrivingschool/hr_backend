@@ -23,6 +23,8 @@ export class TimeOffRequestService {
         status: 'Pending',
         createdDate: chicagoNow.format('YYYY-MM-DD'),
         createdTime: chicagoNow.format('HH:mm:ss'),
+        coordinator_approval: { approved: false, by: '' },
+        hr_approval: { approved: false, by: '' },
       });
       return await this.timeOffRequestRepo.save(request);
     } catch (error) {
@@ -98,32 +100,32 @@ export class TimeOffRequestService {
   }
 
   async searchCoordinatorByEmployeeAndStatus(employeeNumber: string, status?: string): Promise<TimeOffRequest[]> {
-  try {
-    const query = this.timeOffRequestRepo
-      .createQueryBuilder('request')
-      .where(`request.employee_data::jsonb ->> 'employee_number' = :employeeNumber`, { employeeNumber });
+    try {
+      const query = this.timeOffRequestRepo
+        .createQueryBuilder('request')
+        .where(`request.employee_data::jsonb ->> 'employee_number' = :employeeNumber`, { employeeNumber });
 
-    // Lógica por status
-    if (status === 'Pending') {
-      query.andWhere(`request.status = 'Pending'`)
-           .andWhere(`request.coordinator_approval ->> 'approved' = 'false'`);
-    } else if (status === 'Approved') {
-      query.andWhere(`request.status = 'Pending'`)
-           .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
-    } else if (status === 'Not Approved') {
-      query.andWhere(`request.status = 'Not Approved'`)
-           .andWhere(`request.coordinator_approval ->> 'approved' = 'false'`);
+      // Lógica por status
+      if (status === 'Pending') {
+        query.andWhere(`request.status = 'Pending'`)
+          .andWhere(`request.coordinator_approval ->> 'approved' = 'false'`);
+      } else if (status === 'Approved') {
+        query.andWhere(`request.status = 'Pending'`)
+          .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
+      } else if (status === 'Not Approved') {
+        query.andWhere(`request.status = 'Not Approved'`)
+          .andWhere(`request.coordinator_approval ->> 'approved' = 'false'`);
+      }
+      // status === 'All' => no agregar nada
+
+      return await query
+        .orderBy('request.createdDate', 'DESC')
+        .addOrderBy('request.createdTime', 'DESC')
+        .getMany();
+    } catch (error) {
+      throw new InternalServerErrorException('Error searching time off requests');
     }
-    // status === 'All' => no agregar nada
-
-    return await query
-      .orderBy('request.createdDate', 'DESC')
-      .addOrderBy('request.createdTime', 'DESC')
-      .getMany();
-  } catch (error) {
-    throw new InternalServerErrorException('Error searching time off requests');
   }
-}
 
 
   async updateStatus(id: string, status: 'Pending' | 'Approved' | 'Not Approved'): Promise<TimeOffRequest> {
