@@ -53,7 +53,6 @@ $ npm run test:e2e
 $ npm run test:cov
 ```
 
-
 ## Develping Docker
 docker build -t hr_backend_dev .
 docker run --name hr_backend_dev \

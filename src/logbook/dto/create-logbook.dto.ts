@@ -1,18 +1,20 @@
 import { IsNotEmpty, IsObject, IsString } from 'class-validator';
-import { LogbookDataBySection } from '../interfaces/logbook-data.interfaces';
+import { LogbookDataBySection, EmployeeData } from '../interfaces/logbook-data.interfaces';
 
 
 export class CreateLogbookDto {
   @IsObject()
   @IsNotEmpty()
-  employee_data: {
+  /* employee_data: {
     name: string;
     last_name: string;
     employee_number: string;
     department: string;
     country: string;
     company: string;
-  };
+  }; */
+  employee_data: EmployeeData;
+
 
   @IsString()
   @IsNotEmpty()
