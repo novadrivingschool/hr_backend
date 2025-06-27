@@ -4,13 +4,15 @@ import {
   Column,
   CreateDateColumn,
 } from 'typeorm';
+import { EmployeeData } from '../interfaces/logbook-data.interfaces';
+
 
 @Entity('logbook_entries')
 export class Logbook {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'jsonb' })
+  /* @Column({ type: 'jsonb' })
   employee_data: {
     name: string;
     last_name: string;
@@ -18,7 +20,9 @@ export class Logbook {
     department: string;
     country: string;
     company: string;
-  };
+  }; */
+  @Column({ type: 'jsonb' })
+  employee_data: EmployeeData;
 
   @Column()
   section: string;

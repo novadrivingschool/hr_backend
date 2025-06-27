@@ -80,6 +80,16 @@ export interface OtherData {
   availability_notes: string;
 }
 
+export interface EmployeeData {
+  name: string;
+  last_name: string;
+  employee_number: string;
+  department: string;
+  country: string;
+  company: string;
+}
+
+
 // Union global
 export type LogbookDataBySection =
   | { section: 'training'; data: TrainingData }
