@@ -21,7 +21,7 @@ export class EmployeeScheduleService {
     private readonly employeeRepo: Repository<Employee>,
   ) { }
 
-  async create(dto: CreateEmployeeScheduleDto): Promise<EmployeeSchedule> {
+  /* async create(dto: CreateEmployeeScheduleDto): Promise<EmployeeSchedule> {
     console.log('Creating/updating Employee schedule with DTO:', dto);
     try {
       if (!dto.employee_number) {
@@ -85,7 +85,75 @@ export class EmployeeScheduleService {
       console.error('Error in schedule creation:', error);
       throw new InternalServerErrorException('Failed to create/update Employee schedule');
     }
+  } */
+  async create(dto: CreateEmployeeScheduleDto): Promise<EmployeeSchedule> {
+    console.log('📥 [create] Incoming DTO:', JSON.stringify(dto, null, 2));
+
+    try {
+      if (!dto.employee_number) {
+        console.error('❌ [create] Employee number is required');
+        throw new BadRequestException('Employee number is required');
+      }
+
+      // Buscar si ya existe un registro para este empleado
+      let schedule = await this.scheduleRepo.findOne({
+        where: { employee_number: dto.employee_number },
+        relations: ['fixed', 'events'],
+      });
+
+      if (!schedule) {
+        schedule = this.scheduleRepo.create({
+          employee_number: dto.employee_number,
+        });
+        schedule = await this.scheduleRepo.save(schedule);
+      }
+
+      // 🟦 Manejar fixed
+      if (dto.fixed?.length) {
+        for (const f of dto.fixed) {
+          if (f.id) {
+            await this.fixedRepo.update(f.id, f);
+          } else {
+            const newFixed = this.fixedRepo.create({ ...f, schedule });
+            await this.fixedRepo.save(newFixed);
+          }
+        }
+      }
+
+      // 🟨 Manejar events
+      if (dto.events?.length) {
+        for (const e of dto.events) {
+          if (e.id) {
+            await this.eventRepo.update(e.id, e);
+          } else {
+            const newEvent = this.eventRepo.create({ ...e, schedule });
+            await this.eventRepo.save(newEvent);
+          }
+        }
+      }
+
+      // Retornar datos actualizados
+      const updated = await this.scheduleRepo.findOne({
+        where: { employee_number: dto.employee_number },
+        relations: ['fixed', 'events'],
+      });
+
+      if (!updated) {
+        console.error('❌ [create] Schedule created but failed to fetch updated data for employee:', dto.employee_number);
+        throw new InternalServerErrorException('Schedule created but failed to fetch updated data');
+      }
+
+      console.log('✅ [create] Schedule successfully created/updated for employee:', dto.employee_number);
+      console.log('📤 [create] Result:', JSON.stringify(updated, null, 2));
+
+      return updated;
+    } catch (error) {
+      console.error('❌ [create] Error creating/updating schedule:', error.message);
+      console.error(error.stack);
+      throw new InternalServerErrorException('Failed to create/update Employee schedule');
+    }
   }
+
 
 
   /* async findAll(): Promise<EmployeeSchedule[]> {
