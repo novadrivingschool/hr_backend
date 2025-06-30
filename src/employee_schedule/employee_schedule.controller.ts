@@ -13,6 +13,7 @@ export class EmployeeScheduleController {
 
   @Post()
   async create(@Body() dto: CreateEmployeeScheduleDto) {
+    console.log('Creating employee schedule:', dto);
     return this.scheduleService.create(dto);
   }
 
