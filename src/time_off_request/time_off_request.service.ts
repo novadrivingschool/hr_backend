@@ -267,7 +267,7 @@ export class TimeOffRequestService {
 
     return await query.getMany();
   } */
-  async findCoordinatorByStatusAndDepartment(status: string, department: string): Promise<TimeOffRequest[]> {
+  /* async findCoordinatorByStatusAndDepartment(status: string, department: string): Promise<TimeOffRequest[]> {
     console.log("<< Fetching requests by status and department:", status, department);
 
     const query = this.timeOffRequestRepo.createQueryBuilder('request');
@@ -299,7 +299,47 @@ export class TimeOffRequestService {
     }
 
     return await query.getMany();
+  } */
+  async findCoordinatorByStatusAndDepartment(
+    status: string,
+    department: string
+  ): Promise<TimeOffRequest[]> {
+    console.log("<< Fetching requests by status and department:", status, department);
+
+    const query = this.timeOffRequestRepo.createQueryBuilder('request');
+
+    const whereClauses: string[] = [];
+    const params: Record<string, any> = {};
+
+    // Departamento (solo si no es 'All')
+    if (department !== 'All') {
+      whereClauses.push(`request.employee_data ->> 'department' = :department`);
+      params.department = department;
+    }
+
+    // Lógica por status
+    if (status === 'Pending') {
+      whereClauses.push(`request.status = 'Pending'`);
+      whereClauses.push(`request.coordinator_approval ->> 'approved' = 'false'`);
+    } else if (status === 'Approved') {
+      whereClauses.push(`request.status = 'Pending'`);
+      whereClauses.push(`request.coordinator_approval ->> 'approved' = 'true'`);
+    } else if (status === 'Not Approved') {
+      whereClauses.push(`request.status = 'Not Approved'`);
+      whereClauses.push(`request.coordinator_approval ->> 'approved' = 'false'`);
+    }
+
+    if (whereClauses.length > 0) {
+      query.where(whereClauses.join(' AND '), params);
+    }
+
+    // 👇 Ordenar por fecha y hora descendente (más reciente primero)
+    query.orderBy(`request.createdDate`, 'DESC')
+      .addOrderBy(`request.createdTime`, 'DESC');
+
+    return await query.getMany();
   }
+
 
   async findHrByStatusAndDepartment(status: string, department: string): Promise<TimeOffRequest[]> {
     console.log("<< Fetching requests by status and department:", status, department);

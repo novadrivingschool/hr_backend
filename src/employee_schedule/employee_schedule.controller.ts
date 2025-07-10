@@ -31,5 +31,4 @@ export class EmployeeScheduleController {
   async getEmployeesList() {
     return this.scheduleService.getEmployeesList();
   }
-
 }
