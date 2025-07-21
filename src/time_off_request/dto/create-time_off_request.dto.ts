@@ -28,6 +28,12 @@ class ApprovalDto {
 
     @IsString()
     by: string;
+
+    @IsString()
+    date: string;  // fecha en formato YYYY-MM-DD
+
+    @IsString()
+    time: string;  // hora en formato HH:mm:ss
 }
 
 export class CreateTimeOffRequestDto {
@@ -95,4 +101,12 @@ export class CreateTimeOffRequestDto {
     @ValidateNested()
     @Type(() => ApprovalDto)
     hr_approval?: ApprovalDto;
+    
+    @IsOptional()
+    @IsString()
+    coordinator_comments?: string;
+
+    @IsOptional()
+    @IsString()
+    hr_comments?: string;
 }

@@ -60,6 +60,8 @@ export class TimeOffRequest {
     coordinator_approval: {
         approved: boolean;
         by: string;
+        date: string;  // fecha en formato YYYY-MM-DD
+        time: string;  // hora en formato HH:mm:ss
     };
 
     @Column({
@@ -68,6 +70,14 @@ export class TimeOffRequest {
     hr_approval: {
         approved: boolean;
         by: string;
+        date: string;  // fecha en formato YYYY-MM-DD
+        time: string;  // hora en formato HH:mm:ss
     };
+
+    @Column({ type: 'text', nullable: true })
+    coordinator_comments: string;
+
+    @Column({ type: 'text', nullable: true })
+    hr_comments: string;
 
 }

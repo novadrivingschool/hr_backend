@@ -45,11 +45,27 @@ export class TimeOffRequestController {
   ) {
     console.log("Fetching requests by status and department:", status, department);
     //return this.timeOffRequestService.findByStatusAndDepartment(status, department);
-    if (department === 'All') {
+    /* if (department === 'All') {
       return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
     } else {
       return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
-    }
+    } */
+    return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
+  }
+
+  @Get('hr/status/:status/department/:department')
+  getByStatusAndDepartmentForHr(
+    @Param('status') status: string,
+    @Param('department') department: string,
+  ) {
+    console.log("Fetching requests by status and department:", status, department);
+    //return this.timeOffRequestService.findByStatusAndDepartment(status, department);
+    /* if (department === 'All') {
+      return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
+    } else {
+      return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
+    } */
+    return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
   }
 
   @Patch(':id/status')
@@ -65,18 +81,20 @@ export class TimeOffRequestController {
   approveByCoordinator(
     @Param('id') id: string,
     @Body('approved') approved: boolean,
-    @Body('by') by: string
+    @Body('by') by: string,
+    @Body('coordinator_comments') coordinator_comments: string
   ) {
-    return this.timeOffRequestService.approveByCoordinator(id, approved, by);
+    return this.timeOffRequestService.approveByCoordinator(id, approved, by, coordinator_comments);
   }
 
   @Patch(':id/approve/hr')
   approveByHR(
     @Param('id') id: string,
     @Body('approved') approved: boolean,
-    @Body('by') by: string
+    @Body('by') by: string,
+    @Body('hr_comments') hr_comments: string
   ) {
-    return this.timeOffRequestService.approveByHR(id, approved, by);
+    return this.timeOffRequestService.approveByHR(id, approved, by, hr_comments);
   }
 
   @Patch(':id')

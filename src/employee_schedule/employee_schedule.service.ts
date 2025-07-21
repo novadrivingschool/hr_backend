@@ -165,6 +165,7 @@ export class EmployeeScheduleService {
       status: emp.status,
       department: emp.department,
       country: emp.country,
+      location: emp.location,
       company: emp.company,
     }));
   }

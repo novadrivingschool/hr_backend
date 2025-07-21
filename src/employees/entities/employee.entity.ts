@@ -24,6 +24,9 @@ export class Employee {
     country: string;
 
     @Column()
+    location: string;
+
+    @Column()
     company: string;
 
 }

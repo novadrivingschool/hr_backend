@@ -142,7 +142,8 @@ export class TimeOffRequestService {
   async approveByCoordinator(
     id: string,
     approved: boolean,
-    by: string
+    by: string,
+    coordinator_comments: string,
   ): Promise<{ message: string; data: TimeOffRequest }> {
     try {
       const request = await this.findOne(id);
@@ -151,13 +152,29 @@ export class TimeOffRequestService {
         throw new NotFoundException(`Time-off request with ID ${id} not found`);
       }
 
-      request.coordinator_approval = { approved, by };
+      const chicagoNow = moment().tz('America/Chicago');
+      /* request.coordinator_approval = { approved, by };       */
+      request.coordinator_approval = {
+        approved,
+        by,
+        date: chicagoNow.format('YYYY-MM-DD'),
+        time: chicagoNow.format('HH:mm:ss'),
+      };
+
+      console.log("approved: ", approved);
+      console.log("coordinator_comments: ", coordinator_comments);
 
       if (!approved) {
+        request.hr_comments = `Not approved by Coordinator ${by}`
         request.status = 'Not Approved';
-      } else {
-        //request.status = 'Approved';
+        request.hr_approval = {
+          approved,
+          by,
+          date: chicagoNow.format('YYYY-MM-DD'),
+          time: chicagoNow.format('HH:mm:ss'),
+        };
       }
+      request.coordinator_comments = coordinator_comments;
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
 
@@ -174,11 +191,23 @@ export class TimeOffRequestService {
     }
   }
 
-  async approveByHR(id: string, approved: boolean, by: string): Promise<TimeOffRequest> {
+  async approveByHR(id: string, approved: boolean, by: string, hr_comments: string): Promise<TimeOffRequest> {
     try {
       const request = await this.findOne(id);
-      request.hr_approval = { approved, by };
+
+      /* request.hr_approval = { approved, by }; */
+      const chicagoNow = moment().tz('America/Chicago');
+
+      request.hr_approval = {
+        approved,
+        by,
+        date: chicagoNow.format('YYYY-MM-DD'),
+        time: chicagoNow.format('HH:mm:ss'),
+      };
+
       request.status = approved ? 'Approved' : 'Not Approved';
+      request.hr_comments = hr_comments;
+
       return await this.timeOffRequestRepo.save(request);
     } catch (error) {
       this.logger.error(`HR approval failed for request ID ${id}`, error.stack);
@@ -341,41 +370,34 @@ export class TimeOffRequestService {
   }
 
 
-  async findHrByStatusAndDepartment(status: string, department: string): Promise<TimeOffRequest[]> {
+  async findHrByStatusAndDepartment(
+    status: string,
+    department: string
+  ): Promise<TimeOffRequest[]> {
     console.log("<< Fetching requests by status and department:", status, department);
 
     const query = this.timeOffRequestRepo.createQueryBuilder('request');
 
-    const whereClauses: string[] = [];
-    const params: Record<string, any> = {};
-
-    // Departamento (solo si no es 'All')
+    // 🔷 Departamento (solo si no es 'All')
     /* if (department !== 'All') {
-      whereClauses.push(`request.employee_data ->> 'department' = :department`);
-      params.department = department;
+      query.andWhere(`request.employee_data ->> 'department' = :department`, { department });
     } */
 
-    // Lógica por status
-    if (status === 'Pending') {
-      whereClauses.push(`request.status = 'Pending'`);
-      whereClauses.push(`request.hr_approval ->> 'approved' = 'false'`);
-      whereClauses.push(`request.coordinator_approval ->> 'approved' = 'true'`);
-    } else if (status === 'Approved') {
-      //whereClauses.push(`request.status = 'Pending'`);
-      whereClauses.push(`request.hr_approval ->> 'approved' = 'true'`);
-      whereClauses.push(`request.coordinator_approval ->> 'approved' = 'true'`);
-    } else if (status === 'Not Approved') {
-      whereClauses.push(`request.status = 'Not Approved'`);
-      whereClauses.push(`request.hr_approval ->> 'approved' = 'false'`);
-      //whereClauses.push(`request.coordinator_approval ->> 'approved' = 'true'`);
+    // 🔷 Lógica por status
+    if (status === 'Pending' || status === 'pending') {
+      query.andWhere(`request.status = 'Pending'`)
+        .andWhere(`request.hr_approval ->> 'approved' = 'false'`)
+        .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
+    } else if (status === 'Approved' || status === 'approved') {
+      query.andWhere(`request.hr_approval ->> 'approved' = 'true'`)
+        .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
+    } else if (status === 'Not Approved' || status === 'not approved') {
+      query.andWhere(`request.status = 'Not Approved'`)
+        .andWhere(`request.hr_approval ->> 'approved' = 'false'`);
     }
 
-    // Aplica condiciones solo si hay alguna
-    if (whereClauses.length > 0) {
-      query.where(whereClauses.join(' AND '), params);
-    }
-
-    return await query.getMany();
+    return query.getMany();
   }
+
 
 }
