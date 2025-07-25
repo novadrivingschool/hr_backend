@@ -33,7 +33,7 @@ async function bootstrap() {
 
   // Habilitar CORS
   app.enableCors({
-    origin: ['https://novadrivingone.net', 'https://www.novadrivingone.net', 'https://dev.novadrivingone.net', 'https://www.dev.novadrivingone.net', 'http://localhost:8080'], // Cambia esto según el origen de tu frontend
+    origin: ['https://novadrivingone.net', 'https://www.novadrivingone.net', 'https://dev.novadrivingone.net', 'https://www.dev.novadrivingone.net', 'http://localhost:8080', 'http://127.0.0.1:8080'], // Cambia esto según el origen de tu frontend
     //origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true, // Si necesitas enviar cookies o encabezados de autenticación

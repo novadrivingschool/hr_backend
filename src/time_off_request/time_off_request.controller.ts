@@ -53,20 +53,30 @@ export class TimeOffRequestController {
     return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
   }
 
-  @Get('hr/status/:status/department/:department')
+  /* @Get('hr/status/:status/department/:department')
   getByStatusAndDepartmentForHr(
     @Param('status') status: string,
     @Param('department') department: string,
   ) {
     console.log("Fetching requests by status and department:", status, department);
     //return this.timeOffRequestService.findByStatusAndDepartment(status, department);
-    /* if (department === 'All') {
-      return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
-    } else {
-      return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
-    } */
+    // if (department === 'All') {
+    //   return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
+    // } else {
+    //   return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
+    // }
     return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
+  } */
+  @Get('hr/filter')
+  getFilteredRequestsForHr(
+    @Query('status') status: string,
+    @Query('department') department: string,
+    @Query('employee_number') employee_number?: string,
+  ) {
+    console.log("🔍 Filtering HR requests:", { status, department, employee_number });
+    return this.timeOffRequestService.findHrByStatusDepartmentAndEmployee(status, department, employee_number);
   }
+
 
   @Patch(':id/status')
   updateStatus(

@@ -370,7 +370,7 @@ export class TimeOffRequestService {
   }
 
 
-  async findHrByStatusAndDepartment(
+  /* async findHrByStatusAndDepartment(
     status: string,
     department: string
   ): Promise<TimeOffRequest[]> {
@@ -379,9 +379,9 @@ export class TimeOffRequestService {
     const query = this.timeOffRequestRepo.createQueryBuilder('request');
 
     // 🔷 Departamento (solo si no es 'All')
-    /* if (department !== 'All') {
-      query.andWhere(`request.employee_data ->> 'department' = :department`, { department });
-    } */
+    // if (department !== 'All') {
+    //   query.andWhere(`request.employee_data ->> 'department' = :department`, { department });
+    // }
 
     // 🔷 Lógica por status
     if (status === 'Pending' || status === 'pending') {
@@ -397,7 +397,44 @@ export class TimeOffRequestService {
     }
 
     return query.getMany();
+  } */
+  async findHrByStatusDepartmentAndEmployee(
+    status: string,
+    department: string,
+    employee_number?: string
+  ): Promise<TimeOffRequest[]> {
+    console.log("<< Fetching requests:", { status, department, employee_number });
+
+    const query = this.timeOffRequestRepo.createQueryBuilder('request');
+
+    // 🔷 Departamento
+    if (department !== 'All') {
+      query.andWhere(`request.employee_data ->> 'department' = :department`, { department });
+    }
+
+    // 🔷 Employee Number (opcional)
+    if (employee_number) {
+      query.andWhere(`request.employee_data ->> 'employee_number' = :employee_number`, { employee_number });
+    }
+
+    // 🔷 Lógica por status
+    const normalizedStatus = status.toLowerCase();
+
+    if (normalizedStatus === 'pending') {
+      query.andWhere(`request.status = 'Pending'`)
+        .andWhere(`request.hr_approval ->> 'approved' = 'false'`)
+        .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
+    } else if (normalizedStatus === 'approved') {
+      query.andWhere(`request.hr_approval ->> 'approved' = 'true'`)
+        .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
+    } else if (normalizedStatus === 'not approved') {
+      query.andWhere(`request.status = 'Not Approved'`)
+        .andWhere(`request.hr_approval ->> 'approved' = 'false'`);
+    }
+
+    return query.getMany();
   }
+
 
 
 }
