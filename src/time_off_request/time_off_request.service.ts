@@ -423,7 +423,7 @@ export class TimeOffRequestService {
     if (normalizedStatus === 'pending') {
       query.andWhere(`request.status = 'Pending'`)
         .andWhere(`request.hr_approval ->> 'approved' = 'false'`)
-        .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
+        .andWhere(`(request.coordinator_approval ->> 'approved' = 'true' OR request.coordinator_approval ->> 'approved' = 'false')`);
     } else if (normalizedStatus === 'approved') {
       query.andWhere(`request.hr_approval ->> 'approved' = 'true'`)
         .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
