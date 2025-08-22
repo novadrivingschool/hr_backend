@@ -15,8 +15,6 @@ npm install pg --save
 npm run typeorm -- migration:generate ./src/migrations/CreateUpdateTables
 npm run migration:run
 
-
-
 ## Description
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.

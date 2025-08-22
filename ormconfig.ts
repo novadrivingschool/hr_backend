@@ -7,8 +7,17 @@ import { Department } from 'src/departments/entities/department.entity';
 import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
 import { ScheduleEvent } from 'src/schedule_event/entities/schedule_event.entity';
-import { Employee } from 'src/employees/entities/employee.entity';
 import { Logbook } from 'src/logbook/entities/logbook.entity';
+import { Company } from 'src/company/entities/company.entity';
+import { TypeOfSchedule } from 'src/type_of_schedule/entities/type_of_schedule.entity';
+import { Position } from 'src/position/entities/position.entity';
+import { Gender } from 'src/gender/entities/gender.entity';
+import { WorkerCategory } from 'src/worker_category/entities/worker_category.entity';
+import { Ethnicity } from 'src/ethnicity/entities/ethnicity.entity';
+import { MaritalStatus } from 'src/marital_status/entities/marital_status.entity';
+import { TypeOfJob } from 'src/type_of_job/entities/type_of_job.entity';
+import { Race } from 'src/race/entities/race.entity';
+import { TypeOfStaff } from 'src/type_of_staff/entities/type_of_staff.entity';
 
 dotenv.config();
 
@@ -36,7 +45,17 @@ export const AppDataSource = new DataSource({
     FixedSchedule,
     EmployeeSchedule,
     ScheduleEvent,
-    Logbook 
+    Logbook,
+    Company,
+    TypeOfSchedule,
+    Position,
+    Gender,
+    WorkerCategory,
+    Ethnicity,
+    MaritalStatus,
+    TypeOfJob,
+    Race,
+    TypeOfStaff,
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

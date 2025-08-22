@@ -10,6 +10,16 @@ import { EmployeeScheduleModule } from './employee_schedule/employee_schedule.mo
 import { FixedScheduleModule } from './fixed_schedule/fixed_schedule.module';
 import { ScheduleEventModule } from './schedule_event/schedule_event.module';
 import { LogbookModule } from './logbook/logbook.module';
+import { CompanyModule } from './company/company.module';
+import { TypeOfScheduleModule } from './type_of_schedule/type_of_schedule.module';
+import { PositionModule } from './position/position.module';
+import { GenderModule } from './gender/gender.module';
+import { WorkerCategoryModule } from './worker_category/worker_category.module';
+import { EthnicityModule } from './ethnicity/ethnicity.module';
+import { MaritalStatusModule } from './marital_status/marital_status.module';
+import { TypeOfJobModule } from './type_of_job/type_of_job.module';
+import { RaceModule } from './race/race.module';
+import { TypeOfStaffModule } from './type_of_staff/type_of_staff.module';
 
 
 dotenv.config();
@@ -42,6 +52,16 @@ dotenv.config();
         __dirname + '/Employee_schedule/entities/*.entity.{ts,js}',
         __dirname + '/schedule_event/entities/*.entity.{ts,js}',
         __dirname + '/logbook/entities/*.entity.{ts,js}',
+        __dirname + '/company/entities/*.entity.{ts,js}',
+        __dirname + '/type_of_schedule/entities/*.entity.{ts,js}',
+        __dirname + '/position/entities/*.entity.{ts,js}',
+        __dirname + '/gender/entities/*.entity.{ts,js}',
+        __dirname + '/worker_category/entities/*.entity.{ts,js}',
+        __dirname + '/ethnicity/entities/*.entity.{ts,js}',
+        __dirname + '/marital_status/entities/*.entity.{ts,js}',
+        __dirname + '/type_of_job/entities/*.entity.{ts,js}',
+        __dirname + '/race/entities/*.entity.{ts,js}',
+        __dirname + '/type_of_staff/entities/*.entity.{ts,js}',
       ],
     }),
     ScheduleModule,
@@ -52,6 +72,16 @@ dotenv.config();
     FixedScheduleModule,
     ScheduleEventModule,
     LogbookModule,
+    CompanyModule,
+    TypeOfScheduleModule,
+    PositionModule,
+    GenderModule,
+    WorkerCategoryModule,
+    EthnicityModule,
+    MaritalStatusModule,
+    TypeOfJobModule,
+    RaceModule,
+    TypeOfStaffModule,
   ],
 })
 export class AppModule { }
