@@ -1,5 +1,6 @@
 import { Transform, Type } from 'class-transformer';
-import { IsOptional, IsString, IsIn, ValidateNested, IsBoolean } from 'class-validator';
+import { IsOptional, IsString, IsIn, ValidateNested, IsBoolean, IsArray, IsEnum } from 'class-validator';
+import { StatusEnum, TimeTypeEnum } from '../enums';
 
 
 class EmployeeDataDto {
@@ -12,14 +13,23 @@ class EmployeeDataDto {
     @IsString()
     employee_number: string;
 
-    @IsString()
-    department: string;
+    /* @IsString()
+    department: string; */
+    @IsArray()
+    @IsString({ each: true })
+    multi_department: string[];
 
     @IsString()
     country: string;
 
+    /* @IsString()
+    company: string; */
+    @IsArray()
+    @IsString({ each: true })
+    multi_company: string[];
+
     @IsString()
-    company: string;
+    nova_email: string;
 }
 
 class ApprovalDto {
@@ -37,8 +47,15 @@ class ApprovalDto {
 }
 
 export class CreateTimeOffRequestDto {
-    @IsIn(['Days', 'Hours'])
-    timeType: string;
+    @IsOptional()
+    @IsString()
+    id: string;
+
+    /* @IsIn(['Days', 'Hours'])
+    timeType: string; */
+    @IsEnum(TimeTypeEnum)
+    @Transform(({ value }) => (String(value || '').toLowerCase() === 'hours' ? TimeTypeEnum.Hours : TimeTypeEnum.Days))
+    timeType: TimeTypeEnum;
 
     @IsOptional()
     @IsString()
@@ -84,9 +101,18 @@ export class CreateTimeOffRequestDto {
     @IsString()
     dateOrRange: string;
 
-    @IsOptional()
+    /* @IsOptional()
     @IsIn(['Pending', 'Approved', 'Not Approved'])
-    status?: 'Pending' | 'Approved' | 'Not Approved';
+    status?: 'Pending' | 'Approved' | 'Not Approved'; */
+    @IsOptional()
+    @IsEnum(StatusEnum)
+    @Transform(({ value }) => {
+        const v = String(value ?? '').toLowerCase();
+        if (v === 'approved') return StatusEnum.Approved;
+        if (v === 'not approved') return StatusEnum.NotApproved;
+        return StatusEnum.Pending;
+    })
+    status?: StatusEnum;
 
     @ValidateNested()
     @Type(() => EmployeeDataDto)
@@ -101,7 +127,7 @@ export class CreateTimeOffRequestDto {
     @ValidateNested()
     @Type(() => ApprovalDto)
     hr_approval?: ApprovalDto;
-    
+
     @IsOptional()
     @IsString()
     coordinator_comments?: string;

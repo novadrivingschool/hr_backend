@@ -1,12 +1,15 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import { StatusEnum, TimeTypeEnum } from '../enums';
 
 @Entity('time_off_requests')
 export class TimeOffRequest {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
-    @Column({ type: 'varchar' })
-    timeType: string;
+    /* @Column({ type: 'varchar' })
+    timeType: string; */
+    @Column({ type: 'enum', enum: TimeTypeEnum, enumName: 'time_off_time_type' })
+    timeType: TimeTypeEnum;
 
     @Column({ type: 'date', nullable: true })
     hourDate: string;
@@ -35,8 +38,10 @@ export class TimeOffRequest {
     @Column({ type: 'varchar' })
     dateOrRange: string;
 
-    @Column({ type: 'varchar', default: 'Pending' })
-    status: string;
+    /* @Column({ type: 'varchar', default: 'Pending' })
+    status: string; */
+    @Column({ type: 'enum', enum: StatusEnum, enumName: 'time_off_status', default: StatusEnum.Pending })
+    status: StatusEnum;
 
     @Column({ type: 'date' })
     createdDate: string;
@@ -49,9 +54,12 @@ export class TimeOffRequest {
         name: string;
         last_name: string;
         employee_number: string;
-        department: string;
+        /* department: string; */
+        multi_department: string[];
         country: string;
-        company: string;
+        /* company: string; */
+        multi_company: string[];
+        nova_email: string;
     };
 
     @Column({

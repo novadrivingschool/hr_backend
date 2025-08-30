@@ -2,6 +2,7 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestj
 import { TimeOffRequestService } from './time_off_request.service';
 import { CreateTimeOffRequestDto } from './dto/create-time_off_request.dto';
 import { UpdateTimeOffRequestDto } from './dto/update-time_off_request.dto';
+import { StatusEnum } from './enums';
 
 @Controller('time-off-request')
 export class TimeOffRequestController {
@@ -29,7 +30,6 @@ export class TimeOffRequestController {
     @Query('status') status?: 'Pending' | 'Approved' | 'Not Approved' | 'All'
   ) {
     console.log(`Searching for employee: ${employee_number}, status: ${status}`);
-    //return this.timeOffRequestService.searchByEmployeeAndStatus(employee_number, status);
     return this.timeOffRequestService.searchCoordinatorByEmployeeAndStatus(employee_number, status);
   }
 
@@ -44,29 +44,9 @@ export class TimeOffRequestController {
     @Param('department') department: string,
   ) {
     console.log("Fetching requests by status and department:", status, department);
-    //return this.timeOffRequestService.findByStatusAndDepartment(status, department);
-    /* if (department === 'All') {
-      return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
-    } else {
-      return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
-    } */
     return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
   }
 
-  /* @Get('hr/status/:status/department/:department')
-  getByStatusAndDepartmentForHr(
-    @Param('status') status: string,
-    @Param('department') department: string,
-  ) {
-    console.log("Fetching requests by status and department:", status, department);
-    //return this.timeOffRequestService.findByStatusAndDepartment(status, department);
-    // if (department === 'All') {
-    //   return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
-    // } else {
-    //   return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
-    // }
-    return this.timeOffRequestService.findHrByStatusAndDepartment(status, department);
-  } */
   @Get('hr/filter')
   getFilteredRequestsForHr(
     @Query('status') status: string,
@@ -78,13 +58,30 @@ export class TimeOffRequestController {
   }
 
 
-  @Patch(':id/status')
+  /* @Patch(':id/status')
   updateStatus(
     @Param('id') id: string,
     @Body('status') status: 'Pending' | 'Approved' | 'Not Approved'
   ) {
     console.log(`Updating status for request ID ${id} to ${status}`);
     return this.timeOffRequestService.updateStatus(id, status);
+  } */
+  @Patch(':id/status')
+  updateStatus(
+    @Param('id') id: string,
+    @Body('status') status: string, // viene string del request
+  ) {
+    const s = (status ?? '').trim().toLowerCase();
+
+    // string -> StatusEnum (inline, sin helpers)
+    const normalized: StatusEnum =
+      s === 'approved'
+        ? StatusEnum.Approved
+        : s.startsWith('not')
+          ? StatusEnum.NotApproved
+          : StatusEnum.Pending;
+
+    return this.timeOffRequestService.updateStatus(id, normalized);
   }
 
   @Patch(':id/approve/coordinator')

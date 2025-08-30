@@ -29,4 +29,19 @@ export class Employee {
     @Column()
     company: string;
 
+    // NUEVOS CAMPOS
+    @Column({ length: 255, default: '' })
+    nova_email: string;
+
+    @Column({ length: 100, default: '' })
+    position: string;
+
+    // employee.entity.ts
+    @Column({ type: 'json', nullable: false })
+    multi_department: string[];
+
+    @Column()
+    has_assigned_equipment: boolean;
+
+
 }

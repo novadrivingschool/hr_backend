@@ -1,7 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Employee } from './entities/employee.entity';
+import { FindByRolesDto } from './dto/find-by-role.dto';
+import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
 
 type EmpMinimal = { name: string; last_name: string; employee_number: string };
 
@@ -16,19 +18,11 @@ export class EmployeesService {
   async findAll(): Promise<Employee[]> {
     return this.employeeRepo.find({
       where: { status: 'Active' },
-      select: ['name', 'last_name', 'employee_number', 'department', 'company', 'country', 'location'],
+      /* 
+      select: ['name', 'last_name', 'employee_number', 'department', 'company', 'country', 'location'], */
     });
   }
 
-  /* async findByDepartment(department: string): Promise<Employee[]> {
-    return this.employeeRepo.find({
-      where: {
-        status: 'Active',
-        department,
-      },
-      select: ['name', 'last_name', 'employee_number', 'department'],
-    });
-  } */
   async findByDepartment(department: string): Promise<Employee[]> {
     const where: any = { status: 'Active' };
 
@@ -41,7 +35,6 @@ export class EmployeesService {
       select: ['name', 'last_name', 'employee_number', 'department'],
     });
   }
-
 
   // ===========================
   // BÚSQUEDA POR NOMBRE COMPLETO
@@ -166,5 +159,177 @@ export class EmployeesService {
 
     return best;
   }
+
+  async findActiveManagersAndCoordinators(dto: FindByRolesDto) {
+    const depts = (dto.departments || []).map(d => (d ?? '').trim()).filter(Boolean);
+    const deptsLower = depts.map(d => d.toLowerCase());
+    if (deptsLower.length === 0) {
+      throw new BadRequestException('At least one department is required');
+    }
+
+    return this.employeeRepo
+      .createQueryBuilder('e')
+      .select([
+        'e.id', 'e.name', 'e.last_name', 'e.employee_number', 'e.status',
+        'e.position', 'e.multi_department', 'e.department', 'e.company',
+        'e.location', 'e.country', 'e.nova_email',
+      ])
+      .where('e.status = :active', { active: 'Active' })
+      .andWhere(
+        `
+      (
+        -- Managers SIEMPRE entran (ignora departments)
+        e.position = :manager
+        OR
+        -- Coordinators SOLO si hay intersección con departments enviados
+        (
+          e.position = :coordinator
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(
+                   CASE
+                     WHEN jsonb_typeof(e.multi_department::jsonb) = 'array'
+                     THEN e.multi_department::jsonb
+                     ELSE '[]'::jsonb
+                   END
+                 ) AS d(val)
+            WHERE TRIM(LOWER(d.val)) IN (:...deptsLower)
+          )
+        )
+      )
+      `,
+        {
+          manager: 'Manager',
+          coordinator: 'Coordinator',
+          deptsLower,
+        },
+      )
+      .orderBy('e.position', 'ASC')
+      .addOrderBy('e.last_name', 'ASC')
+      .addOrderBy('e.name', 'ASC')
+      .getMany();
+  }
+
+  // employees.service.ts
+  /* async findActiveManagersAndCoordinatorsEmails(dto: FindByRolesDto): Promise<string[]> {
+    const depts = (dto.departments || []).map(d => (d ?? '').trim()).filter(Boolean);
+    const deptsLower = depts.map(d => d.toLowerCase());
+    if (deptsLower.length === 0) {
+      throw new BadRequestException('At least one department is required');
+    }
+
+    // Trae solo los correos, únicos, no vacíos y en minúsculas
+    const rows = await this.employeeRepo
+      .createQueryBuilder('e')
+      .select('DISTINCT LOWER(TRIM(e.nova_email))', 'email') // <-- solo emails únicos
+      .where('e.status = :active', { active: 'Active' })
+      .andWhere(`NULLIF(TRIM(e.nova_email), '') IS NOT NULL`) // <-- evita vacíos
+      .andWhere(
+        `
+      (        
+        -- Coordinators SOLO si hay intersección con departments enviados
+        (
+          e.position = :coordinator
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(
+                   CASE
+                     WHEN jsonb_typeof(e.multi_department::jsonb) = 'array'
+                     THEN e.multi_department::jsonb
+                     ELSE '[]'::jsonb
+                   END
+                 ) AS d(val)
+            WHERE TRIM(LOWER(d.val)) IN (:...deptsLower)
+          )
+        )
+      )
+      `,
+        {
+          coordinator: 'Coordinator',
+          deptsLower,
+        },
+      )
+      .orderBy('1', 'ASC') // opcional: ordena alfabéticamente por el alias 'email'
+      .getRawMany<{ email: string }>();
+
+    return rows.map(r => r.email);
+  } */
+  async findCoordinatorsEmailsByDepartments(
+    dto: { departments: string[] }
+  ): Promise<string[]> {
+    console.log('>>> [findCoordinatorsEmailsByDepartments] dto:', dto);
+
+    // 1) Normaliza entradas
+    const norm = (s: string) => s.toLowerCase().trim().replace(/\s+/g, ' ');
+    const depts = (dto.departments ?? [])
+      .map(d => (d ?? '').trim())
+      .filter(Boolean);
+
+    const deptsNorm = depts.map(norm);
+
+    console.log('>>> Departamentos originales:', depts);
+    console.log('>>> Departamentos normalizados:', deptsNorm);
+
+    if (deptsNorm.length === 0) {
+      throw new BadRequestException('At least one department is required');
+    }
+
+    // 2) Ejecuta query
+    const rows = await this.employeeRepo
+      .createQueryBuilder('e')
+      .select('DISTINCT LOWER(TRIM(e.nova_email))', 'email')
+      .where(`TRIM(LOWER(e.status)) = 'active'`)
+      .andWhere(`NULLIF(TRIM(e.nova_email), '') IS NOT NULL`)
+      .andWhere(`TRIM(LOWER(e.position)) = :coordinator`, {
+        coordinator: 'coordinator',
+      })
+      .andWhere(
+        `
+      EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(
+               CASE
+                 WHEN jsonb_typeof(e.multi_department::jsonb) = 'array'
+                 THEN e.multi_department::jsonb
+                 ELSE '[]'::jsonb
+               END
+             ) AS d(val)
+        WHERE
+          regexp_replace(TRIM(LOWER(d.val)), '\\s+', ' ', 'g')
+          IN (:...deptsNorm)
+      )
+      `,
+        { deptsNorm }
+      )
+      .orderBy('1', 'ASC')
+      .getRawMany<{ email: string }>();
+
+    console.log('>>> Filas crudas devueltas por la query:', rows);
+
+    const result = rows.map(r => r.email);
+
+    console.log('>>> Emails finales normalizados:', result);
+
+    return result;
+  }
+
+  async updateEquipmentStatusByEmployeeNumber(
+    employeeNumber: string,
+    dto: UpdateEquipmentStatusDto,
+  ): Promise<Employee> {
+    const employee = await this.employeeRepo.findOne({
+      where: { employee_number: employeeNumber },
+    });
+
+    if (!employee) {
+      throw new NotFoundException(
+        `Employee with number ${employeeNumber} not found`,
+      );
+    }
+
+    employee.has_assigned_equipment = dto.has_assigned_equipment;
+    return this.employeeRepo.save(employee);
+  }
+
 
 }

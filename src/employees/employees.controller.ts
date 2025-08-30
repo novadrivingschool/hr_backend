@@ -2,6 +2,8 @@ import { Controller, Get, Post, Body, Patch, Param, Delete, Query, NotFoundExcep
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
+import { FindByRolesDto } from './dto/find-by-role.dto';
+import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
 
 @Controller('employees')
 export class EmployeesController {
@@ -28,5 +30,27 @@ export class EmployeesController {
     return result || null; // si no existe devuelve null
   }
 
+  // GET /employees/active-roles?departments=HR&departments=Accounting
+  // GET /employees/active-roles?departments=HR,Accounting
+  @Get('active-roles')
+  async getActiveManagersAndCoordinators(@Query() query: FindByRolesDto) {
+    console.log("get active managers and coordinators: ", query.departments);
+    return this.employeesService.findActiveManagersAndCoordinators(query);
+  }
 
+  @Get('active-roles/emails')
+  async findCoordinatorsEmailsByDepartments(@Query() query: FindByRolesDto) {
+    return this.employeesService.findCoordinatorsEmailsByDepartments(query);
+  }
+
+  @Patch(':employeeNumber/equipment-status')
+  async updateEquipmentStatusByEmployeeNumber(
+    @Param('employeeNumber') employeeNumber: string,
+    @Body() dto: UpdateEquipmentStatusDto,
+  ) {
+    return this.employeesService.updateEquipmentStatusByEmployeeNumber(
+      employeeNumber,
+      dto,
+    );
+  }
 }
