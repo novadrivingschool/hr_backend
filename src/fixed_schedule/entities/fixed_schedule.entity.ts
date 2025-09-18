@@ -27,6 +27,8 @@ export class FixedSchedule {
   @ManyToOne(() => EmployeeSchedule, schedule => schedule.fixed, { onDelete: 'CASCADE' })
   schedule: EmployeeSchedule;
 
-  @Column()
-  location: string;
+  /* @Column()
+  location: string; */
+  @Column({ type: 'jsonb', default: () => "'[]'" })
+  location: string[];
 }

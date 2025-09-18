@@ -19,14 +19,18 @@ class EmployeeDataDto {
     @IsString({ each: true })
     multi_department: string[];
 
-    @IsString()
-    country: string;
+    /* @IsString()
+    country: string; */
 
     /* @IsString()
     company: string; */
     @IsArray()
     @IsString({ each: true })
     multi_company: string[];
+
+    @IsArray()
+    @IsString({ each: true })
+    multi_location: string[];
 
     @IsString()
     nova_email: string;

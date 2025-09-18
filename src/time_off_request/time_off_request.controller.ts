@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, ParseArrayPipe } from '@nestjs/common';
 import { TimeOffRequestService } from './time_off_request.service';
 import { CreateTimeOffRequestDto } from './dto/create-time_off_request.dto';
 import { UpdateTimeOffRequestDto } from './dto/update-time_off_request.dto';
@@ -47,7 +47,7 @@ export class TimeOffRequestController {
     return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
   }
 
-  @Get('hr/filter')
+  /* @Get('hr/filter')
   getFilteredRequestsForHr(
     @Query('status') status: string,
     @Query('department') department: string,
@@ -55,7 +55,36 @@ export class TimeOffRequestController {
   ) {
     console.log("🔍 Filtering HR requests:", { status, department, employee_number });
     return this.timeOffRequestService.findHrByStatusDepartmentAndEmployee(status, department, employee_number);
+  } */
+  @Get('hr/filter')
+  getFilteredRequestsForHr(
+    @Query('status') status: string,
+    // puede llegar como string o string[] (o vacío)
+    @Query('multi_department') multi_department?: string | string[],
+    // compatibilidad legacy opcional (también puede venir CSV)
+    @Query('department') departmentLegacy?: string,
+    @Query('employee_number') employee_number?: string,
+  ) {
+    const normalizeToArray = (input?: string | string[]): string[] => {
+      if (!input) return [];
+      if (Array.isArray(input)) return input.map(s => s?.trim()).filter(Boolean);
+      return input.split(',').map(s => s.trim()).filter(Boolean); // CSV → array
+    };
+
+    // 1) preferimos multi_department; 2) fallback a department (legacy)
+    let depts = normalizeToArray(multi_department);
+    if (depts.length === 0) depts = normalizeToArray(departmentLegacy);
+
+    // “All” desactiva filtro
+    if (depts.some(d => d.toLowerCase?.() === 'all')) depts = [];
+
+    return this.timeOffRequestService.findHrByStatusDepartmentAndEmployee(
+      status,
+      depts, // siempre array (posible vacío)
+      employee_number,
+    );
   }
+
 
 
   /* @Patch(':id/status')

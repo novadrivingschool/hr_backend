@@ -84,9 +84,12 @@ export interface EmployeeData {
   name: string;
   last_name: string;
   employee_number: string;
-  department: string;
-  country: string;
-  company: string;
+  //department: string;
+  //country: string;
+  //company: string;
+  multi_location: string[];
+  multi_company: string[];
+  multi_department: string[];
 }
 
 

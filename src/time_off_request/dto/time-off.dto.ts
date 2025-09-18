@@ -10,7 +10,8 @@ export interface EmployeeDataDto {
     last_name: string;
     employee_number: string;
     multi_department: string[];
-    country: string;
+    //country: string;
+    multi_location: string[];
     multi_company: string[];
     nova_email?: string;
 }
@@ -68,6 +69,8 @@ export interface SendTimeOffTemplateDto {
     templateName: string;
     subject?: string;
     formData: CreateTimeOffRequestSavedDto;
+    /** ← NUEVO */
+    actor?: 'HR' | 'Coordinator' | 'System';
 }
 
 export interface SendTimeOffTemplateObjDto {
@@ -75,6 +78,8 @@ export interface SendTimeOffTemplateObjDto {
     templateName: string;
     subject?: string;
     formData: CreateTimeOffRequestSavedDto;
+    /** ← NUEVO */
+    actor?: 'HR' | 'Coordinator' | 'System';
 }
 
 export interface SendTemplateResponse {

@@ -25,8 +25,11 @@ class CreateFixedScheduleDto {
     @IsString()
     register: string;
 
-    @IsString()
-    location: string;
+    /* @IsString()
+    location: string; */
+    @IsArray()
+    @IsString({ each: true })
+    location: string[];
 }
 
 class CreateScheduleEventDto {
@@ -46,8 +49,11 @@ class CreateScheduleEventDto {
     @IsString()
     register: string;
 
-    @IsString()
-    location: string;
+    /* @IsString()
+    location: string; */
+    @IsArray()
+    @IsString({ each: true })
+    location: string[];
 }
 
 export class CreateEmployeeScheduleDto {

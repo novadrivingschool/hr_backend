@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, NotFoundException, BadRequestException, ParseArrayPipe } from '@nestjs/common';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
@@ -11,12 +11,31 @@ export class EmployeesController {
 
   @Get()
   findAll() {
+    console.log("findAll employees")
     return this.employeesService.findAll();
   }
 
-  @Get('department/:department')
+  /* @Get('department/:department')
   findByDepartment(@Param('department') department: string) {
     return this.employeesService.findByDepartment(department);
+  } */
+  // 👉 /employees/department?department=HR
+  // 👉 /employees/department?department=HR,Sales
+  // 👉 /employees/department?department=HR&department=Sales
+  // 👉 /employees/department  (equivale a "all")
+  @Get('department')
+  findByDepartment(
+    @Query(
+      'department',
+      new ParseArrayPipe({ items: String, separator: ',', optional: true })
+    )
+    departments?: string[],   // será undefined, o un array con 1+ valores
+  ) {
+    console.log("-------------- findByDepartment -------------")
+    console.log("departments:", departments);
+    return this.employeesService.findByDepartment(
+      departments?.length ? departments : 'all'
+    );
   }
 
   @Get('search')

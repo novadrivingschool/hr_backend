@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Brackets, Raw, Repository } from 'typeorm';
 import { Employee } from './entities/employee.entity';
 import { FindByRolesDto } from './dto/find-by-role.dto';
 import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
@@ -23,7 +23,7 @@ export class EmployeesService {
     });
   }
 
-  async findByDepartment(department: string): Promise<Employee[]> {
+  /* async findByDepartment(department: string): Promise<Employee[]> {
     const where: any = { status: 'Active' };
 
     if (department !== 'all') {
@@ -32,9 +32,40 @@ export class EmployeesService {
 
     return this.employeeRepo.find({
       where,
-      select: ['name', 'last_name', 'employee_number', 'department'],
+      select: ['name', 'last_name', 'employee_number', 'multi_department'],
     });
+  } */
+  async findByDepartment(department: string | string[]): Promise<Employee[]> {
+    const qb = this.employeeRepo
+      .createQueryBuilder('e')
+      .select(['e.name', 'e.last_name', 'e.employee_number', 'e.multi_department'])
+      .where('e.status = :status', { status: 'Active' });
+
+    // Normaliza entrada a array
+    const depts = Array.isArray(department)
+      ? department
+      : (department ? [department] : []);
+
+    const cleaned = depts.map(d => d?.trim()).filter(Boolean);
+
+    // Si viene vacío o contiene "all" (cualquier caso) => NO filtrar por dept
+    const containsAll = cleaned.some(d => d.toLowerCase() === 'all');
+    const shouldFilter = cleaned.length > 0 && !containsAll;
+
+    if (shouldFilter) {
+      qb.andWhere(new Brackets(sqb => {
+        cleaned.forEach((d, i) => {
+          // ⚠️ multi_department es JSON → casteamos a JSONB en ambos lados
+          sqb.orWhere(`(e.multi_department::jsonb @> :dept${i}::jsonb)`, {
+            [`dept${i}`]: JSON.stringify([d]),
+          });
+        });
+      }));
+    }
+
+    return qb.getMany();
   }
+
 
   // ===========================
   // BÚSQUEDA POR NOMBRE COMPLETO
@@ -171,8 +202,8 @@ export class EmployeesService {
       .createQueryBuilder('e')
       .select([
         'e.id', 'e.name', 'e.last_name', 'e.employee_number', 'e.status',
-        'e.position', 'e.multi_department', 'e.department', 'e.company',
-        'e.location', 'e.country', 'e.nova_email',
+        'e.position', 'e.multi_department', 'e.multi_company',
+        'e.multi_location', 'e.nova_email',
       ])
       .where('e.status = :active', { active: 'Active' })
       .andWhere(

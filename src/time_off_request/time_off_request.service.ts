@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, InternalServerErrorException, Logger, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import { TimeOffRequest } from './entities/time_off_request.entity';
 import { CreateTimeOffRequestDto } from './dto/create-time_off_request.dto';
 import { UpdateTimeOffRequestDto } from './dto/update-time_off_request.dto';
@@ -47,7 +47,7 @@ export class TimeOffRequestService {
 
       const saved = await this.timeOffRequestRepo.save(request);
 
-      console.log("saved: ", saved);      
+      console.log("saved: ", saved);
 
       /* COORDINATOR EMAIL */
       await this.sentCoordinatorRequest(saved);
@@ -209,16 +209,24 @@ export class TimeOffRequestService {
       request.coordinator_comments = coordinator_comments;
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
+      console.log("updatedRequest: ", updatedRequest);
+      
 
       if (approved) {
         /* GET HR EMAILS */
         const res = await this.sendHrEmail(updatedRequest);
         console.log("res: ", res);
+        await this.apiClient.sendStaffTemplate({
+          templateName: 'time_off_staff_notification',
+          formData: { ...updatedRequest },
+          actor: 'Coordinator'
+        });
       } else {
         /* SEND NOTIFICATION TO STAFF */
         await this.apiClient.sendStaffTemplate({
           templateName: 'time_off_staff_notification',
-          formData: { ...updatedRequest }
+          formData: { ...updatedRequest },
+          actor: 'Coordinator'
         });
       }
 
@@ -252,7 +260,7 @@ export class TimeOffRequestService {
       recipientsObjects,                         // <-- string[]
       templateName: 'hr_time_off_request',
       subject,
-      formData: updatedRequest,
+      formData: updatedRequest
     };
 
     // 3) Envía usando el API client
@@ -295,7 +303,8 @@ export class TimeOffRequestService {
       /* SEND NOTIFICATION TO STAFF */
       await this.apiClient.sendStaffTemplate({
         templateName: 'time_off_staff_notification',
-        formData: { ...updatedRequest }
+        formData: { ...updatedRequest },
+        actor: 'HR'
       });
 
       return updatedRequest;
@@ -322,7 +331,7 @@ export class TimeOffRequestService {
       recipientsObjects,                         // <-- string[]
       templateName: 'management_time_off_request',
       subject,
-      formData: updatedRequest,
+      formData: updatedRequest
     };
 
     // 3) Envía usando el API client
@@ -416,7 +425,7 @@ export class TimeOffRequestService {
     return await query.getMany();
   }
 
-  async findHrByStatusDepartmentAndEmployee(
+  /* async findHrByStatusDepartmentAndEmployee(
     status: string,
     department: string,
     employee_number?: string
@@ -447,6 +456,48 @@ export class TimeOffRequestService {
         .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
     } else if (normalizedStatus === 'not approved') {
       query.andWhere(`request.status = 'Not Approved'`)
+        .andWhere(`request.hr_approval ->> 'approved' = 'false'`);
+    }
+
+    return query.getMany();
+  } */
+  async findHrByStatusDepartmentAndEmployee(
+    status: string,
+    multi_department: string[] = [],
+    employee_number?: string
+  ): Promise<TimeOffRequest[]> {
+    const query = this.timeOffRequestRepo.createQueryBuilder('request');
+
+    const depts = multi_department.map(d => d.trim()).filter(Boolean);
+    const shouldFilterByDept = depts.length > 0;
+
+    if (shouldFilterByDept) {
+      query.andWhere(new Brackets(sqb => {
+        depts.forEach((d, i) => {
+          sqb.orWhere(`(request.employee_data -> 'multi_department') @> :dept${i}`, {
+            [`dept${i}`]: JSON.stringify([d]),
+          });
+        });
+      }));
+    }
+
+    if (employee_number) {
+      query.andWhere(`request.employee_data ->> 'employee_number' = :employee_number`, { employee_number });
+    }
+
+    const s = status?.toLowerCase?.() ?? '';
+    if (s === 'pending') {
+      query
+        .andWhere(`request.status = 'Pending'`)
+        .andWhere(`request.hr_approval ->> 'approved' = 'false'`)
+        .andWhere(`(request.coordinator_approval ->> 'approved' = 'true' OR request.coordinator_approval ->> 'approved' = 'false')`);
+    } else if (s === 'approved') {
+      query
+        .andWhere(`request.hr_approval ->> 'approved' = 'true'`)
+        .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`);
+    } else if (s === 'not approved') {
+      query
+        .andWhere(`request.status = 'Not Approved'`)
         .andWhere(`request.hr_approval ->> 'approved' = 'false'`);
     }
 

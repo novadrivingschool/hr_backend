@@ -17,17 +17,17 @@ export class Employee {
     @Column()
     status: string;
 
-    @Column()
-    department: string;
+    /* @Column()
+    department: string; */
 
-    @Column()
-    country: string;
+    /* @Column()
+    country: string; */
 
     @Column()
     location: string;
 
-    @Column()
-    company: string;
+    /* @Column()
+    company: string; */
 
     // NUEVOS CAMPOS
     @Column({ length: 255, default: '' })
@@ -39,6 +39,12 @@ export class Employee {
     // employee.entity.ts
     @Column({ type: 'json', nullable: false })
     multi_department: string[];
+
+    @Column({ type: 'json', nullable: false })
+    multi_location: string[];
+
+    @Column({ type: 'json', nullable: false })
+    multi_company: string[];
 
     @Column()
     has_assigned_equipment: boolean;

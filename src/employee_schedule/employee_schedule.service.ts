@@ -163,10 +163,13 @@ export class EmployeeScheduleService {
       employee_number: emp.employee_number,
       name: `${emp.name} ${emp.last_name}`,
       status: emp.status,
-      department: emp.department,
-      country: emp.country,
-      location: emp.location,
-      company: emp.company,
+      multi_department: emp.multi_department,
+      multi_location: emp.multi_location,
+      multi_company: emp.multi_company,      
+      //department: emp.department,
+      //country: emp.country,
+      //location: emp.location,
+      //company: emp.company,
     }));
   }
 
