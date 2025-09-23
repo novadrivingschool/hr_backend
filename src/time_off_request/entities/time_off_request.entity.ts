@@ -54,10 +54,7 @@ export class TimeOffRequest {
         name: string;
         last_name: string;
         employee_number: string;
-        /* department: string; */
         multi_department: string[];
-        //country: string;
-        /* company: string; */
         multi_company: string[];
         nova_email: string;
         multi_location: string[];

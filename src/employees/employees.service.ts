@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, Raw, Repository } from 'typeorm';
+import { Brackets, ILike, Raw, Repository } from 'typeorm';
 import { Employee } from './entities/employee.entity';
 import { FindByRolesDto } from './dto/find-by-role.dto';
 import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
@@ -18,23 +18,9 @@ export class EmployeesService {
   async findAll(): Promise<Employee[]> {
     return this.employeeRepo.find({
       where: { status: 'Active' },
-      /* 
-      select: ['name', 'last_name', 'employee_number', 'department', 'company', 'country', 'location'], */
     });
   }
 
-  /* async findByDepartment(department: string): Promise<Employee[]> {
-    const where: any = { status: 'Active' };
-
-    if (department !== 'all') {
-      where.department = department;
-    }
-
-    return this.employeeRepo.find({
-      where,
-      select: ['name', 'last_name', 'employee_number', 'multi_department'],
-    });
-  } */
   async findByDepartment(department: string | string[]): Promise<Employee[]> {
     const qb = this.employeeRepo
       .createQueryBuilder('e')
@@ -360,6 +346,54 @@ export class EmployeesService {
 
     employee.has_assigned_equipment = dto.has_assigned_equipment;
     return this.employeeRepo.save(employee);
+  }
+
+  async getSupervisorsEmailsByEmployeeNumber(employeeNumber: string): Promise<string[]> {
+    // Trae SOLO la columna supervisors para no cargar de más
+    const row = await this.employeeRepo
+      .createQueryBuilder('e')
+      .select('e.supervisors', 'supervisors')
+      .where('e.employee_number = :employeeNumber', { employeeNumber })
+      .getRawOne<{ supervisors: any[] }>();
+
+    if (!row) throw new NotFoundException(`Employee ${employeeNumber} not found`);
+
+    const supervisors = Array.isArray(row.supervisors) ? row.supervisors : [];
+    const emails = supervisors
+      .map(s => (s?.nova_email || s?.email || '').trim())
+      .filter(Boolean);
+
+    // dedupe
+    return Array.from(new Set(emails));
+  }
+
+  /**
+   * Busca empleados con status 'Active' por posición.
+   * - exact=false (default): ILIKE '%position%'
+   * - exact=true: comparación exacta case-insensitive
+   */
+  async findActiveByPosition(position: string, opts?: { exact?: boolean }) {
+    const { exact = false } = opts || {};
+
+    const where = exact
+      ? {
+        status: 'Active',
+        position: Raw((alias) => `LOWER(${alias}) = LOWER(:pos)`, { pos: position }),
+      }
+      : {
+        status: 'Active',
+        position: ILike(`%${position}%`),
+      };
+
+    return this.employeeRepo.find({
+      where,
+      order: { last_name: 'ASC', name: 'ASC' },
+      select: {
+        name: true,
+        last_name: true,
+        employee_number: true,
+      },
+    });
   }
 
 

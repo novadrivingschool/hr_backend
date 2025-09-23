@@ -62,6 +62,30 @@ export class EmployeesController {
     return this.employeesService.findCoordinatorsEmailsByDepartments(query);
   }
 
+   // GET /employees/position?position=Coordinator
+  // GET /employees/position?position=coor&exact=false
+  @Get('position')
+  async findActiveByPosition(
+    @Query('position') position: string,
+    @Query('exact') exact?: string, // "true" | "false" (opcional)
+  ) {
+    if (!position || !position.trim()) {
+      throw new BadRequestException('Query param "position" is required');
+    }
+    const isExact = String(exact).toLowerCase() === 'true';
+    return this.employeesService.findActiveByPosition(position.trim(), { exact: isExact });
+  }
+
+  // GET /employees/:employeeNumber/supervisors/emails  → string[]
+  @Get(':employeeNumber/supervisors/emails')
+  async getSupervisorsEmails(
+    @Param('employeeNumber') employeeNumber: string,
+  ): Promise<string[]> {
+    const emails = await this.employeesService.getSupervisorsEmailsByEmployeeNumber(employeeNumber);
+    if (!emails) throw new NotFoundException('Employee not found');
+    return emails; // solo array de emails
+  }
+
   @Patch(':employeeNumber/equipment-status')
   async updateEquipmentStatusByEmployeeNumber(
     @Param('employeeNumber') employeeNumber: string,

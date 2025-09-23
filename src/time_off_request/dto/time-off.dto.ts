@@ -10,7 +10,6 @@ export interface EmployeeDataDto {
     last_name: string;
     employee_number: string;
     multi_department: string[];
-    //country: string;
     multi_location: string[];
     multi_company: string[];
     nova_email?: string;

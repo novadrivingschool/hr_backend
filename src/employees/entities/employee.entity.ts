@@ -1,5 +1,13 @@
 import { Entity, PrimaryGeneratedColumn, Column } from 'typeorm';
 
+export interface SupervisorRef {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email?: string;
+    __label?: string;
+}
+
 @Entity('employees') // usa el nombre exacto de la tabla ya existente
 export class Employee {
     @PrimaryGeneratedColumn()
@@ -16,12 +24,6 @@ export class Employee {
 
     @Column()
     status: string;
-
-    /* @Column()
-    department: string; */
-
-    /* @Column()
-    country: string; */
 
     @Column()
     location: string;
@@ -49,5 +51,11 @@ export class Employee {
     @Column()
     has_assigned_equipment: boolean;
 
-
+    @Column({
+        type: 'jsonb',
+        nullable: false,
+        // default a array vacío en Postgres
+        default: () => "'[]'",
+    })
+    supervisors!: SupervisorRef[];
 }

@@ -31,6 +31,7 @@ export class TimeOffRequestService {
     this.apiClient = new TimeOffApiClient();
   }
 
+  /* CREATE NEW TOR */
   async create(createDto: CreateTimeOffRequestDto): Promise<TimeOffRequest> {
     try {
       console.log("createDto: ", createDto);
@@ -58,6 +59,7 @@ export class TimeOffRequestService {
       throw new InternalServerErrorException('Error creating time off request');
     }
   }
+
 
   async findAll(): Promise<TimeOffRequest[]> {
     try {
@@ -210,7 +212,7 @@ export class TimeOffRequestService {
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
       console.log("updatedRequest: ", updatedRequest);
-      
+
 
       if (approved) {
         /* GET HR EMAILS */
@@ -511,9 +513,11 @@ export class TimeOffRequestService {
 
     const departments = payload.employee_data.multi_department
 
-    const coordinatorEmails = await this.employeeService.findCoordinatorsEmailsByDepartments({
-      departments
-    })
+    /*  const coordinatorEmails = await this.employeeService.findCoordinatorsEmailsByDepartments({
+       departments
+     }) */
+
+    const coordinatorEmails = await this.employeeService.getSupervisorsEmailsByEmployeeNumber(payload.employee_data.employee_number);
 
     console.log("coordinatorEmails: ", coordinatorEmails);
 

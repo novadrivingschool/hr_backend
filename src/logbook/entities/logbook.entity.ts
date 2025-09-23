@@ -12,15 +12,6 @@ export class Logbook {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  /* @Column({ type: 'jsonb' })
-  employee_data: {
-    name: string;
-    last_name: string;
-    employee_number: string;
-    department: string;
-    country: string;
-    company: string;
-  }; */
   @Column({ type: 'jsonb' })
   employee_data: EmployeeData;
 
