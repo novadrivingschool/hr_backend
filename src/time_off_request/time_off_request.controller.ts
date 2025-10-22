@@ -47,15 +47,6 @@ export class TimeOffRequestController {
     return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
   }
 
-  /* @Get('hr/filter')
-  getFilteredRequestsForHr(
-    @Query('status') status: string,
-    @Query('department') department: string,
-    @Query('employee_number') employee_number?: string,
-  ) {
-    console.log("🔍 Filtering HR requests:", { status, department, employee_number });
-    return this.timeOffRequestService.findHrByStatusDepartmentAndEmployee(status, department, employee_number);
-  } */
   @Get('hr/filter')
   getFilteredRequestsForHr(
     @Query('status') status: string,
@@ -85,16 +76,6 @@ export class TimeOffRequestController {
     );
   }
 
-
-
-  /* @Patch(':id/status')
-  updateStatus(
-    @Param('id') id: string,
-    @Body('status') status: 'Pending' | 'Approved' | 'Not Approved'
-  ) {
-    console.log(`Updating status for request ID ${id} to ${status}`);
-    return this.timeOffRequestService.updateStatus(id, status);
-  } */
   @Patch(':id/status')
   updateStatus(
     @Param('id') id: string,

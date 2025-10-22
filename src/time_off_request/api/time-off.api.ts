@@ -43,6 +43,11 @@ export class TimeOffApiClient {
     return this.post('/send-coordinator-template', dto);
   }
 
+  sendStaffSubmittedTorTemplate(dto: SendTimeOffTemplateDto): Promise<SendTemplateResponse> {
+    console.log("<<< dto: ", dto);
+    return this.post('/send-staff-tor-template', dto);
+  }
+
   /** POST /time-off-requests/send-hr-template */
   sendHRTemplate(dto: SendTimeOffTemplateObjDto): Promise<SendTemplateResponse> {
     return this.post('/send-hr-template', dto);

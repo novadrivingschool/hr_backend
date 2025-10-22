@@ -529,14 +529,23 @@ export class TimeOffRequestService {
     // construyes el DTO para enviar al microservicio de email
     const dto = {
       recipients: coordinatorEmails,
-      templateName: 'coordinator_time_off_request',
+      templateName: '',
       formData: payload, // 👈 aquí mandas todo el payload como formData
       subject: ``,
     };
 
+    console.log("dto: ", dto);
+
+    console.log("---------------------------------");
+
     try {
+      dto.templateName = 'staff_submitted_time_off_request'
+      const respStaff = await this.apiClient.sendStaffSubmittedTorTemplate(dto);
+      console.log('✅ Email/Staff service response:', respStaff);
+      /* SENDING TO COORDINATOR NOTIFICATION */
+      dto.templateName = 'coordinator_time_off_request'
       const resp = await this.apiClient.sendCoordinatorTemplate(dto);
-      console.log('✅ Email service response:', resp);
+      console.log('✅ Email/Coordinator service response:', resp);
       return resp;
     } catch (err) {
       console.error('❌ Error sending coordinator template:', err.message);
