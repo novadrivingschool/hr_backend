@@ -20,6 +20,9 @@ import { MaritalStatusModule } from './marital_status/marital_status.module';
 import { TypeOfJobModule } from './type_of_job/type_of_job.module';
 import { RaceModule } from './race/race.module';
 import { TypeOfStaffModule } from './type_of_staff/type_of_staff.module';
+import { OfficeSuppliesModule } from './office_supplies/office_supplies.module';
+import { FacilitiesModule } from './facilities/facilities.module';
+import { Facility } from './facilities/entities/facility.entity';
 
 
 dotenv.config();
@@ -62,6 +65,8 @@ dotenv.config();
         __dirname + '/type_of_job/entities/*.entity.{ts,js}',
         __dirname + '/race/entities/*.entity.{ts,js}',
         __dirname + '/type_of_staff/entities/*.entity.{ts,js}',
+        __dirname + '/OfficeSupply/entities/*.entity.{ts,js}',
+        __dirname + '/Facility/entities/*.entity.{ts,js}',
       ],
     }),
     ScheduleModule,
@@ -82,6 +87,9 @@ dotenv.config();
     TypeOfJobModule,
     RaceModule,
     TypeOfStaffModule,
+    OfficeSuppliesModule,
+    FacilitiesModule,
+    Facility
   ],
 })
 export class AppModule { }
