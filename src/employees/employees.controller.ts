@@ -62,18 +62,22 @@ export class EmployeesController {
     return this.employeesService.findCoordinatorsEmailsByDepartments(query);
   }
 
-   // GET /employees/position?position=Coordinator
-  // GET /employees/position?position=coor&exact=false
   @Get('position')
   async findActiveByPosition(
-    @Query('position') position: string,
+    @Query('position') position: string, // Este parámetro será una cadena de texto
     @Query('exact') exact?: string, // "true" | "false" (opcional)
   ) {
-    if (!position || !position.trim()) {
+    if (!position || !String(position).trim()) {
       throw new BadRequestException('Query param "position" is required');
     }
+
+    // Convertimos el string de posiciones separadas por comas en un array
+    const positionsArray = position.split(',').map(p => p.trim());
+
     const isExact = String(exact).toLowerCase() === 'true';
-    return this.employeesService.findActiveByPosition(position.trim(), { exact: isExact });
+
+    // Pasamos el array de posiciones al servicio
+    return this.employeesService.findActiveByPosition(positionsArray, { exact: isExact });
   }
 
   // GET /employees/:employeeNumber/supervisors/emails  → string[]

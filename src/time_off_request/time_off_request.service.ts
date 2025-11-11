@@ -517,6 +517,7 @@ export class TimeOffRequestService {
        departments
      }) */
 
+    /* GET SUPERVISORS EMAIL */
     const coordinatorEmails = await this.employeeService.getSupervisorsEmailsByEmployeeNumber(payload.employee_data.employee_number);
 
     console.log("coordinatorEmails: ", coordinatorEmails);
@@ -539,9 +540,11 @@ export class TimeOffRequestService {
     console.log("---------------------------------");
 
     try {
+      /* SENDING TO STAFF NOTIFICATION */
       dto.templateName = 'staff_submitted_time_off_request'
       const respStaff = await this.apiClient.sendStaffSubmittedTorTemplate(dto);
       console.log('✅ Email/Staff service response:', respStaff);
+
       /* SENDING TO COORDINATOR NOTIFICATION */
       dto.templateName = 'coordinator_time_off_request'
       const resp = await this.apiClient.sendCoordinatorTemplate(dto);

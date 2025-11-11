@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, ILike, Raw, Repository } from 'typeorm';
+import { Brackets, ILike, In, Raw, Repository } from 'typeorm';
 import { Employee } from './entities/employee.entity';
 import { FindByRolesDto } from './dto/find-by-role.dto';
 import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
@@ -368,22 +368,33 @@ export class EmployeesService {
   }
 
   /**
-   * Busca empleados con status 'Active' por posición.
-   * - exact=false (default): ILIKE '%position%'
-   * - exact=true: comparación exacta case-insensitive
-   */
-  async findActiveByPosition(position: string, opts?: { exact?: boolean }) {
+ * Busca empleados con status 'Active' por posición.
+ * - exact=false (default): ILIKE '%position%'
+ * - exact=true: comparación exacta case-insensitive
+ */
+  async findActiveByPosition(positions: string[], opts?: { exact?: boolean }) {
     const { exact = false } = opts || {};
 
-    const where = exact
-      ? {
+    // Aseguramos que positions sea un array de strings
+    if (!Array.isArray(positions) || positions.length === 0) {
+      throw new Error('At least one position is required');
+    }
+
+    let where;
+
+    if (exact) {
+      // Si exact es true, usamos LOWER para comparación exacta insensible a mayúsculas/minúsculas
+      where = {
         status: 'Active',
-        position: Raw((alias) => `LOWER(${alias}) = LOWER(:pos)`, { pos: position }),
-      }
-      : {
-        status: 'Active',
-        position: ILike(`%${position}%`),
+        position: Raw((alias) => `LOWER(${alias}) IN (:...positions)`, { positions: positions.map(p => p.toLowerCase()) }),
       };
+    } else {
+      // Si exact es false, usamos ILIKE para comparación insensible a mayúsculas/minúsculas
+      where = {
+        status: 'Active',
+        position: In(positions),
+      };
+    }
 
     return this.employeeRepo.find({
       where,
@@ -395,6 +406,8 @@ export class EmployeesService {
       },
     });
   }
+
+
 
 
 }
