@@ -292,12 +292,28 @@ export class TimeOffRequestService {
         time: chicagoNow.format('HH:mm:ss'),
       };
 
+      if (request.coordinator_approval.approved === false) {
+        let statusFromHr = false;
+        if (approved) {
+          statusFromHr = true;
+        }
+
+        request.coordinator_approval = {
+          approved: statusFromHr,
+          by,
+          date: chicagoNow.format('YYYY-MM-DD'),
+          time: chicagoNow.format('HH:mm:ss'),
+        };
+        request.coordinator_comments = hr_comments;
+      }
+
       //request.status = approved ? 'Approved' : 'Not Approved';
       request.status = approved ? StatusEnum.Approved : StatusEnum.NotApproved;
       request.hr_comments = hr_comments;
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
 
+      //////////////////////////////////////////////////
       /* GET MANAGEMENT EMAILS */
       const res = await this.sendManagementEmail(updatedRequest);
       console.log("res: ", res);
@@ -307,7 +323,7 @@ export class TimeOffRequestService {
         templateName: 'time_off_staff_notification',
         formData: { ...updatedRequest },
         actor: 'HR'
-      });
+      });////////////////////////////////////////////////
 
       return updatedRequest;
     } catch (error) {

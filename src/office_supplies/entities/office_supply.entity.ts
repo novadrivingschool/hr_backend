@@ -3,6 +3,12 @@ import {
   CreateDateColumn, UpdateDateColumn, Index
 } from 'typeorm'
 
+export enum SupplyStatus {
+  PENDING = 'pending',
+  APPROVED = 'approved',
+  NOT_APPROVED = 'not_approved',
+}
+
 @Entity('office_supplies')
 export class OfficeSupply {
   @PrimaryGeneratedColumn('uuid')
@@ -52,4 +58,20 @@ export class OfficeSupply {
 
   @UpdateDateColumn({ type: 'timestamptz' })
   updatedAt: Date
+
+  // ✅ NUEVO: estado del pedido
+  @Index()
+  @Column({
+    type: 'varchar',
+    length: 20,
+    default: SupplyStatus.PENDING,
+  })
+  status: SupplyStatus
+
+  // ✅ NUEVO: links de referencia
+  @Column({
+    type: process.env.DB_TYPE === 'postgres' ? 'jsonb' : 'simple-json',
+    default: [],
+  })
+  links: string[]
 }

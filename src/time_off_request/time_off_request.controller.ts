@@ -101,6 +101,7 @@ export class TimeOffRequestController {
     @Body('by') by: string,
     @Body('coordinator_comments') coordinator_comments: string
   ) {
+    console.log(`Coordinator approval for request ${id}: approved=${approved}, by=${by}`);
     return this.timeOffRequestService.approveByCoordinator(id, approved, by, coordinator_comments);
   }
 
@@ -111,6 +112,7 @@ export class TimeOffRequestController {
     @Body('by') by: string,
     @Body('hr_comments') hr_comments: string
   ) {
+    console.log(`HR approval for request ${id}: approved=${approved}, by=${by}`);
     return this.timeOffRequestService.approveByHR(id, approved, by, hr_comments);
   }
 

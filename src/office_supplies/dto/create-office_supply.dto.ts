@@ -1,6 +1,7 @@
 import {
-  IsDateString, IsObject, IsOptional, IsString, Length
+  IsArray, IsDateString, IsEnum, IsObject, IsOptional, IsString, IsUrl, Length
 } from 'class-validator'
+import { SupplyStatus } from '../entities/office_supply.entity'
 
 export class CreateOfficeSupplyDto {
   @IsDateString()
@@ -35,4 +36,15 @@ export class CreateOfficeSupplyDto {
 
   @IsOptional() @IsString()
   observations?: string | null
+
+  // ✅ NUEVO
+  @IsOptional()
+  @IsEnum(SupplyStatus)
+  status?: SupplyStatus
+
+  // ✅ NUEVO
+  @IsOptional()
+  @IsArray()
+  @IsUrl({}, { each: true })
+  links?: string[]
 }
