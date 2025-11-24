@@ -334,6 +334,7 @@ export class TimeOffRequestService {
 
   /* SEND EMAIL TO MANAGEMENT TIME OFF REQUEST */
   async sendManagementEmail(updatedRequest: CreateTimeOffRequestSavedDto) {
+    console.log("---------------- sendManagementEmail ----------------");
     const recipientsObjects: RecipientDto[] = await this.getEmployeeNumbersByPermission('management_time_off_template');
     console.log("recipientsObjects: ", recipientsObjects);
 

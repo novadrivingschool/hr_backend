@@ -30,7 +30,7 @@ export class OfficeSuppliesController {
 
     try {
       const result = await this.officeSuppliesService.findAll(q)
-      console.log(`✅ [OfficeSuppliesController] FIND ALL returned ${Array.isArray(result) ? result.length : 'unknown'} items`)
+      console.log(`✅ [OfficeSuppliesController] FIND ALL returned ${Array.isArray((result as any)?.data) ? (result as any).data.length : 'unknown'} items`)
       return result
     } catch (err) {
       console.error('❌ [OfficeSuppliesController] FIND ALL error:', err)

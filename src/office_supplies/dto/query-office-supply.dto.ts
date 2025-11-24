@@ -1,5 +1,6 @@
-import { IsOptional, IsString, IsDateString, IsInt, Min } from 'class-validator'
+import { IsOptional, IsString, IsDateString, IsInt, Min, IsEnum } from 'class-validator'
 import { Type } from 'class-transformer'
+import { SupplyStatus } from '../entities/office_supply.entity'
 
 export class QueryOfficeSupplyDto {
   @IsOptional() @IsString()
@@ -8,6 +9,12 @@ export class QueryOfficeSupplyDto {
   @IsOptional() @IsString()
   location?: string
 
+  // 🔹 Nuevo: filtrar por status
+  @IsOptional()
+  @IsEnum(SupplyStatus)
+  status?: SupplyStatus
+
+  // 🔹 Usaremos estas fechas contra os.createdAt (no requestDate)
   @IsOptional() @IsDateString()
   date_from?: string
 

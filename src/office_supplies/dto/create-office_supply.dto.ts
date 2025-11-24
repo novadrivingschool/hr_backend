@@ -47,4 +47,17 @@ export class CreateOfficeSupplyDto {
   @IsArray()
   @IsUrl({}, { each: true })
   links?: string[]
+
+  // ✅ NUEVO
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  attachments?: string[]
+
+  @IsOptional() @IsString()
+  notes?: string | null
+
+  @IsOptional() @IsString()
+  employee_number?: string | null
+
 }

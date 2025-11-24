@@ -23,6 +23,7 @@ import { TypeOfStaffModule } from './type_of_staff/type_of_staff.module';
 import { OfficeSuppliesModule } from './office_supplies/office_supplies.module';
 import { FacilitiesModule } from './facilities/facilities.module';
 import { Facility } from './facilities/entities/facility.entity';
+import { ChecklistModule } from './checklist/checklist.module';
 
 
 dotenv.config();
@@ -67,6 +68,7 @@ dotenv.config();
         __dirname + '/type_of_staff/entities/*.entity.{ts,js}',
         __dirname + '/OfficeSupply/entities/*.entity.{ts,js}',
         __dirname + '/Facility/entities/*.entity.{ts,js}',
+        __dirname + '/Checklist/entities/*.entity.{ts,js}',        
       ],
     }),
     ScheduleModule,
@@ -89,7 +91,8 @@ dotenv.config();
     TypeOfStaffModule,
     OfficeSuppliesModule,
     FacilitiesModule,
-    Facility
+    Facility,
+    ChecklistModule
   ],
 })
 export class AppModule { }

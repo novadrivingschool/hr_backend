@@ -68,10 +68,18 @@ export class OfficeSupply {
   })
   status: SupplyStatus
 
-  // ✅ NUEVO: links de referencia
-  @Column({
-    type: process.env.DB_TYPE === 'postgres' ? 'jsonb' : 'simple-json',
-    default: [],
-  })
+  // ✅ Links de referencia
+  @Column({ type: 'jsonb', default: [] })
   links: string[]
+
+  // ✅ Archivos adjuntos (imágenes o PDFs)
+  @Column({ type: 'jsonb', default: [] })
+  attachments: string[]
+
+  @Column({ type: 'text', nullable: true })
+  notes: string | null
+
+  @Column({ type: 'text', nullable: true })
+  employee_number: string | null
+
 }
