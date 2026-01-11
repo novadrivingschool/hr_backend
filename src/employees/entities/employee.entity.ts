@@ -58,4 +58,7 @@ export class Employee {
         default: () => "'[]'",
     })
     supervisors!: SupervisorRef[];
+
+    @Column()
+    type_of_job: string;
 }

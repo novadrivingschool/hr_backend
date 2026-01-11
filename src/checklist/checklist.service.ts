@@ -5,6 +5,7 @@ import { FindOptionsWhere, Repository } from 'typeorm';
 import { Checklist } from './entities/checklist.entity';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DateTime } from 'luxon';
+import axios from 'axios';
 
 @Injectable()
 export class ChecklistService {
@@ -85,12 +86,72 @@ export class ChecklistService {
     return this.mapWithChicago(row);
   }
 
+
+
   async create(dto: CreateChecklistDto) {
-    const entity = this.repo.create(dto as any);
+    console.log('🧾 create checklist');
+
+    // ✅ create devuelve UNA entidad
+    const entity = this.repo.create(dto);
+
+    // ✅ save(entity) devuelve UN Checklist (NO array)
     const saved = await this.repo.save(entity);
-    // tras guardar, devolvemos con fecha/hora (America/Chicago)
+
+    console.log('✅ checklist guardado:', saved);
+    console.log('🆔 checklist id:', saved.id); // ← AQUÍ ya no hay error
+
+    // ✅ ahora sí puedes usar saved.id
+    await this.sendChecklistEmail(String(saved.id));
+
     return this.mapWithChicago(saved);
   }
+
+
+  async sendChecklistEmail(id: string) {
+    const base = process.env.EMAIL_SERVICE_BASE;
+
+    console.log('📧 [ChecklistService] sendChecklistEmail');
+    console.log('🌐 EMAIL_SERVICE_BASE:', base);
+    console.log('🆔 Checklist ID:', id);
+
+    if (!base) {
+      console.error('❌ EMAIL_SERVICE_BASE no está definida');
+      throw new Error('EMAIL_SERVICE_BASE is not defined');
+    }
+
+    const url = `${base.replace(/\/+$/, '')}/mailer-send/checklist/${encodeURIComponent(id)}`;
+    console.log('➡️ POST', url);
+
+    try {
+      // ✅ IMPORTANTE: manda {} y no null
+      const response = await axios.post(url, {}, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 15000,
+      });
+
+      console.log('✅ Mailer status:', response.status);
+      console.log('📦 Mailer data:', response.data);
+
+      return { ok: true, status: response.status, data: response.data };
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const data = error?.response?.data;
+
+      console.error('🔥 Error enviando checklist email');
+      console.error('📡 status:', status);
+      console.error('📦 response data:', data);
+      console.error('🧨 message:', error?.message);
+
+      throw new Error(
+        data?.message ||
+        data?.error ||
+        error?.message ||
+        'Error sending checklist email'
+      );
+    }
+  }
+
+
 
   async update(id: string, dto: UpdateChecklistDto) {
     const row = await this.repo.findOne({ where: { id } as FindOptionsWhere<Checklist> });

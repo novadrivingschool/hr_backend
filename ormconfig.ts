@@ -21,6 +21,7 @@ import { TypeOfStaff } from 'src/type_of_staff/entities/type_of_staff.entity';
 import { OfficeSupply } from 'src/office_supplies/entities/office_supply.entity';
 import { Facility } from 'src/facilities/entities/facility.entity';
 import { Checklist } from 'src/checklist/entities/checklist.entity';
+import { ICare } from 'src/i-care/entities/i-care.entity';
 
 dotenv.config();
 
@@ -61,7 +62,8 @@ export const AppDataSource = new DataSource({
     TypeOfStaff,
     OfficeSupply,
     Facility,
-    Checklist
+    Checklist,
+    ICare
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

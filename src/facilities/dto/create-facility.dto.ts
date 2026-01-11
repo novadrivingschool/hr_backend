@@ -1,50 +1,26 @@
 // src/facilities/dto/create-facility.dto.ts
-import {
-  IsString,
-  IsNotEmpty,
-  IsDateString,
-  IsObject,
-  ValidateNested,
-  IsInt,
-  Min,
-  IsArray,
-} from 'class-validator'
-import { Type } from 'class-transformer'
-
-class MetaDto {
-  @IsInt() @Min(0)
-  totalTareas: number
-
-  @IsInt() @Min(0)
-  tareasMarcadas: number
-}
-
-class SeccionDto {
-  @IsString() @IsNotEmpty()
-  title: string
-
-  @IsArray()
-  @IsString({ each: true })
-  checked: string[] = []        // por si no llega, default array
-
-  // Puede no venir en el payload, pero la normalizamos a null en el service
-  notes?: string | null
-}
+import { IsString, IsNotEmpty, IsOptional, IsEnum, IsArray } from 'class-validator'
+import { FacilityStatus } from '../entities/facility.entity'
 
 export class CreateFacilityDto {
   @IsString() @IsNotEmpty()
   ubicacion: string
 
   @IsString() @IsNotEmpty()
-  responsable: string
+  request: string
 
-  @IsDateString()
-  fecha: string
+  @IsString() @IsNotEmpty()
+  fullName: string
 
-  @IsObject()
-  secciones: Record<string, SeccionDto>
+  @IsString() @IsNotEmpty()
+  employee_number: string
 
-  @ValidateNested()
-  @Type(() => MetaDto)
-  _meta: MetaDto
+  @IsOptional()
+  @IsEnum(FacilityStatus)
+  status?: FacilityStatus
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  attachments?: string[]
 }
