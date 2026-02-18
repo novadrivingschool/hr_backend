@@ -1,9 +1,12 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query, NotFoundException, BadRequestException, ParseArrayPipe } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, Query, NotFoundException, BadRequestException, ParseArrayPipe, HttpCode, HttpStatus } from '@nestjs/common';
 import { EmployeesService } from './employees.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeDto } from './dto/update-employee.dto';
 import { FindByRolesDto } from './dto/find-by-role.dto';
 import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
+import { SearchEmployeeDto } from './dto/filter-employee.dto';
+import { UpdateDanubanetDto } from './dto/update-danubanet.dto';
+import { SearchByDanubanetDto } from './dto/search-by-danubanet.dto';
 
 @Controller('employees')
 export class EmployeesController {
@@ -13,6 +16,18 @@ export class EmployeesController {
   findAll() {
     console.log("findAll employees")
     return this.employeesService.findAll();
+  }
+
+  @Post('search')
+  @HttpCode(HttpStatus.OK)
+  async search(@Body() searchDto: SearchEmployeeDto) {
+    return this.employeesService.filter(searchDto);
+  }
+
+  @Post('danubanet/search')
+  @HttpCode(HttpStatus.OK)
+  async searchByDanubanet(@Body() searchDto: SearchByDanubanetDto) {
+    return this.employeesService.searchByDanubanet(searchDto.danubanet_names);
   }
 
   /* @Get('department/:department')
@@ -98,6 +113,17 @@ export class EmployeesController {
     return this.employeesService.updateEquipmentStatusByEmployeeNumber(
       employeeNumber,
       dto,
+    );
+  }
+
+  @Patch(':employee_number/danubanet-name')
+  async updateDanubanetName(
+    @Param('employee_number') employeeNumber: string,
+    @Body() updateDanubanetDto: UpdateDanubanetDto,
+  ) {
+    return this.employeesService.updateDanubanetName(
+      employeeNumber, 
+      updateDanubanetDto.danubanet_name_1
     );
   }
 }

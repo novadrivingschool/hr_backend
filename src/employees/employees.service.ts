@@ -4,6 +4,7 @@ import { Brackets, ILike, In, Raw, Repository } from 'typeorm';
 import { Employee } from './entities/employee.entity';
 import { FindByRolesDto } from './dto/find-by-role.dto';
 import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
+import { SearchEmployeeDto } from './dto/filter-employee.dto';
 
 type EmpMinimal = { name: string; last_name: string; employee_number: string };
 
@@ -227,50 +228,6 @@ export class EmployeesService {
       .getMany();
   }
 
-  // employees.service.ts
-  /* async findActiveManagersAndCoordinatorsEmails(dto: FindByRolesDto): Promise<string[]> {
-    const depts = (dto.departments || []).map(d => (d ?? '').trim()).filter(Boolean);
-    const deptsLower = depts.map(d => d.toLowerCase());
-    if (deptsLower.length === 0) {
-      throw new BadRequestException('At least one department is required');
-    }
-
-    // Trae solo los correos, únicos, no vacíos y en minúsculas
-    const rows = await this.employeeRepo
-      .createQueryBuilder('e')
-      .select('DISTINCT LOWER(TRIM(e.nova_email))', 'email') // <-- solo emails únicos
-      .where('e.status = :active', { active: 'Active' })
-      .andWhere(`NULLIF(TRIM(e.nova_email), '') IS NOT NULL`) // <-- evita vacíos
-      .andWhere(
-        `
-      (        
-        -- Coordinators SOLO si hay intersección con departments enviados
-        (
-          e.position = :coordinator
-          AND EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements_text(
-                   CASE
-                     WHEN jsonb_typeof(e.multi_department::jsonb) = 'array'
-                     THEN e.multi_department::jsonb
-                     ELSE '[]'::jsonb
-                   END
-                 ) AS d(val)
-            WHERE TRIM(LOWER(d.val)) IN (:...deptsLower)
-          )
-        )
-      )
-      `,
-        {
-          coordinator: 'Coordinator',
-          deptsLower,
-        },
-      )
-      .orderBy('1', 'ASC') // opcional: ordena alfabéticamente por el alias 'email'
-      .getRawMany<{ email: string }>();
-
-    return rows.map(r => r.email);
-  } */
   async findCoordinatorsEmailsByDepartments(
     dto: { departments: string[] }
   ): Promise<string[]> {
@@ -407,7 +364,139 @@ export class EmployeesService {
     });
   }
 
+  async filter(params: SearchEmployeeDto) {
+    // 1. Extraer metadata y el objeto de filtros
+    const { page = 1, limit = 10, filters = {} } = params;
+    const skip = (page - 1) * limit;
 
+    // 2. Crear QueryBuilder y SELECCIONAR solo las columnas necesarias
+    const qb = this.employeeRepo.createQueryBuilder('employee')
+      .select([
+        'employee.id',
+        'employee.employee_number',
+        'employee.name',
+        'employee.last_name',
+        'employee.nova_email',
+        'employee.danubanet_name_1',
+        'employee.danubanet_name_2'
+      ]);
 
+    // 3. Iterar sobre las llaves del objeto 'filters' de forma segura
+    Object.keys(filters).forEach((key) => {
+      const value = filters[key];
 
+      // Ignorar valores vacíos, nulos o indefinidos
+      if (value === undefined || value === null || value === '') return;
+
+      // Verificar existencia de la columna en la base de datos (Seguridad)
+      const column = this.employeeRepo.metadata.findColumnWithPropertyName(key);
+
+      if (column) {
+        const paramName = `param_${key}`;
+
+        // Lógica de tipos para armar el SQL correcto
+        if (column.type === 'jsonb' || column.type === 'json') {
+          // Arrays JSONB (ej: multi_position, multi_department)
+          const jsonValue = Array.isArray(value) ? JSON.stringify(value) : JSON.stringify([value]);
+          qb.andWhere(`employee.${key}::jsonb @> :${paramName}::jsonb`, { [paramName]: jsonValue });
+        }
+        else if (column.type === String || column.type === 'varchar' || column.type === 'text') {
+          // Strings: Búsqueda parcial (ej: nombre, email)
+          qb.andWhere(`employee.${key} ILIKE :${paramName}`, { [paramName]: `%${value}%` });
+        }
+        else if (column.type === Boolean || column.type === 'boolean') {
+          // Booleanos (ej: status si lo manejas como bool, has_assigned_equipment)
+          const boolValue = value === 'true' || value === true;
+          qb.andWhere(`employee.${key} = :${paramName}`, { [paramName]: boolValue });
+        }
+        else {
+          // Números, Fechas, etc. (Búsqueda exacta)
+          qb.andWhere(`employee.${key} = :${paramName}`, { [paramName]: value });
+        }
+      }
+    });
+
+    // 4. Ordenamiento por defecto
+    qb.orderBy('employee.id', 'DESC');
+
+    // 5. Ejecutar la consulta con la paginación
+    const [data, total] = await qb
+      .skip(skip)
+      .take(limit)
+      .getManyAndCount();
+
+    // 6. Retornar la respuesta estructurada
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        last_page: Math.ceil(total / limit)
+      },
+    };
+  }
+
+  async updateDanubanetName(employeeNumber: string, danubanetName: string) {
+    // 1. Buscamos al empleado por su número de empleado (ej. "NOVANT164810")
+    const employee = await this.employeeRepo.findOne({
+      where: { employee_number: employeeNumber },
+      select: ['id', 'employee_number', 'name', 'last_name', 'danubanet_name_1']
+    });
+
+    // Si no existe, lanzamos el error 404
+    if (!employee) {
+      throw new NotFoundException(`Empleado con número ${employeeNumber} no encontrado.`);
+    }
+
+    // 2. Actualizamos el valor
+    employee.danubanet_name_1 = danubanetName;
+
+    // 3. Guardamos en la base de datos
+    await this.employeeRepo.save(employee);
+
+    // 4. Retornamos la respuesta
+    return {
+      message: 'Danubanet name actualizado correctamente',
+      data: {
+        employee_number: employee.employee_number,
+        name: employee.name,
+        danubanet_name_1: employee.danubanet_name_1
+      }
+    };
+  }
+
+  async searchByDanubanet(names: string[]) {
+    // Iniciamos la consulta y seleccionamos las propiedades requeridas
+    const qb = this.employeeRepo.createQueryBuilder('employee')
+      .select([
+        'employee.id',
+        'employee.employee_number',
+        'employee.name',
+        'employee.last_name',
+        'employee.nova_email',
+        'employee.danubanet_name_1',
+        'employee.danubanet_name_2'
+      ]);
+
+    // Buscamos si ALGUNO de los nombres provistos hace match con el campo 1 O el campo 2
+    // Usamos la sintaxis IN (:...names) de TypeORM para manejar arreglos
+    qb.where('employee.danubanet_name_1 IN (:...names)', { names })
+      .orWhere('employee.danubanet_name_2 IN (:...names)', { names });
+
+    // Ordenamos por ID para mantener consistencia
+    qb.orderBy('employee.id', 'DESC');
+
+    // Ejecutamos la consulta
+    const employees = await qb.getMany();
+
+    // Retornamos la data estructurada
+    return {
+      data: employees,
+      meta: {
+        total: employees.length,
+        matched_names_provided: names.length
+      }
+    };
+  }
 }
