@@ -476,7 +476,8 @@ export class EmployeesService {
         'employee.last_name',
         'employee.nova_email',
         'employee.danubanet_name_1',
-        'employee.danubanet_name_2'
+        'employee.danubanet_name_2',
+        'employee.address'
       ]);
 
     // Buscamos si ALGUNO de los nombres provistos hace match con el campo 1 O el campo 2
