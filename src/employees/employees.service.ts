@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, ILike, In, Raw, Repository } from 'typeorm';
+import { ArrayOverlap, Brackets, ILike, In, Raw, Repository } from 'typeorm';
 import { Employee } from './entities/employee.entity';
 import { FindByRolesDto } from './dto/find-by-role.dto';
 import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
@@ -326,35 +326,33 @@ export class EmployeesService {
 
   /**
  * Busca empleados con status 'Active' por posición.
- * - exact=false (default): ILIKE '%position%'
- * - exact=true: comparación exacta case-insensitive
  */
-  async findActiveByPosition(positions: string[], opts?: { exact?: boolean }) {
-    const { exact = false } = opts || {};
+  async findActiveByPosition(positions: string | string[]) {
+    console.log('>>> [findActiveByPosition] positions input:', positions);
+    const positionsArray = Array.isArray(positions) ? positions : [positions];
+    const validPositions = positionsArray.filter(p => p && p.trim() !== '');
 
-    // Aseguramos que positions sea un array de strings
-    if (!Array.isArray(positions) || positions.length === 0) {
-      throw new Error('At least one position is required');
-    }
-
-    let where;
-
-    if (exact) {
-      // Si exact es true, usamos LOWER para comparación exacta insensible a mayúsculas/minúsculas
-      where = {
-        status: 'Active',
-        position: Raw((alias) => `LOWER(${alias}) IN (:...positions)`, { positions: positions.map(p => p.toLowerCase()) }),
-      };
-    } else {
-      // Si exact es false, usamos ILIKE para comparación insensible a mayúsculas/minúsculas
-      where = {
-        status: 'Active',
-        position: In(positions),
-      };
+    if (validPositions.length === 0) {
+      throw new BadRequestException('At least one valid position is required');
     }
 
     return this.employeeRepo.find({
-      where,
+      where: {
+        status: 'Active',
+        multi_position: Raw(
+          (alias) => {
+            // El alias llega como "Employee.multi_position". 
+            // Lo separamos y lo envolvemos en comillas: '"Employee"."multi_position"'
+            const quotedAlias = alias
+              .split('.')
+              .map((part) => `"${part.replace(/"/g, '')}"`) // Quitamos comillas previas por si acaso
+              .join('.');
+
+            return `EXISTS (SELECT 1 FROM jsonb_array_elements_text(${quotedAlias}::jsonb) AS element WHERE element IN (:...validPositions))`;
+          },
+          { validPositions }
+        ),
+      },
       order: { last_name: 'ASC', name: 'ASC' },
       select: {
         name: true,

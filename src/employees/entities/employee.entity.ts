@@ -63,7 +63,7 @@ export class Employee {
     type_of_job: string;
 
     @Column({ length: 100, default: '' })
-    role: string;
+    roles: string;
 
     @Column({ length: 100, default: 'Employee' })
     permissions: string;

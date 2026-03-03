@@ -30,6 +30,7 @@ export class EmployeeScheduleController {
 
   @Get('employees/list')
   async getEmployeesList() {
+    console.log('Fetching employees list for');
     return this.scheduleService.getEmployeesList();
   }
 }

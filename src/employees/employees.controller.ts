@@ -79,20 +79,20 @@ export class EmployeesController {
 
   @Get('position')
   async findActiveByPosition(
-    @Query('position') position: string, // Este parámetro será una cadena de texto
-    @Query('exact') exact?: string, // "true" | "false" (opcional)
+    @Query('position') position: string | string[],
   ) {
-    if (!position || !String(position).trim()) {
+    if (!position) {
       throw new BadRequestException('Query param "position" is required');
     }
 
-    // Convertimos el string de posiciones separadas por comas en un array
-    const positionsArray = position.split(',').map(p => p.trim());
+    // Si mandan '?position=Manager,Developer', lo separamos por comas.
+    // Si mandan '?position=Manager&position=Developer', ya es un array.
+    const positionsToPass = typeof position === 'string'
+      ? position.split(',').map(p => p.trim())
+      : position;
 
-    const isExact = String(exact).toLowerCase() === 'true';
-
-    // Pasamos el array de posiciones al servicio
-    return this.employeesService.findActiveByPosition(positionsArray, { exact: isExact });
+    // Llamamos al servicio pasando únicamente las posiciones
+    return this.employeesService.findActiveByPosition(positionsToPass);
   }
 
   // GET /employees/:employeeNumber/supervisors/emails  → string[]
@@ -122,7 +122,7 @@ export class EmployeesController {
     @Body() updateDanubanetDto: UpdateDanubanetDto,
   ) {
     return this.employeesService.updateDanubanetName(
-      employeeNumber, 
+      employeeNumber,
       updateDanubanetDto.danubanet_name_1
     );
   }
