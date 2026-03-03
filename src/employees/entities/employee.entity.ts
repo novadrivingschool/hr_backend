@@ -62,8 +62,8 @@ export class Employee {
     @Column({ length: 100, default: '' })
     type_of_job: string;
 
-    @Column({ length: 100, default: '' })
-    roles: string;
+    @Column({ type: 'jsonb', nullable: false, default: [] })
+    roles: string[];
 
     @Column({ length: 100, default: 'Employee' })
     permissions: string;
