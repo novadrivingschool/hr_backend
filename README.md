@@ -52,28 +52,28 @@ $ npm run test:cov
 ```
 
 ## Develping Docker
-docker build -t hr_backend_dev .
-docker run --name hr_backend_dev \
+docker build -t hr-api-dev .
+docker run --name hr-api-dev \
   -d \
   -p 5006:5006 \
   --restart always \
   -v $(pwd)/.env:/usr/src/app/.env \
-  hr_backend_dev
+  hr-api-dev
 
-docker logs hr_backend_dev -f
+docker logs hr-api-dev -f
 
-docker run --name hr_backend_dev -d -p 5006:5006 --restart always hr_backend_dev
+docker run --name hr-api-dev -d -p 5006:5006 --restart always hr-api-dev
 
 
 ## Production
-docker build -t hr_backend .
-docker run --name hr_backend \
+docker build -t hr-api-dev .
+docker run --name hr-api-dev \
   -d \
   -p 5006:5006 \
   --restart always \
   -v $(pwd)/.env:/usr/src/app/.env \
-  hr_backend
+  hr-api-dev
 
-docker logs hr_backend -f
+docker logs hr-api-dev -f
 
 docker system prune -a --volumes

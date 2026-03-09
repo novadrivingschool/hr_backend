@@ -22,6 +22,9 @@ import { OfficeSupply } from 'src/office_supplies/entities/office_supply.entity'
 import { Facility } from 'src/facilities/entities/facility.entity';
 import { Checklist } from 'src/checklist/entities/checklist.entity';
 import { ICare } from 'src/i-care/entities/i-care.entity';
+import { Employee } from 'src/employees/entities/employee.entity';
+import { CrmPermissions } from 'src/employees/entities/crm-permissions.entity';
+import { ICareReason } from 'src/i_care_reasons/entities/i_care_reason.entity';
 
 dotenv.config();
 
@@ -63,7 +66,10 @@ export const AppDataSource = new DataSource({
     OfficeSupply,
     Facility,
     Checklist,
-    ICare
+    ICare,
+    Employee,
+    CrmPermissions,
+    ICareReason
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

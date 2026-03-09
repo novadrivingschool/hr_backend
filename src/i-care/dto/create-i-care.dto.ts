@@ -1,12 +1,12 @@
-import { 
-  IsString, 
-  IsNotEmpty, 
-  IsOptional, 
-  IsEmail, 
-  IsArray, 
-  IsDateString, 
-  IsObject, 
-  ValidateNested 
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsEmail,
+  IsArray,
+  IsDateString,
+  IsObject,
+  ValidateNested
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -77,9 +77,15 @@ export class CreateICareDto {
   @IsNotEmpty()
   department: string;
 
-  @IsString()
+  @IsArray()
   @IsNotEmpty()
-  staffType: string;
+  @IsString({ each: true })
+  staffType: string[];
+
+  @IsArray()
+  @IsNotEmpty()
+  @IsString({ each: true })
+  multi_position: string[];
 
   @IsString()
   @IsNotEmpty()

@@ -25,6 +25,8 @@ import { FacilitiesModule } from './facilities/facilities.module';
 import { Facility } from './facilities/entities/facility.entity';
 import { ChecklistModule } from './checklist/checklist.module';
 import { ICareModule } from './i-care/i-care.module';
+import { EmployeesV2Module } from './employees/employees-v2.module';
+import { ICareReasonsModule } from './i_care_reasons/i_care_reasons.module';
 
 
 dotenv.config();
@@ -69,8 +71,11 @@ dotenv.config();
         __dirname + '/type_of_staff/entities/*.entity.{ts,js}',
         __dirname + '/OfficeSupply/entities/*.entity.{ts,js}',
         __dirname + '/Facility/entities/*.entity.{ts,js}',
-        __dirname + '/Checklist/entities/*.entity.{ts,js}',     
+        __dirname + '/Checklist/entities/*.entity.{ts,js}',
         __dirname + '/i-care/entities/*.entity.{ts,js}',
+        __dirname + '/employees/entities/*.entity.{ts,js}', // <-- Solo las entidades de Employees
+        __dirname + '/employees/entities/crm-permissions.entity.{ts,js}', // <-- Solo si quieres que esta también entre en migraciones
+        __dirname + '/i_care_reasons/entities/*.entity.{ts,js}', // <-- Solo las entidades de ICareReasons
       ],
     }),
     ScheduleModule,
@@ -95,7 +100,9 @@ dotenv.config();
     FacilitiesModule,
     Facility,
     ChecklistModule,
-    ICareModule
+    ICareModule,
+    EmployeesV2Module,
+    ICareReasonsModule
   ],
 })
 export class AppModule { }

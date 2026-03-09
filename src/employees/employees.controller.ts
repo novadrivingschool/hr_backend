@@ -105,6 +105,19 @@ export class EmployeesController {
     return emails; // solo array de emails
   }
 
+  @Patch(':employee_number')
+  async updateEmployee(
+    @Param('employee_number') employeeNumber: string,
+    @Body() updateEmployeeDto: UpdateEmployeeDto,
+  ) {
+    console.log(`Actualizando empleado: ${employeeNumber}`, updateEmployeeDto);
+
+    return this.employeesService.updateEmployeeByNumber(
+      employeeNumber,
+      updateEmployeeDto
+    );
+  }
+
   @Patch(':employeeNumber/equipment-status')
   async updateEquipmentStatusByEmployeeNumber(
     @Param('employeeNumber') employeeNumber: string,

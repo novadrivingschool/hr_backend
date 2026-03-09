@@ -5,6 +5,7 @@ import { Employee } from './entities/employee.entity';
 import { FindByRolesDto } from './dto/find-by-role.dto';
 import { UpdateEquipmentStatusDto } from './dto/update-equipment-status.dto';
 import { SearchEmployeeDto } from './dto/filter-employee.dto';
+import { UpdateEmployeeDto } from './dto/update-employee.dto';
 
 type EmpMinimal = { name: string; last_name: string; employee_number: string };
 
@@ -496,6 +497,26 @@ export class EmployeesService {
         total: employees.length,
         matched_names_provided: names.length
       }
+    };
+  }
+
+  async updateEmployeeByNumber(employeeNumber: string, updateDto: UpdateEmployeeDto) {
+    // 1. Ejecutamos el update directamente usando el employee_number
+    const updateResult = await this.employeeRepo.update(
+      { employee_number: employeeNumber },
+      updateDto
+    );
+
+    // 2. Si affected es 0, significa que no encontró el empleado
+    if (updateResult.affected === 0) {
+      throw new NotFoundException(`Employee with number ${employeeNumber} not found`);
+    }
+
+    // 3. Opcional: Retornar el empleado actualizado o un mensaje de éxito
+    return {
+      success: true,
+      message: `Employee ${employeeNumber} updated successfully`,
+      updatedFields: Object.keys(updateDto)
     };
   }
 }
