@@ -8,4 +8,5 @@ export enum StatusEnum {
   Pending = 'Pending',
   Approved = 'Approved',
   NotApproved = 'Not Approved',
+  Cancelled = 'Cancelled',
 }

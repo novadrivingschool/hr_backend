@@ -6,30 +6,13 @@ import {
   IsArray,
   IsDateString,
   IsObject,
-  ValidateNested
+  ValidateNested,
+  IsBoolean,
+  IsEnum,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ICareStatus, ICareUrgency } from '../entities/i-care.entity';
 
-// DTO para Responsible
-export class ResponsibleDto {
-  @IsString()
-  @IsNotEmpty()
-  name: string;
-
-  @IsString()
-  @IsNotEmpty()
-  last_name: string;
-
-  @IsString()
-  @IsNotEmpty()
-  employee_number: string;
-
-  @IsEmail()
-  @IsNotEmpty()
-  nova_email: string;
-}
-
-// DTO para Person (submitter y staff_name)
 export class PersonDto {
   @IsString()
   @IsNotEmpty()
@@ -48,10 +31,12 @@ export class PersonDto {
   nova_email: string;
 }
 
+export class ResponsibleDto extends PersonDto {}
+
 export class CreateICareDto {
-  @IsString()
+  @IsEnum(ICareUrgency)
   @IsNotEmpty()
-  urgency: string;
+  urgency: ICareUrgency;
 
   @IsDateString()
   @IsNotEmpty()
@@ -62,30 +47,31 @@ export class CreateICareDto {
   @Type(() => PersonDto)
   submitter: PersonDto;
 
+  @IsOptional()
   @IsObject()
   @ValidateNested()
   @Type(() => PersonDto)
-  @IsOptional()
-  staff_name?: PersonDto; // NUEVO: Staff's Name
+  staff_name?: PersonDto;
 
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ResponsibleDto)
-  responsible: ResponsibleDto[];
+  responsible?: ResponsibleDto[];
 
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  department: string;
+  department?: string;
 
+  @IsOptional()
   @IsArray()
-  @IsNotEmpty()
   @IsString({ each: true })
-  staffType: string[];
+  staffType?: string[];
 
+  @IsOptional()
   @IsArray()
-  @IsNotEmpty()
   @IsString({ each: true })
-  multi_position: string[];
+  multi_position?: string[];
 
   @IsString()
   @IsNotEmpty()
@@ -106,4 +92,47 @@ export class CreateICareDto {
   @IsOptional()
   @IsArray()
   attachments?: any[];
+
+  @IsOptional()
+  @IsEnum(ICareStatus)
+  status?: ICareStatus;
+
+  @IsOptional()
+  @IsBoolean()
+  committed?: boolean;
+
+  @IsOptional()
+  @IsString()
+  committed_date?: string;
+
+  @IsOptional()
+  @IsString()
+  committed_time?: string;
+
+  @IsOptional()
+  @IsString()
+  committed_notes?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  justified?: boolean;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => PersonDto)
+  justified_approved_by?: PersonDto;
+
+  @IsOptional()
+  @IsString()
+  justified_date?: string;
+
+  @IsOptional()
+  @IsString()
+  justified_time?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  justified_comments?: string[];
 }

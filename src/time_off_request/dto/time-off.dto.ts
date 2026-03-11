@@ -3,7 +3,7 @@
 export type TimeType = 'Days' | 'Hours';
 
 // Status sí lo dejamos restringido porque es fijo en el flujo
-export type StatusType = 'Pending' | 'Approved' | 'Not Approved';
+export type StatusType = 'Pending' | 'Approved' | 'Not Approved' | 'Cancelled';
 
 export interface EmployeeDataDto {
     name: string;
@@ -69,7 +69,7 @@ export interface SendTimeOffTemplateDto {
     subject?: string;
     formData: CreateTimeOffRequestSavedDto;
     /** ← NUEVO */
-    actor?: 'HR' | 'Coordinator' | 'System';
+    actor?: 'HR' | 'Coordinator' | 'System' | 'Staff';
 }
 
 export interface SendTimeOffTemplateObjDto {
@@ -78,7 +78,7 @@ export interface SendTimeOffTemplateObjDto {
     subject?: string;
     formData: CreateTimeOffRequestSavedDto;
     /** ← NUEVO */
-    actor?: 'HR' | 'Coordinator' | 'System';
+    actor?: 'HR' | 'Coordinator' | 'System' ;
 }
 
 export interface SendTemplateResponse {

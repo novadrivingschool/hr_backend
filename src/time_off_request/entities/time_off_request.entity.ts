@@ -86,4 +86,13 @@ export class TimeOffRequest {
     @Column({ type: 'text', nullable: true })
     hr_comments: string;
 
+    @Column({ type: 'jsonb', nullable: true })
+    cancellation_info: {
+        cancelled_by: string;        // employee_number o nombre
+        role: 'staff' | 'hr' | 'coordinator';
+        reason?: string;
+        date: string;
+        time: string;
+    } | null;
+
 }

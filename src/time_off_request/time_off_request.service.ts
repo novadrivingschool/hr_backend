@@ -174,73 +174,80 @@ export class TimeOffRequestService {
     coordinator_comments: string,
   ): Promise<{ message: string; data: TimeOffRequest }> {
     try {
-      console.log("---------------------------------");
-      console.log("Approving by COORDINATOR")
-      console.log("id: ", id)
-      console.log("coordinator_comments: ", coordinator_comments)
-      console.log("approved: ", approved)
-      console.log("---------------------------------");
-      const request = await this.findOne(id);
+      console.log('---------------------------------');
+      console.log('Approving by COORDINATOR');
+      console.log('id:', id);
+      console.log('approved:', approved);
+      console.log('coordinator_comments:', coordinator_comments);
+      console.log('---------------------------------');
 
-      if (!request) {
-        throw new NotFoundException(`Time-off request with ID ${id} not found`);
-      }
+      const request = await this.findOne(id);
+      if (!request) throw new NotFoundException(`Time-off request with ID ${id} not found`);
 
       const chicagoNow = moment().tz('America/Chicago');
-      /* request.coordinator_approval = { approved, by };       */
+
+      // ── Stage 1 ────────────────────────────────────────────────────
       request.coordinator_approval = {
         approved,
         by,
         date: chicagoNow.format('YYYY-MM-DD'),
         time: chicagoNow.format('HH:mm:ss'),
       };
+      request.coordinator_comments = coordinator_comments;
 
-      console.log("approved: ", approved);
-      console.log("coordinator_comments: ", coordinator_comments);
-
-      if (!approved) {
-        request.hr_comments = `Not approved by Coordinator ${by}`
-        request.status = StatusEnum.NotApproved;//'Not Approved';
+      if (approved) {
+        // ✅ Coordinator aprueba Stage 1 → TOR sigue Pending, espera HR (Stage 2)
+        // hr_approval NO se toca — sigue { approved: false, by: '' }
+      } else {
+        // ❌ Coordinator rechaza → cierra AMBOS stages → TOR = Not Approved
         request.hr_approval = {
-          approved,
+          approved: false,
           by,
           date: chicagoNow.format('YYYY-MM-DD'),
           time: chicagoNow.format('HH:mm:ss'),
         };
+        request.hr_comments = `Not approved by Coordinator: ${by}`;
+        request.status = StatusEnum.NotApproved;
       }
-      request.coordinator_comments = coordinator_comments;
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
-      console.log("updatedRequest: ", updatedRequest);
+      console.log('updatedRequest:', updatedRequest);
 
-
+      // ── Notificaciones ─────────────────────────────────────────────
+      // Si aprobó Stage 1 → avisa a HR para que pasen al Stage 2
       if (approved) {
-        /* GET HR EMAILS */
-        const res = await this.sendHrEmail(updatedRequest);
-        console.log("res: ", res);
+        try {
+          await this.sendHrEmail(updatedRequest);
+        } catch (err) {
+          this.logger.warn(`[approveByCoordinator] HR email failed (non-blocking): ${err?.message}`);
+        }
+      }
+
+      // Siempre avisa a Management (jerarquía mayor)
+      try {
+        await this.sendManagementEmail(updatedRequest);
+      } catch (err) {
+        this.logger.warn(`[approveByCoordinator] Management email failed (non-blocking): ${err?.message}`);
+      }
+
+      // Siempre avisa al Staff
+      try {
         await this.apiClient.sendStaffTemplate({
           templateName: 'time_off_staff_notification',
           formData: { ...updatedRequest },
-          actor: 'Coordinator'
+          actor: 'Coordinator',
         });
-      } else {
-        /* SEND NOTIFICATION TO STAFF */
-        await this.apiClient.sendStaffTemplate({
-          templateName: 'time_off_staff_notification',
-          formData: { ...updatedRequest },
-          actor: 'Coordinator'
-        });
+      } catch (err) {
+        this.logger.warn(`[approveByCoordinator] Staff notification failed (non-blocking): ${err?.message}`);
       }
 
       return {
-        message: `Time-off request ${approved ? 'approved' : 'rejected'} successfully by ${by}`,
-        data: updatedRequest
+        message: `Time-off request ${approved ? 'approved (Stage 1 — awaiting HR)' : 'rejected'} by ${by}`,
+        data: updatedRequest,
       };
-    } catch (error) {
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
 
+    } catch (error) {
+      if (error instanceof NotFoundException) throw error;
       throw new InternalServerErrorException('An error occurred while approving the request by coordinator');
     }
   }
@@ -278,28 +285,21 @@ export class TimeOffRequestService {
 
   }
 
-  async approveByHR(id: string, approved: boolean, by: string, hr_comments: string): Promise<TimeOffRequest> {
+  async approveByHR(
+    id: string,
+    approved: boolean,
+    by: string,
+    hr_comments: string,
+  ): Promise<TimeOffRequest> {
     try {
       const request = await this.findOne(id);
-
-      /* request.hr_approval = { approved, by }; */
       const chicagoNow = moment().tz('America/Chicago');
 
-      request.hr_approval = {
-        approved,
-        by,
-        date: chicagoNow.format('YYYY-MM-DD'),
-        time: chicagoNow.format('HH:mm:ss'),
-      };
-
-      if (request.coordinator_approval.approved === false) {
-        let statusFromHr = false;
-        if (approved) {
-          statusFromHr = true;
-        }
-
+      // ✅ Solo sobreescribe Stage 1 si AÚN NO fue aprobado por coordinator
+      // Si coordinator ya actuó → respeta su historial (nombre, fecha, comentarios)
+      if (!request.coordinator_approval?.approved) {
         request.coordinator_approval = {
-          approved: statusFromHr,
+          approved,
           by,
           date: chicagoNow.format('YYYY-MM-DD'),
           time: chicagoNow.format('HH:mm:ss'),
@@ -307,25 +307,39 @@ export class TimeOffRequestService {
         request.coordinator_comments = hr_comments;
       }
 
-      //request.status = approved ? 'Approved' : 'Not Approved';
-      request.status = approved ? StatusEnum.Approved : StatusEnum.NotApproved;
+      // ✅ Siempre setea Stage 2 (HR/Management/SuperCoordinator)
+      request.hr_approval = {
+        approved,
+        by,
+        date: chicagoNow.format('YYYY-MM-DD'),
+        time: chicagoNow.format('HH:mm:ss'),
+      };
       request.hr_comments = hr_comments;
+
+      request.status = approved ? StatusEnum.Approved : StatusEnum.NotApproved;
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
 
-      //////////////////////////////////////////////////
-      /* GET MANAGEMENT EMAILS */
-      const res = await this.sendManagementEmail(updatedRequest);
-      console.log("res: ", res);
+      // Siempre avisa a Management
+      try {
+        await this.sendManagementEmail(updatedRequest);
+      } catch (err) {
+        this.logger.warn(`[approveByHR] Management email failed (non-blocking): ${err?.message}`);
+      }
 
-      /* SEND NOTIFICATION TO STAFF */
-      await this.apiClient.sendStaffTemplate({
-        templateName: 'time_off_staff_notification',
-        formData: { ...updatedRequest },
-        actor: 'HR'
-      });////////////////////////////////////////////////
+      // Siempre avisa al Staff
+      try {
+        await this.apiClient.sendStaffTemplate({
+          templateName: 'time_off_staff_notification',
+          formData: { ...updatedRequest },
+          actor: 'HR',
+        });
+      } catch (err) {
+        this.logger.warn(`[approveByHR] Staff notification failed (non-blocking): ${err?.message}`);
+      }
 
       return updatedRequest;
+
     } catch (error) {
       this.logger.error(`HR approval failed for request ID ${id}`, error.stack);
       throw new InternalServerErrorException('Error approving by HR');
@@ -518,6 +532,8 @@ export class TimeOffRequestService {
       query
         .andWhere(`request.status = 'Not Approved'`)
         .andWhere(`request.hr_approval ->> 'approved' = 'false'`);
+    } else if (s === 'cancelled') {     // ✅ caso nuevo
+      query.andWhere(`request.status = 'Cancelled'`);
     }
 
     return query.getMany();
@@ -695,6 +711,150 @@ export class TimeOffRequestService {
     }
   }
 
+  // Reemplaza el método cancelRequest existente
+  async cancelRequest(
+    id: string,
+    cancelled_by: string,
+    role: 'staff' | 'hr' | 'coordinator',
+    reason?: string,
+  ): Promise<{ message: string; data: TimeOffRequest }> {
+    const request = await this.findOne(id);
+
+    // ✅ Ahora Pending Y Approved pueden cancelarse
+    const cancellableStatuses: StatusEnum[] = [StatusEnum.Pending, StatusEnum.Approved];
+    if (!cancellableStatuses.includes(request.status)) {
+      throw new BadRequestException(
+        `Cannot cancel a request with status "${request.status}". Only Pending or Approved requests can be cancelled.`,
+      );
+    }
+
+    const chicagoNow = moment().tz('America/Chicago');
+    request.status = StatusEnum.Cancelled;
+    request.cancellation_info = {
+      cancelled_by,
+      role,
+      reason: reason ?? '',
+      date: chicagoNow.format('YYYY-MM-DD'),
+      time: chicagoNow.format('HH:mm:ss'),
+    };
+
+    const updated = await this.timeOffRequestRepo.save(request);
+
+    try {
+      await this.apiClient.sendStaffTemplate({
+        templateName: 'time_off_staff_notification',
+        formData: { ...updated },
+        actor: role === 'hr' ? 'HR' : role === 'coordinator' ? 'Coordinator' : 'System',
+      });
+    } catch (err) {
+      this.logger.warn(`Cancel notification failed for request ${id}: ${err?.message}`);
+    }
+
+    return {
+      message: `Time-off request cancelled by ${cancelled_by} (${role})`,
+      data: updated,
+    };
+  }
+
+  // ✅ NUEVO método reopenRequest
+  async reopenRequest(
+    id: string,
+    reopened_by: string,
+  ): Promise<{ message: string; data: TimeOffRequest }> {
+    const request = await this.findOne(id);
+
+    const reopenableStatuses: StatusEnum[] = [StatusEnum.NotApproved, StatusEnum.Cancelled];
+    if (!reopenableStatuses.includes(request.status)) {
+      throw new BadRequestException(
+        `Cannot reopen a request with status "${request.status}". Only Not Approved or Cancelled requests can be reopened.`,
+      );
+    }
+
+    const chicagoNow = moment().tz('America/Chicago');
+
+    request.status = StatusEnum.Pending;
+    request.coordinator_approval = { approved: false, by: '', date: '', time: '' };
+    request.hr_approval = { approved: false, by: '', date: '', time: '' };
+    request.coordinator_comments = '';   // ✅ string vacío en lugar de null
+    request.hr_comments = '';   // ✅ string vacío en lugar de null
+    request.cancellation_info = null; // este sí acepta null según la entity
+
+    const updated = await this.timeOffRequestRepo.save(request);
+
+    try {
+      await this.sentCoordinatorRequest(updated as any);
+    } catch (err) {
+      this.logger.warn(`Reopen coordinator notification failed for request ${id}: ${err?.message}`);
+    }
+
+    return {
+      message: `Time-off request reopened by ${reopened_by}`,
+      data: updated,
+    };
+  }
+
+  async getKpiCounts(multi_department: string[] = []): Promise<{
+    pendingCoordinator: number;
+    pendingHR: number;
+    approved: number;
+    notApproved: number;
+    cancelled: number;
+    total: number;
+  }> {
+    const base = this.timeOffRequestRepo.createQueryBuilder('request');
+
+    // Filtro de departamento si aplica
+    const applyDeptFilter = (qb: typeof base) => {
+      const depts = multi_department.map(d => d.trim()).filter(Boolean);
+      if (depts.length > 0) {
+        qb.andWhere(new Brackets(sqb => {
+          depts.forEach((d, i) => {
+            sqb.orWhere(`(request.employee_data -> 'multi_department') @> :dept${i}`, {
+              [`dept${i}`]: JSON.stringify([d]),
+            });
+          });
+        }));
+      }
+      return qb;
+    };
+
+    // Pending Coordinator: status=Pending AND coordinator_approval.approved=false
+    const pendingCoordinator = await applyDeptFilter(
+      this.timeOffRequestRepo.createQueryBuilder('request')
+        .andWhere(`request.status = 'Pending'`)
+        .andWhere(`request.coordinator_approval ->> 'approved' = 'false'`)
+    ).getCount();
+
+    // Pending HR: status=Pending AND coordinator_approval.approved=true AND hr_approval.approved=false
+    const pendingHR = await applyDeptFilter(
+      this.timeOffRequestRepo.createQueryBuilder('request')
+        .andWhere(`request.status = 'Pending'`)
+        .andWhere(`request.coordinator_approval ->> 'approved' = 'true'`)
+        .andWhere(`request.hr_approval ->> 'approved' = 'false'`)
+    ).getCount();
+
+    // Approved
+    const approved = await applyDeptFilter(
+      this.timeOffRequestRepo.createQueryBuilder('request')
+        .andWhere(`request.status = 'Approved'`)
+    ).getCount();
+
+    // Not Approved
+    const notApproved = await applyDeptFilter(
+      this.timeOffRequestRepo.createQueryBuilder('request')
+        .andWhere(`request.status = 'Not Approved'`)
+    ).getCount();
+
+    // Cancelled
+    const cancelled = await applyDeptFilter(
+      this.timeOffRequestRepo.createQueryBuilder('request')
+        .andWhere(`request.status = 'Cancelled'`)
+    ).getCount();
+
+    const total = pendingCoordinator + pendingHR + approved + notApproved + cancelled;
+
+    return { pendingCoordinator, pendingHR, approved, notApproved, cancelled, total };
+  }
 
 
 }

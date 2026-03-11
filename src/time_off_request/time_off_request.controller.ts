@@ -76,6 +76,42 @@ export class TimeOffRequestController {
     );
   }
 
+  @Get('hr/kpis')
+  getKpiCounts(
+    @Query('multi_department') multi_department?: string | string[],
+    @Query('department') departmentLegacy?: string,
+  ) {
+    const normalizeToArray = (input?: string | string[]): string[] => {
+      if (!input) return [];
+      if (Array.isArray(input)) return input.map(s => s?.trim()).filter(Boolean);
+      return input.split(',').map(s => s.trim()).filter(Boolean);
+    };
+
+    let depts = normalizeToArray(multi_department);
+    if (depts.length === 0) depts = normalizeToArray(departmentLegacy);
+    if (depts.some(d => d.toLowerCase() === 'all')) depts = [];
+
+    return this.timeOffRequestService.getKpiCounts(depts);
+  }
+
+  @Patch(':id/cancel')
+  cancelRequest(
+    @Param('id') id: string,
+    @Body('cancelled_by') cancelled_by: string,
+    @Body('role') role: 'staff' | 'hr' | 'coordinator',
+    @Body('reason') reason?: string,
+  ) {
+    return this.timeOffRequestService.cancelRequest(id, cancelled_by, role, reason);
+  }
+
+  @Patch(':id/reopen')
+  reopenRequest(
+    @Param('id') id: string,
+    @Body('reopened_by') reopened_by: string,
+  ) {
+    return this.timeOffRequestService.reopenRequest(id, reopened_by);
+  }
+
   @Patch(':id/status')
   updateStatus(
     @Param('id') id: string,

@@ -233,6 +233,50 @@ export class Employee {
     @Column({ type: 'varchar', length: 255, default: '', nullable: true })
     relationship_emergency: string;
 
+    /* WIRE TRANSFER INFORMATION */
+    @Column({ type: 'varchar', length: 50, default: '', nullable: true })
+    wire_payment_method: string;
+
+    @Column({ type: 'varchar', length: 255, default: '', nullable: true })
+    wire_bank: string;
+
+    @Column({ type: 'varchar', length: 255, default: '', nullable: true })
+    wire_location_city_country: string;
+
+    @Column({ type: 'varchar', length: 255, default: '', nullable: true })
+    wire_routing_swift: string;
+
+    @Column({ type: 'varchar', length: 50, default: '', nullable: true })
+    wire_type_of_account: string;
+
+    @Column({ type: 'varchar', length: 255, default: '', nullable: true })
+    wire_account_number: string;
+
+    @Column({ type: 'varchar', length: 255, default: '', nullable: true })
+    wire_street_address: string;
+
+    @Column({ type: 'varchar', length: 255, default: '', nullable: true })
+    wire_address_line2: string;
+
+    @Column({ type: 'varchar', length: 100, default: '', nullable: true })
+    wire_city: string;
+
+    @Column({ type: 'varchar', length: 100, default: '', nullable: true })
+    wire_state_region: string;
+
+    @Column({ type: 'varchar', length: 20, default: '', nullable: true })
+    wire_postal_zip_code: string;
+
+    @Column({ type: 'varchar', length: 100, default: '', nullable: true })
+    wire_country: string;
+
+    /* OTHER RATE */
+    @Column({ type: 'float', default: 0.0, nullable: true })
+    other_rate: number;
+
+    @Column({ type: 'varchar', length: 500, default: '', nullable: true })
+    other_rate_notes: string;
+
     // ==========================================
     // TAB 4: DOCUMENTS (URLs / Booleans)
     // ==========================================
@@ -288,7 +332,7 @@ export class Employee {
     @Column({ type: 'varchar', length: 100, default: '', nullable: true }) type_of_job: string;
     @Column({ type: 'varchar', length: 100, default: '', nullable: true }) type_of_staff: string;
     @Column({ type: 'varchar', length: 100, default: 'Employee', nullable: true }) permissions: string;
-    
+
     @Column({ type: 'boolean', default: false, nullable: true }) report_to: boolean;
     @Column({ type: 'jsonb', nullable: true, default: { report_to: [] } }) report: any;
 

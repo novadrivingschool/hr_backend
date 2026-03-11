@@ -1,3 +1,4 @@
+import { Type } from 'class-transformer';
 import { 
   IsString, 
   IsOptional, 
@@ -7,7 +8,8 @@ import {
   IsNumber, 
   IsArray, 
   IsObject,
-  IsIn
+  IsIn,
+  MaxLength
 } from 'class-validator';
 
 // Usamos la misma interfaz que definiste en la Entity
@@ -638,4 +640,74 @@ export class CreateEmployeeDto {
   @IsOptional()
   @IsBoolean()
   had_assigned_equipment?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  wire_payment_method?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  wire_bank?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  wire_location_city_country?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  wire_routing_swift?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  wire_type_of_account?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  wire_account_number?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  wire_street_address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  wire_address_line2?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  wire_city?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  wire_state_region?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  wire_postal_zip_code?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  wire_country?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  other_rate?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  other_rate_notes?: string;
 }
