@@ -628,6 +628,7 @@ export class ICareService {
       );
       const pendingStatusCount = statusMap[ICareStatus.PENDING] || 0;
       const inProgressStatusCount = statusMap[ICareStatus.IN_PROGRESS] || 0;
+      const rejectedStatusCount = statusMap[ICareStatus.REJECTED] || 0; // ← nuevo
       const solvedStatusCount = statusMap[ICareStatus.SOLVED] || 0;
 
       // ── monthlyTrend (últimos 6 meses) ────────────────────────────────────────
@@ -657,7 +658,7 @@ export class ICareService {
       applyBaseFilters(pendingCommitQb);
       const pendingCount = await pendingCommitQb.getCount();
 
-      // ── criticalActiveCount: High o Critical sin status SOLVED ────────────────
+      // ── criticalActiveCount: High o Critical, excluyendo SOLVED y REJECTED ────
       const criticalActiveQb = this.iCareRepository
         .createQueryBuilder('icare')
         .where('icare.urgency IN (:...urgencies)', {
@@ -666,7 +667,10 @@ export class ICareService {
       if (filters.status) {
         criticalActiveQb.andWhere('icare.status = :status', { status: filters.status });
       } else {
-        criticalActiveQb.andWhere('icare.status != :solved', { solved: ICareStatus.SOLVED });
+        criticalActiveQb.andWhere(
+          'icare.status NOT IN (:...excluded)',
+          { excluded: [ICareStatus.SOLVED, ICareStatus.REJECTED] }, // ← excluye ambos
+        );
       }
       applyDeptFilter(criticalActiveQb);
       const criticalActiveCount = await criticalActiveQb.getCount();
@@ -686,6 +690,7 @@ export class ICareService {
         // por status
         pendingStatusCount,
         inProgressStatusCount,
+        rejectedStatusCount,   // ← nuevo
         solvedStatusCount,
         statusDistribution,
         // tendencia
@@ -731,13 +736,15 @@ export class ICareService {
       ];
     }
 
+    // ✅ Antes solo avanzaba si justified=true, ahora también retrocede si es false
     if (dto.justified) {
       record.status = ICareStatus.IN_PROGRESS;
+    } else {
+      record.status = ICareStatus.REJECTED; // ← nuevo
     }
 
     const saved = await this.iCareRepository.save(record);
 
-    // Notificar a Staff + Coordinator (responsible) + Management solo si fue justificado
     if (dto.justified) {
       this.triggerJustifiedEmail(saved.id, saved).catch((err) =>
         this.logger.error(

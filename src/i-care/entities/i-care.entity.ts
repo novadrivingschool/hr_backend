@@ -7,15 +7,16 @@ import {
 } from 'typeorm';
 
 export enum ICareStatus {
-  PENDING    = 'pending',
+  PENDING = 'pending',
   IN_PROGRESS = 'in_progress',
-  SOLVED     = 'solved',
+  REJECTED = 'rejected',
+  SOLVED = 'solved',
 }
 
 export enum ICareUrgency {
-  LOW      = 'Low',
-  MEDIUM   = 'Medium',
-  HIGH     = 'High',
+  LOW = 'Low',
+  MEDIUM = 'Medium',
+  HIGH = 'High',
   CRITICAL = 'Critical',
 }
 

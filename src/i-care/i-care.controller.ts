@@ -272,7 +272,7 @@ export class ICareController {
   // ── PATCH /i-care/:id/justify ───────────────────────────────────────────────
   // HR justifica (o rechaza) un iCare.
   // Si justified=true: avanza a IN_PROGRESS y notifica a Staff + Coordinator + Management.
-  // Si justified=false: solo registra el rechazo sin notificaciones.
+  // Si justified=false: cambia status a REJECTED. El flujo termina aquí, no se envían emails.
 
   @Patch(':id/justify')
   @UsePipes(new ValidationPipe({
