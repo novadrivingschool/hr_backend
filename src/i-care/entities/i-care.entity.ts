@@ -38,7 +38,7 @@ export class ICare {
   submitter: {
     name: string;
     last_name: string;
-    employee_number: string;
+    employee_number: string;transformDates
     nova_email: string;
   };
 
@@ -105,6 +105,9 @@ export class ICare {
   @Column({ type: 'text', nullable: true })
   committed_notes: string | null;
 
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  committed_attachments: string[];
+
   // ─── Justified fields ──────────────────────────────────────────────────────
 
   @Column({ type: 'boolean', default: false })
@@ -132,4 +135,23 @@ export class ICare {
 
   @UpdateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   updatedAt: Date;
+
+  // ─── Resolution fields ──────────────────────────────────────────────────────
+
+  @Column('jsonb', { nullable: true })
+  resolved_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  resolved_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  resolved_time: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  resolved_notes: string | null;
 }

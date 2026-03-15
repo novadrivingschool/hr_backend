@@ -20,6 +20,8 @@ import { ICareService } from './i-care.service';
 import { CreateICareDto } from './dto/create-i-care.dto';
 import { UpdateICareDto } from './dto/update-i-care.dto';
 import { CommitICareDto } from './dto/commit-i-care.dto';
+import { JustifyICareDto } from './dto/justify-i-care.dto';
+import { ResolveICareDto } from './dto/resolve-i-care.dto';
 import { ICareStatus, ICareUrgency } from './entities/i-care.entity';
 
 @Controller('i-care')
@@ -27,6 +29,8 @@ export class ICareController {
   constructor(private readonly iCareService: ICareService) { }
 
   // ── POST /i-care ────────────────────────────────────────────────────────────
+  // Crea un nuevo iCare. Notifica solo a HR al momento de la creación.
+  // El Staff NO es notificado hasta que HR justifique el registro.
 
   @Post()
   @UsePipes(new ValidationPipe({
@@ -47,6 +51,7 @@ export class ICareController {
   }
 
   // ── GET /i-care ─────────────────────────────────────────────────────────────
+  // Retorna todos los registros paginados ordenados por createdAt DESC.
 
   @Get()
   @HttpCode(HttpStatus.OK)
@@ -63,6 +68,9 @@ export class ICareController {
   }
 
   // ── GET /i-care/stats ───────────────────────────────────────────────────────
+  // Retorna métricas agregadas: totales, distribución por urgency/status,
+  // committed/pending, críticos activos y tendencia mensual de 6 meses.
+  // Acepta los mismos filtros que /search para acotar el universo de datos.
 
   @Get('stats')
   @HttpCode(HttpStatus.OK)
@@ -72,12 +80,12 @@ export class ICareController {
     @Query('submitterEmployeeNumber') submitterEmployeeNumber?: string,
     @Query('staffEmployeeNumber') staffEmployeeNumber?: string,
     @Query('urgency') urgencyRaw?: string,
-    @Query('status') statusRaw?: string,       // ← nuevo
+    @Query('status') statusRaw?: string,
     @Query('department') department?: string,
   ) {
     try {
       const urgency = this.parseUrgency(urgencyRaw);
-      const status = this.parseStatus(statusRaw);   // ← nuevo
+      const status = this.parseStatus(statusRaw);
 
       return await this.iCareService.getStats({
         dateFrom,
@@ -85,7 +93,7 @@ export class ICareController {
         submitterEmployeeNumber,
         staffEmployeeNumber,
         urgency,
-        status,         // ← nuevo
+        status,
         department,
       });
     } catch (error) {
@@ -95,6 +103,8 @@ export class ICareController {
   }
 
   // ── GET /i-care/search ──────────────────────────────────────────────────────
+  // Búsqueda filtrada con paginación. Soporta filtros por fechas, empleados,
+  // urgency, status, committed y departamento (múltiples separados por coma).
 
   @Get('search')
   @HttpCode(HttpStatus.OK)
@@ -141,6 +151,8 @@ export class ICareController {
   }
 
   // ── GET /i-care/advanced-search ─────────────────────────────────────────────
+  // Búsqueda full-text sobre reason, details, y datos del submitter/staff.
+  // Requiere mínimo 2 caracteres en ?q=. Soporta filtros opcionales de fecha y urgency.
 
   @Get('advanced-search')
   @HttpCode(HttpStatus.OK)
@@ -162,13 +174,44 @@ export class ICareController {
     }
   }
 
+  // ── GET /i-care/emails-by-role/:role ────────────────────────────────────────
+  // Endpoint auxiliar para el email service.
+  // Retorna los nova_email de todos los empleados activos con el rol dado.
+  // Roles permitidos: 'hr' | 'management'
+  // IMPORTANTE: debe ir ANTES de /:id para evitar conflicto de rutas.
+
+  @Get('emails-by-role/:role')
+  @HttpCode(HttpStatus.OK)
+  async getEmailsByRole(@Param('role') role: string) {
+    try {
+      if (!['hr', 'management'].includes(role)) {
+        throw new BadRequestException(
+          `Invalid role "${role}". Allowed: hr, management`,
+        );
+      }
+      return await this.iCareService.getEmailsByRole(role as 'hr' | 'management');
+    } catch (error) {
+      console.error('Error fetching emails by role:', role, error);
+      throw error;
+    }
+  }
+
   // ── GET /i-care/by-submitter/:employeeNumber ────────────────────────────────
+  // Retorna todos los iCare levantados por un empleado específico (submitter).
 
   @Get('by-submitter/:employeeNumber')
   @HttpCode(HttpStatus.OK)
-  async findByCurrentSubmitter(@Param('employeeNumber') employeeNumber: string) {
+  async findByCurrentSubmitter(
+    @Param('employeeNumber') employeeNumber: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '15',
+  ) {
     try {
-      return await this.iCareService.findByCurrentSubmitter(employeeNumber);
+      return await this.iCareService.findByCurrentSubmitter(
+        employeeNumber,
+        parseInt(page, 10),
+        parseInt(limit, 10),
+      );
     } catch (error) {
       console.error('Error fetching ICare records by submitter:', error);
       throw error;
@@ -176,6 +219,7 @@ export class ICareController {
   }
 
   // ── GET /i-care/by-staff/:employeeNumber ────────────────────────────────────
+  // Retorna todos los iCare asignados a un empleado de staff específico.
 
   @Get('by-staff/:employeeNumber')
   @HttpCode(HttpStatus.OK)
@@ -189,6 +233,8 @@ export class ICareController {
   }
 
   // ── GET /i-care/:id ─────────────────────────────────────────────────────────
+  // Retorna un único iCare por su UUID. Lanza 404 si no existe.
+  // IMPORTANTE: debe ir DESPUÉS de todas las rutas GET con segmentos estáticos.
 
   @Get(':id')
   @HttpCode(HttpStatus.OK)
@@ -202,7 +248,9 @@ export class ICareController {
   }
 
   // ── PATCH /i-care/batch/update ──────────────────────────────────────────────
-  // IMPORTANTE: rutas estáticas ANTES de /:id para evitar conflictos
+  // Actualiza en bulk múltiples iCare por sus UUIDs.
+  // Aplica los mismos campos a todos los registros del array ids.
+  // IMPORTANTE: rutas estáticas ANTES de /:id para evitar conflictos.
 
   @Patch('batch/update')
   @HttpCode(HttpStatus.OK)
@@ -221,7 +269,82 @@ export class ICareController {
     }
   }
 
+  // ── PATCH /i-care/:id/justify ───────────────────────────────────────────────
+  // HR justifica (o rechaza) un iCare.
+  // Si justified=true: avanza a IN_PROGRESS y notifica a Staff + Coordinator + Management.
+  // Si justified=false: solo registra el rechazo sin notificaciones.
+
+  @Patch(':id/justify')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async justify(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() justifyDto: JustifyICareDto,
+  ) {
+    try {
+      return await this.iCareService.justify(id, justifyDto);
+    } catch (error) {
+      console.error('Error justifying ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/commit ────────────────────────────────────────────────
+  // El Staff registra su commit sobre el iCare.
+  // Si committed=true: guarda fecha/hora/notas y notifica a HR + Coordinator + Management.
+  // Si committed=false: limpia los campos de commit sin notificaciones.
+
+  @Patch(':id/commit')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async commit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() commitDto: CommitICareDto,
+  ) {
+    try {
+      return await this.iCareService.commit(id, commitDto);
+    } catch (error) {
+      console.error('Error committing ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/resolve ───────────────────────────────────────────────
+  // HR marca el iCare como resuelto (SOLVED).
+  // Registra quién resolvió, fecha, hora y notas opcionales.
+  // Notifica a: Staff + Coordinator + Management.
+
+  @Patch(':id/resolve')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async resolve(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() resolveDto: ResolveICareDto,
+  ) {
+    try {
+      return await this.iCareService.resolve(id, resolveDto);
+    } catch (error) {
+      console.error('Error resolving ICare record:', id, error);
+      throw error;
+    }
+  }
+
   // ── PATCH /i-care/:id ───────────────────────────────────────────────────────
+  // Actualiza campos generales de un iCare. No usar para acciones del flujo
+  // (justify/commit/resolve) — usar sus endpoints dedicados.
+  // IMPORTANTE: debe ir DESPUÉS de todos los PATCH con segmentos estáticos.
 
   @Patch(':id')
   @UsePipes(new ValidationPipe({
@@ -246,28 +369,9 @@ export class ICareController {
     }
   }
 
-  // ── PATCH /i-care/:id/commit ────────────────────────────────────────────────
-
-  @Patch(':id/commit')
-  @UsePipes(new ValidationPipe({
-    transform: true,
-    whitelist: true,
-    forbidNonWhitelisted: true,
-  }))
-  @HttpCode(HttpStatus.OK)
-  async commit(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body() commitDto: CommitICareDto,
-  ) {
-    try {
-      return await this.iCareService.commit(id, commitDto);
-    } catch (error) {
-      console.error('Error committing ICare record:', id, error);
-      throw error;
-    }
-  }
-
   // ── DELETE /i-care/batch/delete ─────────────────────────────────────────────
+  // Elimina en bulk múltiples iCare por sus UUIDs.
+  // IMPORTANTE: ruta estática ANTES de /:id para evitar conflictos.
 
   @Delete('batch/delete')
   @HttpCode(HttpStatus.OK)
@@ -284,6 +388,8 @@ export class ICareController {
   }
 
   // ── DELETE /i-care/:id ──────────────────────────────────────────────────────
+  // Elimina un iCare por su UUID. Retorna 204 No Content.
+  // IMPORTANTE: debe ir DESPUÉS de todas las rutas DELETE con segmentos estáticos.
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -298,6 +404,10 @@ export class ICareController {
 
   // ── Private helpers ─────────────────────────────────────────────────────────
 
+  /**
+   * Parsea y valida el query param de urgency.
+   * Lanza BadRequestException si el valor no es un ICareUrgency válido.
+   */
   private parseUrgency(value?: string): ICareUrgency | undefined {
     if (!value) return undefined;
     if (Object.values(ICareUrgency).includes(value as ICareUrgency)) {
@@ -308,6 +418,10 @@ export class ICareController {
     );
   }
 
+  /**
+   * Parsea y valida el query param de status.
+   * Lanza BadRequestException si el valor no es un ICareStatus válido.
+   */
   private parseStatus(value?: string): ICareStatus | undefined {
     if (!value) return undefined;
     if (Object.values(ICareStatus).includes(value as ICareStatus)) {

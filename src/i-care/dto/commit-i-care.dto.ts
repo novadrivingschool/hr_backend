@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsBoolean,
   IsOptional,
   IsString,
@@ -47,4 +48,8 @@ export class CommitICareDto {
   @IsString()
   @MaxLength(2000)
   committed_notes?: string;
+
+  @IsOptional()
+  @IsArray()
+  committed_attachments?: string[];
 }

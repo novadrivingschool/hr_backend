@@ -25,6 +25,7 @@ import { ICare } from 'src/i-care/entities/i-care.entity';
 import { Employee } from 'src/employees/entities/employee.entity';
 import { CrmPermissions } from 'src/employees/entities/crm-permissions.entity';
 import { ICareReason } from 'src/i_care_reasons/entities/i_care_reason.entity';
+import { EmployeeAccounting } from 'src/employee-accounting/entities/employee-accounting.entity';
 
 dotenv.config();
 
@@ -69,7 +70,8 @@ export const AppDataSource = new DataSource({
     ICare,
     Employee,
     CrmPermissions,
-    ICareReason
+    ICareReason,
+    EmployeeAccounting
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

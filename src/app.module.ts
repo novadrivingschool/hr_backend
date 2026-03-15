@@ -27,6 +27,7 @@ import { ChecklistModule } from './checklist/checklist.module';
 import { ICareModule } from './i-care/i-care.module';
 import { EmployeesV2Module } from './employees/employees-v2.module';
 import { ICareReasonsModule } from './i_care_reasons/i_care_reasons.module';
+import { EmployeeAccountingModule } from './employee-accounting/employee-accounting.module';
 
 
 dotenv.config();
@@ -76,6 +77,7 @@ dotenv.config();
         __dirname + '/employees/entities/*.entity.{ts,js}', // <-- Solo las entidades de Employees
         __dirname + '/employees/entities/crm-permissions.entity.{ts,js}', // <-- Solo si quieres que esta también entre en migraciones
         __dirname + '/i_care_reasons/entities/*.entity.{ts,js}', // <-- Solo las entidades de ICareReasons
+        __dirname + '/employee-accounting/entities/*.entity.{ts,js}', // <-- Solo las entidades de EmployeeAccounting
       ],
     }),
     ScheduleModule,
@@ -102,7 +104,8 @@ dotenv.config();
     ChecklistModule,
     ICareModule,
     EmployeesV2Module,
-    ICareReasonsModule
+    ICareReasonsModule,
+    EmployeeAccountingModule,
   ],
 })
 export class AppModule { }

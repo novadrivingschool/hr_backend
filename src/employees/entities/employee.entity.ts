@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, OneToOne, JoinColumn } from 'typeorm';
 import { CrmPermissions } from './crm-permissions.entity';
+import { EmployeeAccounting } from 'src/employee-accounting/entities/employee-accounting.entity';
 
 export interface SupervisorRef {
     name: string;
@@ -142,6 +143,9 @@ export class Employee {
 
     @Column({ type: 'varchar', length: 100, default: '', nullable: true })
     type_of_comissions: string;
+
+    @Column({ type: 'float', default: 0.0, nullable: true })
+    authorized_hours: number;
 
     // ==========================================
     // TAB 2: OTHER DATA
@@ -376,4 +380,8 @@ export class Employee {
     @Column({ type: 'float', default: 0.0, nullable: true }) porcentage_of_docs: number;
     @Column({ type: 'boolean', default: false, nullable: true }) has_assigned_equipment: boolean;
     @Column({ type: 'boolean', default: false, nullable: true }) had_assigned_equipment: boolean;
+
+
+    @OneToOne(() => EmployeeAccounting, (employeeAccounting) => employeeAccounting.employee)
+    employeeAccounting: EmployeeAccounting;
 }

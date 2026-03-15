@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Brackets } from 'typeorm';
 import { Employee } from '../employees/entities/employee.entity';
@@ -12,7 +12,7 @@ export class EmployeesV2Service {
   constructor(
     @InjectRepository(Employee)
     private readonly employeeRepo: Repository<Employee>,
-  ) {}
+  ) { }
 
   /**
    * Función utilitaria privada equivalente a la de Python.
@@ -21,14 +21,14 @@ export class EmployeesV2Service {
   private generateEmployeeNumber(name?: string, lastName?: string): string {
     const firstInitial = name && name.trim().length > 0 ? name.trim().charAt(0).toUpperCase() : 'X';
     const lastInitial = lastName && lastName.trim().length > 0 ? lastName.trim().charAt(0).toUpperCase() : 'X';
-    
+
     const now = new Date();
     const hours = String(now.getHours()).padStart(2, '0');
     const minutes = String(now.getMinutes()).padStart(2, '0');
     const seconds = String(now.getSeconds()).padStart(2, '0');
-    
+
     const currentTime = `${hours}${minutes}${seconds}`;
-    
+
     return `NOVA${firstInitial}${lastInitial}${currentTime}`;
   }
 
@@ -37,7 +37,7 @@ export class EmployeesV2Service {
       // Si el frontend no manda el employee_number, lo autogeneramos como en el legacy
       if (!createEmployeeDto.employee_number) {
         createEmployeeDto.employee_number = this.generateEmployeeNumber(
-          createEmployeeDto.name, 
+          createEmployeeDto.name,
           createEmployeeDto.last_name
         );
       }
@@ -86,8 +86,8 @@ export class EmployeesV2Service {
     }
 
     queryBuilder.orderBy('employee.id', 'DESC')
-                .skip(skip)
-                .take(limit);
+      .skip(skip)
+      .take(limit);
 
     const [data, total] = await queryBuilder.getManyAndCount();
 
@@ -105,7 +105,7 @@ export class EmployeesV2Service {
   async findByEmployeeNumber(employeeNumber: string): Promise<Employee> {
     const employee = await this.employeeRepo.findOne({
       where: { employee_number: employeeNumber },
-      relations: ['permissions_relation'], 
+      relations: ['permissions_relation'],
     });
 
     if (!employee) {
@@ -125,5 +125,45 @@ export class EmployeesV2Service {
     employee.status = 'Inactive';
     await this.employeeRepo.save(employee);
     return { message: `El empleado ${employeeNumber} fue desactivado correctamente.` };
+  }
+
+  /**
+   * Busca empleados activos que contengan al menos uno de los roles proporcionados.
+   * Busca en el campo JSON 'roles'.
+   */
+  async findByRoles(roles: string[]): Promise<Employee[]> {
+    // Limpiamos los roles quitando espacios extra y valores nulos
+    const cleanedRoles = roles.map(r => r?.trim()).filter(Boolean);
+
+    if (cleanedRoles.length === 0) {
+      throw new BadRequestException('No valid roles provided');
+    }
+
+    const qb = this.employeeRepo
+      .createQueryBuilder('e')
+      .select([
+        'e.id',
+        'e.name',
+        'e.last_name',
+        'e.employee_number',
+        'e.roles',
+        'e.status'
+      ])
+      .where('e.status = :status', { status: 'Active' });
+
+    // Armamos la consulta para buscar dentro del arreglo JSON 'roles'
+    qb.andWhere(new Brackets(sqb => {
+      cleanedRoles.forEach((role, i) => {
+        // Casteamos a jsonb para usar el operador de contención @>
+        sqb.orWhere(`(e.roles::jsonb @> :role${i}::jsonb)`, {
+          [`role${i}`]: JSON.stringify([role]),
+        });
+      });
+    }));
+
+    // Ordenamos para que la respuesta sea consistente
+    qb.orderBy('e.last_name', 'ASC').addOrderBy('e.name', 'ASC');
+
+    return qb.getMany();
   }
 }
