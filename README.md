@@ -62,6 +62,8 @@ docker run --name hr-api-dev \
 
 docker logs hr-api-dev -f
 
+docker restart hr-api-dev
+
 docker run --name hr-api-dev -d -p 5006:5006 --restart always hr-api-dev
 
 
@@ -77,3 +79,7 @@ docker run --name hr-api-dev \
 docker logs hr-api-dev -f
 
 docker system prune -a --volumes
+
+
+
+apt-get update && apt-get install -y libnspr4 libnss3 libxss1 libgtk-3-0 libgbm1
