@@ -2,7 +2,6 @@ import * as dotenv from 'dotenv';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ScheduleModule } from './schedule/schedule.module';
 import { TimeOffRequestModule } from './time_off_request/time_off_request.module';
 import { EmployeesModule } from './employees/employees.module';
 import { DepartmentsModule } from './departments/departments.module';
@@ -28,6 +27,8 @@ import { ICareModule } from './i-care/i-care.module';
 import { EmployeesV2Module } from './employees/employees-v2.module';
 import { ICareReasonsModule } from './i_care_reasons/i_care_reasons.module';
 import { EmployeeAccountingModule } from './employee-accounting/employee-accounting.module';
+import { PayrollModule } from './payroll/payroll.module';
+import { HolidaysModule } from './holidays/holidays.module';
 
 
 dotenv.config();
@@ -78,9 +79,9 @@ dotenv.config();
         __dirname + '/employees/entities/crm-permissions.entity.{ts,js}', // <-- Solo si quieres que esta también entre en migraciones
         __dirname + '/i_care_reasons/entities/*.entity.{ts,js}', // <-- Solo las entidades de ICareReasons
         __dirname + '/employee-accounting/entities/*.entity.{ts,js}', // <-- Solo las entidades de EmployeeAccounting
+        __dirname + '/Holidays/entities/*.entity.{ts,js}',
       ],
     }),
-    ScheduleModule,
     TimeOffRequestModule,
     EmployeesModule,
     DepartmentsModule,
@@ -106,6 +107,8 @@ dotenv.config();
     EmployeesV2Module,
     ICareReasonsModule,
     EmployeeAccountingModule,
+    PayrollModule,
+    HolidaysModule,
   ],
 })
 export class AppModule { }

@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, OneToOne, JoinColumn } from 'typeorm';
 import { CrmPermissions } from './crm-permissions.entity';
 import { EmployeeAccounting } from 'src/employee-accounting/entities/employee-accounting.entity';
+import { WorkSchedule } from './work-schedule.enum';
 
 export interface SupervisorRef {
     name: string;
@@ -78,8 +79,8 @@ export class Employee {
     @Column({ type: 'varchar', length: 5000, default: '', nullable: true })
     activity_details: string;
 
-    @Column({ type: 'varchar', length: 255, default: '', nullable: true })
-    work_schedule: string;
+    @Column({ type: 'varchar', length: 50, default: '', nullable: true })
+    work_schedule: WorkSchedule;
 
     @Column({ type: 'json', nullable: false, default: () => "'[]'" })
     multi_location: string[];

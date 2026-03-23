@@ -157,9 +157,22 @@ export class TimeOffRequestController {
     return this.timeOffRequestService.update(id, updateTimeOffRequestDto);
   }
 
-  @Delete(':id')
+  /* @Delete(':id')
   remove(@Param('id') id: string) {
     return this.timeOffRequestService.remove(id);
+  } */
+  @Delete(':id')
+  cancelOnDelete(
+    @Param('id') id: string,
+    @Body('cancelled_by') cancelled_by: string,
+    @Body('reason') reason?: string,
+  ) {
+    return this.timeOffRequestService.cancelRequest(
+      id,
+      cancelled_by || 'system',
+      'staff',
+      reason || 'Cancelled via delete action',
+    );
   }
 
 }

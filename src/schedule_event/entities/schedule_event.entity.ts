@@ -5,6 +5,7 @@ import {
   Column,
   ManyToOne
 } from 'typeorm';
+import { RegisterEnum } from './register.enum';
 
 
 @Entity('schedule_event')
@@ -12,8 +13,8 @@ export class ScheduleEvent {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Column()
-  register: string;
+  @Column({ type: 'enum', enum: RegisterEnum, enumName: 'schedule_event_register' })
+  register: RegisterEnum;
 
   @Column({ type: 'date' })
   date: string;
@@ -27,8 +28,12 @@ export class ScheduleEvent {
   @ManyToOne(() => EmployeeSchedule, schedule => schedule.events, { onDelete: 'CASCADE' })
   schedule: EmployeeSchedule;
 
-  /* @Column()
-  location: string; */
   @Column({ type: 'jsonb', default: () => "'[]'" })
   location: string[];
+
+  @Column({ type: 'uuid', nullable: true, default: null })
+  uuid_tor: string | null;
+
+  @Column({ type: 'uuid', nullable: true, default: null })
+  uuid_extra_hours: string | null;
 }

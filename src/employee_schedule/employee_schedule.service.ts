@@ -1,12 +1,15 @@
+/* src\employee_schedule\employee_schedule.service.ts */
 import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
-import { CreateEmployeeScheduleDto } from './dto/create-employee_schedule.dto';
+import { CreateBulkScheduleDto, CreateEmployeeScheduleDto } from './dto/create-employee_schedule.dto';
 import { UpdateEmployeeScheduleDto } from './dto/update-employee_schedule.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EmployeeSchedule } from './entities/employee_schedule.entity';
 import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
-import { Repository } from 'typeorm';
+import { Between, FindOptionsWhere, In, Repository } from 'typeorm';
 import { ScheduleEvent } from 'src/schedule_event/entities/schedule_event.entity';
 import { Employee } from 'src/employees/entities/employee.entity';
+import { FilterEventsDto } from './dto/filter-events.dto';
+import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
 
 @Injectable()
 export class EmployeeScheduleService {
@@ -169,6 +172,146 @@ export class EmployeeScheduleService {
     }));
   }
 
-  
+  async findEvents(filters: FilterEventsDto): Promise<Record<string, any>[]> {
+    try {
+      const where: FindOptionsWhere<ScheduleEvent> = {};
+
+      if (filters.register) {
+        where.register = filters.register as RegisterEnum;
+      }
+
+      if (filters.start_date && filters.end_date) {
+        where.date = Between(filters.start_date, filters.end_date);
+      } else if (filters.start_date) {
+        where.date = Between(filters.start_date, '9999-12-31');
+      } else if (filters.end_date) {
+        where.date = Between('0000-01-01', filters.end_date);
+      }
+
+      if (filters.employee_number?.length) {
+        where.schedule = {
+          employee_number: In(filters.employee_number),
+        };
+      }
+
+      const events = await this.eventRepo.find({
+        where,
+        relations: ['schedule'],
+        order: { date: 'ASC' },
+      });
+
+      return events.map(e => ({
+        id: e.id,
+        employee_number: e.schedule.employee_number,
+        register: e.register,
+        date: e.date,
+        start: e.start,
+        end: e.end,
+        location: e.location,
+      }));
+    } catch (error) {
+      console.error('❌ [findEvents] Error filtering events:', error.message);
+      throw new InternalServerErrorException('Failed to filter schedule events');
+    }
+  }
+
+  // employee_schedule.service.ts — agrega este método
+
+  async createBulk(dto: CreateBulkScheduleDto): Promise<{
+    success: string[];
+    failed: { employee_number: string; error: string }[];
+  }> {
+    const success: string[] = [];
+    const failed: { employee_number: string; error: string }[] = [];
+
+    for (const employee_number of dto.employee_numbers) {
+      try {
+        await this.create({
+          employee_number,
+          fixed: dto.fixed ?? [],
+          events: dto.events ?? [],
+        });
+        success.push(employee_number);
+      } catch (err) {
+        console.warn(`[createBulk] Failed for ${employee_number}: ${err?.message}`);
+        failed.push({ employee_number, error: err?.message ?? 'Unknown error' });
+      }
+    }
+
+    return { success, failed };
+  }
+
+  async findFixedSchedules(employee_numbers: string[]): Promise<any[]> {
+    const where: FindOptionsWhere<FixedSchedule> = {};
+
+    if (employee_numbers.length) {
+      where.schedule = { employee_number: In(employee_numbers) };
+    }
+
+    const fixed = await this.fixedRepo.find({
+      where,
+      relations: ['schedule'],
+    });
+
+    return fixed.map(f => ({
+      id: f.id,
+      employee_number: f.schedule.employee_number,
+      weekdays: f.weekdays,
+      start: f.start,
+      end: f.end,
+      register: f.register,
+      location: f.location,
+    }));
+  }
+
+  async deleteEventsByUuidExtraHours(uuid_extra_hours: string): Promise<{ deleted: number }> {
+    const schedule = await this.scheduleRepo
+      .createQueryBuilder('s')
+      .innerJoin('s.events', 'e')
+      .where('e.uuid_extra_hours = :uuid', { uuid: uuid_extra_hours })
+      .getOne();
+
+    if (!schedule) {
+      return { deleted: 0 };
+    }
+
+    const result = await this.eventRepo
+      .createQueryBuilder()
+      .delete()
+      .from(ScheduleEvent)
+      .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
+      .andWhere('uuid_extra_hours = :uuid', { uuid: uuid_extra_hours })
+      .execute();
+
+    return { deleted: result.affected ?? 0 };
+  }
+
+  async getEmployeesListByDepartments(departments: string[]): Promise<any[]> {
+    const qb = this.employeeRepo
+      .createQueryBuilder('emp')
+      .where('emp.status = :status', { status: 'Active' });
+
+    if (departments.length) {
+      // multi_department is JSON; cast to jsonb and check containment for each dept
+      const conditions = departments
+        .map((_, i) => `emp.multi_department::jsonb @> :dep${i}`)
+        .join(' OR ');
+      const params = Object.fromEntries(
+        departments.map((d, i) => [`dep${i}`, JSON.stringify([d])])
+      );
+      qb.andWhere(`(${conditions})`, params);
+    }
+
+    const employees = await qb.orderBy('emp.name', 'ASC').getMany();
+
+    return employees.map(emp => ({
+      employee_number: emp.employee_number,
+      name: `${emp.name} ${emp.last_name}`,
+      status: emp.status,
+      multi_department: emp.multi_department,
+      multi_location: emp.multi_location,
+      multi_company: emp.multi_company,
+    }));
+  }
 
 }

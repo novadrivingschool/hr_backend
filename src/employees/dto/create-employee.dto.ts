@@ -1,24 +1,26 @@
 import { Type } from 'class-transformer';
-import { 
-  IsString, 
-  IsOptional, 
-  IsDateString, 
-  IsNotEmpty, 
-  IsBoolean, 
-  IsNumber, 
-  IsArray, 
+import {
+  IsString,
+  IsOptional,
+  IsDateString,
+  IsNotEmpty,
+  IsBoolean,
+  IsNumber,
+  IsArray,
   IsObject,
   IsIn,
-  MaxLength
+  MaxLength,
+  IsEnum
 } from 'class-validator';
+import { WorkSchedule } from '../entities/work-schedule.enum';
 
 // Usamos la misma interfaz que definiste en la Entity
 export interface SupervisorRef {
-    name: string;
-    last_name: string;
-    employee_number: string;
-    nova_email?: string;
-    __label?: string;
+  name: string;
+  last_name: string;
+  employee_number: string;
+  nova_email?: string;
+  __label?: string;
 }
 
 export class CreateEmployeeDto {
@@ -111,8 +113,8 @@ export class CreateEmployeeDto {
   activity_details?: string;
 
   @IsOptional()
-  @IsString()
-  work_schedule?: string;
+  @IsEnum(WorkSchedule)
+  work_schedule?: WorkSchedule;
 
   @IsOptional()
   @IsArray()

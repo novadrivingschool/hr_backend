@@ -7,9 +7,12 @@ import { UpdateTimeOffRequestDto } from './dto/update-time_off_request.dto';
 import * as moment from 'moment-timezone';
 import { CreateTimeOffRequestSavedDto, RecipientDto, SendTimeOffTemplateDto, SendTimeOffTemplateObjDto } from './dto/time-off.dto';
 import axios from 'axios';
-import { StatusEnum } from './enums';
+import { StatusEnum, TimeTypeEnum } from './enums';
 import { EmployeesService } from 'src/employees/employees.service';
 import { TimeOffApiClient } from './api/time-off.api';
+import { EmployeeScheduleService } from 'src/employee_schedule/employee_schedule.service';
+import { ScheduleEvent } from 'src/schedule_event/entities/schedule_event.entity';
+import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
 
 interface EmployeeNumbersByPermissionResponse {
   permission: string;
@@ -26,7 +29,12 @@ export class TimeOffRequestService {
   constructor(
     @InjectRepository(TimeOffRequest)
     private readonly timeOffRequestRepo: Repository<TimeOffRequest>,
+    @InjectRepository(ScheduleEvent)
+    private readonly scheduleEventRepo: Repository<ScheduleEvent>,
+    @InjectRepository(EmployeeSchedule)
+    private readonly employeeScheduleRepo: Repository<EmployeeSchedule>,
     private readonly employeeService: EmployeesService,
+    private readonly employeeScheduleService: EmployeeScheduleService,
   ) {
     this.apiClient = new TimeOffApiClient();
   }
@@ -35,7 +43,6 @@ export class TimeOffRequestService {
   async create(createDto: CreateTimeOffRequestDto): Promise<TimeOffRequest> {
     try {
       console.log("createDto: ", createDto);
-
       const chicagoNow = moment().tz('America/Chicago');
       const request = this.timeOffRequestRepo.create({
         ...createDto,
@@ -47,13 +54,17 @@ export class TimeOffRequestService {
       });
 
       const saved = await this.timeOffRequestRepo.save(request);
-
       console.log("saved: ", saved);
 
-      /* COORDINATOR EMAIL */
-      await this.sentCoordinatorRequest(saved);
+      // ── Coordinator email — non-blocking ──────────────────────────────────
+      try {
+        await this.sentCoordinatorRequest(saved);
+      } catch (emailErr) {
+        this.logger.warn(`[create] Coordinator email failed (non-blocking): ${emailErr?.message}`);
+      }
 
       return saved;
+
     } catch (error) {
       this.logger.error('Failed to create time off request', error.stack);
       throw new InternalServerErrorException('Error creating time off request');
@@ -88,11 +99,87 @@ export class TimeOffRequestService {
 
   async update(id: string, updateDto: UpdateTimeOffRequestDto): Promise<TimeOffRequest> {
     try {
+      // ── 1. Obtener el request actual ──────────────────────────────────────
       const request = await this.findOne(id);
+
+      if (!request) {
+        throw new NotFoundException(`Time-off request with ID ${id} not found`);
+      }
+
+      // ── 2. Solo se puede editar si está Pending ───────────────────────────
+      if (request.status !== StatusEnum.Pending) {
+        throw new BadRequestException(
+          `Cannot edit a request with status "${request.status}". Only Pending requests can be edited.`,
+        );
+      }
+
+      // ── 3. Detectar si cambiaron campos que afectan al schedule ───────────
+      const scheduleFields: Array<keyof UpdateTimeOffRequestDto> = [
+        'timeType', 'hourDate', 'startTime', 'endTime', 'startDate', 'endDate',
+      ];
+
+      const scheduleChanged = scheduleFields.some(field => {
+        if (updateDto[field] === undefined) return false;
+        return String(updateDto[field]) !== String((request as any)[field] ?? '');
+      });
+
+      // ── 4. Guardar cambios ────────────────────────────────────────────────
       const updated = Object.assign(request, updateDto);
-      return await this.timeOffRequestRepo.save(updated);
+      const saved = await this.timeOffRequestRepo.save(updated);
+
+      // ── 5. Verificar si existen eventos para este TOR en el schedule ──────
+      //    Solo tiene sentido si hubo cambios en campos de schedule
+      if (scheduleChanged) {
+        try {
+          // Buscar el schedule del empleado
+          const schedule = await this.employeeScheduleRepo.findOne({
+            where: { employee_number: saved.employee_data?.employee_number },
+          });
+
+          if (schedule) {
+            // Contar eventos vinculados a este TOR
+            const existingEventsCount = await this.scheduleEventRepo
+              .createQueryBuilder('event')
+              .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
+              .andWhere('event.uuid_tor = :uuid_tor', { uuid_tor: id })
+              .getCount();
+
+            this.logger.log(
+              `[update] TOR ${id} → found ${existingEventsCount} existing event(s) in schedule`,
+            );
+
+            if (existingEventsCount > 0) {
+              // Existen eventos → borrar y recrear con los nuevos valores
+              this.logger.log(`[update] Deleting and recreating ${existingEventsCount} event(s)`);
+              await this._deleteScheduleEventsFromTimeOff(saved);
+              await this._createScheduleEventsFromTimeOff(saved);
+            } else {
+              // No existen eventos → no hay nada que tocar
+              // (TOR Pending aún no aprobado, o el create original falló y se ignoró)
+              this.logger.log(`[update] No existing events for TOR ${id} — skipping schedule sync`);
+            }
+          } else {
+            this.logger.warn(
+              `[update] No schedule found for employee ${saved.employee_data?.employee_number} — skipping schedule sync`,
+            );
+          }
+        } catch (syncErr) {
+          // Non-blocking: el TOR ya fue guardado correctamente
+          this.logger.warn(`[update] Schedule sync failed (non-blocking): ${syncErr?.message}`);
+        }
+      }
+
+      return saved;
+
     } catch (error) {
-      this.logger.error(`Failed to update request ID ${id}`, error.stack);
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      this.logger.error(`[update] Failed to update request ID ${id}`, error.stack);
       throw new InternalServerErrorException('Error updating time off request');
     }
   }
@@ -292,6 +379,7 @@ export class TimeOffRequestService {
     hr_comments: string,
   ): Promise<TimeOffRequest> {
     try {
+
       const request = await this.findOne(id);
       const chicagoNow = moment().tz('America/Chicago');
 
@@ -319,6 +407,14 @@ export class TimeOffRequestService {
       request.status = approved ? StatusEnum.Approved : StatusEnum.NotApproved;
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
+
+      // ✅ Si fue aprobado → crear eventos en el schedule
+      if (approved) {
+        await this._createScheduleEventsFromTimeOff(updatedRequest);
+      }
+
+      console.log("<<<<<<<<<<<<<<<<<<<<")
+      console.log(JSON.stringify(updatedRequest, null, 2))
 
       // Siempre avisa a Management
       try {
@@ -740,6 +836,15 @@ export class TimeOffRequestService {
 
     const updated = await this.timeOffRequestRepo.save(request);
 
+    // ✅ Si estaba Approved → borrar los eventos del schedule
+    if (request.status === StatusEnum.Cancelled && cancellableStatuses.includes(StatusEnum.Approved)) {
+      // Verificamos que el status PREVIO era Approved
+      const wasApproved = updated.hr_approval?.approved === true;
+      if (wasApproved) {
+        await this._deleteScheduleEventsFromTimeOff(updated);
+      }
+    }
+
     try {
       await this.apiClient.sendStaffTemplate({
         templateName: 'time_off_staff_notification',
@@ -856,5 +961,144 @@ export class TimeOffRequestService {
     return { pendingCoordinator, pendingHR, approved, notApproved, cancelled, total };
   }
 
+  private async _createScheduleEventsFromTimeOff(request: TimeOffRequest): Promise<void> {
+    try {
+      const { timeType, employee_data } = request;
+      const employeeNumber = employee_data?.employee_number;
+
+      if (!employeeNumber) {
+        this.logger.warn('[_createScheduleEventsFromTimeOff] No employee_number found, skipping');
+        return;
+      }
+
+      const events: Array<{
+        id: null;
+        date: string;
+        start: string;
+        end: string;
+        register: string;
+        location: string[];
+        uuid_tor: string;
+      }> = [];
+
+      // ── CASE 1: Days — 09:00 → 18:00 Chicago por cada día ────────────────────
+      if (timeType === TimeTypeEnum.Days) {
+        const { startDate, endDate } = request;
+        const start = moment(startDate, 'YYYY-MM-DD');
+        const end = moment(endDate, 'YYYY-MM-DD');
+
+        if (!start.isValid() || !end.isValid()) {
+          this.logger.warn('[_createScheduleEventsFromTimeOff] Invalid dates (Days), skipping');
+          return;
+        }
+
+        const totalDays = end.diff(start, 'days') + 1;
+
+        for (let i = 0; i < totalDays; i++) {
+          const day = start.clone().add(i, 'days');
+          const dateStr = day.format('YYYY-MM-DD');
+
+          const startUTC = moment.tz(`${dateStr} 09:00`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+            .utc().format('YYYY-MM-DDTHH:mm:ss');
+          const endUTC = moment.tz(`${dateStr} 18:00`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+            .utc().format('YYYY-MM-DDTHH:mm:ss');
+
+          events.push({
+            id: null,
+            date: dateStr,
+            start: startUTC,
+            end: endUTC,
+            register: 'Time Off Request',
+            location: employee_data?.multi_location ?? [],
+            uuid_tor: request.id, // ← referencia al TOR
+          });
+        }
+
+        // ── CASE 2: Hours — usa startTime/endTime del request ────────────────────
+      } else if (timeType === TimeTypeEnum.Hours) {
+        const { hourDate, startTime, endTime } = request;
+
+        if (!hourDate || !startTime || !endTime) {
+          this.logger.warn('[_createScheduleEventsFromTimeOff] Missing hourDate/startTime/endTime (Hours), skipping');
+          return;
+        }
+
+        const dateStr = moment(hourDate, 'YYYY-MM-DD').format('YYYY-MM-DD');
+        const startUTC = moment.tz(`${dateStr} ${startTime.substring(0, 5)}`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+          .utc().format('YYYY-MM-DDTHH:mm:ss');
+        const endUTC = moment.tz(`${dateStr} ${endTime.substring(0, 5)}`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+          .utc().format('YYYY-MM-DDTHH:mm:ss');
+
+        events.push({
+          id: null,
+          date: dateStr,
+          start: startUTC,
+          end: endUTC,
+          register: 'Time Off Request',
+          location: employee_data?.multi_location ?? [],
+          uuid_tor: request.id, // ← referencia al TOR
+        });
+
+      } else {
+        this.logger.warn(`[_createScheduleEventsFromTimeOff] Unknown timeType: ${timeType}, skipping`);
+        return;
+      }
+
+      if (!events.length) {
+        this.logger.warn('[_createScheduleEventsFromTimeOff] No events to create, skipping');
+        return;
+      }
+
+      const payload = {
+        employee_number: employeeNumber,
+        fixed: [],
+        events,
+      };
+
+      this.logger.log(`[_createScheduleEventsFromTimeOff] Creating ${events.length} event(s) for ${employeeNumber} | type: ${timeType} | uuid_tor: ${request.id}`);
+      await this.employeeScheduleService.create(payload as any);
+      this.logger.log(`[_createScheduleEventsFromTimeOff] ✅ Done for ${employeeNumber}`);
+
+    } catch (err) {
+      this.logger.warn(`[_createScheduleEventsFromTimeOff] Failed (non-blocking): ${err?.message}`);
+    }
+  }
+
+
+  private async _deleteScheduleEventsFromTimeOff(request: TimeOffRequest): Promise<void> {
+    try {
+      const employeeNumber = request.employee_data?.employee_number;
+
+      if (!employeeNumber) {
+        this.logger.warn('[_deleteScheduleEventsFromTimeOff] No employee_number found, skipping');
+        return;
+      }
+
+      const schedule = await this.employeeScheduleRepo.findOne({
+        where: { employee_number: employeeNumber },
+      });
+
+      if (!schedule) {
+        this.logger.warn(`[_deleteScheduleEventsFromTimeOff] No schedule found for ${employeeNumber}, skipping`);
+        return;
+      }
+
+      // ── Borra directo por uuid_tor — no importa timeType ni fechas ───────────
+      const result = await this.scheduleEventRepo
+        .createQueryBuilder()
+        .delete()
+        .from(ScheduleEvent)
+        .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
+        .andWhere('uuid_tor = :uuid_tor', { uuid_tor: request.id })
+        .execute();
+
+      this.logger.log(
+        `[_deleteScheduleEventsFromTimeOff] ✅ Deleted ${result.affected} event(s) for ${employeeNumber} | uuid_tor: ${request.id}`
+      );
+
+    } catch (err) {
+      this.logger.warn(`[_deleteScheduleEventsFromTimeOff] Failed (non-blocking): ${err?.message}`);
+    }
+  }
 
 }

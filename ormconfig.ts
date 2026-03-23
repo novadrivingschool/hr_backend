@@ -2,7 +2,6 @@ import { DataSource } from 'typeorm';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { TimeOffRequest } from 'src/time_off_request/entities/time_off_request.entity';
-import { Schedule } from 'src/schedule/entities/schedule.entity';
 import { Department } from 'src/departments/entities/department.entity';
 import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
@@ -26,6 +25,8 @@ import { Employee } from 'src/employees/entities/employee.entity';
 import { CrmPermissions } from 'src/employees/entities/crm-permissions.entity';
 import { ICareReason } from 'src/i_care_reasons/entities/i_care_reason.entity';
 import { EmployeeAccounting } from 'src/employee-accounting/entities/employee-accounting.entity';
+import { Timesheet } from 'src/payroll/entities/timesheet.entity';
+import { Holiday } from 'src/holidays/entities/holiday.entity';
 
 dotenv.config();
 
@@ -48,7 +49,6 @@ export const AppDataSource = new DataSource({
   database: process.env.POSTGRES_DB,
   entities: [
     TimeOffRequest,
-    Schedule,
     Department,
     FixedSchedule,
     EmployeeSchedule,
@@ -71,7 +71,9 @@ export const AppDataSource = new DataSource({
     Employee,
     CrmPermissions,
     ICareReason,
-    EmployeeAccounting
+    EmployeeAccounting,
+    Timesheet,
+    Holiday
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

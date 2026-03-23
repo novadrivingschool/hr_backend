@@ -4,9 +4,13 @@ import {
     IsString,
     IsOptional,
     ValidateNested,
-    IsNumber
+    IsNumber,
+    IsUUID,
+    IsEnum
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
+
 
 class CreateFixedScheduleDto {
     @IsOptional()
@@ -22,11 +26,9 @@ class CreateFixedScheduleDto {
     @IsString()
     end: string;
 
-    @IsString()
-    register: string;
+    @IsEnum(RegisterEnum)
+    register: RegisterEnum;
 
-    /* @IsString()
-    location: string; */
     @IsArray()
     @IsString({ each: true })
     location: string[];
@@ -46,20 +48,45 @@ class CreateScheduleEventDto {
     @IsString()
     end: string;
 
-    @IsString()
-    register: string;
+    @IsEnum(RegisterEnum)
+    register: RegisterEnum;
 
-    /* @IsString()
-    location: string; */
     @IsArray()
     @IsString({ each: true })
     location: string[];
+
+    @IsOptional()
+    @IsUUID()
+    uuid_tor: string | null;
+
+    @IsOptional()
+    @IsUUID()
+    uuid_extra_hours: string | null;
 }
 
 export class CreateEmployeeScheduleDto {
     @IsNotEmpty()
     @IsString()
     employee_number: string;
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => CreateFixedScheduleDto)
+    fixed: CreateFixedScheduleDto[];
+
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => CreateScheduleEventDto)
+    events: CreateScheduleEventDto[];
+}
+
+export class CreateBulkScheduleDto {
+    @IsNotEmpty()
+    @IsArray()
+    @IsString({ each: true })
+    employee_numbers: string[];
 
     @IsOptional()
     @IsArray()
