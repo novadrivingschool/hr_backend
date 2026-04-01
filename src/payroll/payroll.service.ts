@@ -59,15 +59,15 @@ export class PayrollService {
   ) { }
 
   private formatPayrollRangeText(
-  rangeStart: string | null | undefined,
-  rangeEnd: string | null | undefined,
-): string | null {
-  const start = rangeStart ? String(rangeStart) : null;
-  const end = rangeEnd ? String(rangeEnd) : null;
+    rangeStart: string | null | undefined,
+    rangeEnd: string | null | undefined,
+  ): string | null {
+    const start = rangeStart ? String(rangeStart) : null;
+    const end = rangeEnd ? String(rangeEnd) : null;
 
-  if (start && end) return `${start} - ${end}`;
-  return start || end || null;
-}
+    if (start && end) return `${start} - ${end}`;
+    return start || end || null;
+  }
 
   private safeFileName(value: string): string {
     return String(value || '')
@@ -3469,214 +3469,294 @@ export class PayrollService {
     clock_diff_status: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA';
     lunch_diff_status: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA';
   }[]> {
-    const tcwRecords = await this.timesheetRepository
-      .createQueryBuilder('t')
-      .where('t.day_date >= :start_date::date', { start_date })
-      .andWhere('t.day_date <= :end_date::date', { end_date })
-      .orderBy('t.day_date', 'ASC')
-      .addOrderBy('t.employee', 'ASC')
-      .getMany();
+    const extractTimeParts = (
+      value: string | null | undefined,
+    ): { hh: string; mm: string; ss: string } | null => {
+      if (!value) return null;
 
-    let activityOneData: any[] = [];
-    try {
-      const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
-      const { data } = await axios.post(
-        `${baseUrl}/new-activity/clock-report/data`,
-        { start_date, end_date },
-        { timeout: 15_000 },
-      );
-      activityOneData = data?.data ?? [];
-    } catch (error) {
-      console.error('⚠️ Activity ONE failed:', error.message);
-    }
+      const raw = String(value).trim();
+      if (!raw || raw === '—') return null;
 
-    let activityVoutData: any[] = [];
-    try {
-      const baseUrl = process.env.VOUT_API;
-      const { data } = await axios.post(
-        `${baseUrl}/activity_report/clock-report/data`,
-        { start_date, end_date },
-        { timeout: 15_000 },
-      );
-      activityVoutData = data?.data ?? [];
-    } catch (error) {
-      console.error('⚠️ Activity VOUT failed:', error.message);
-    }
+      const match = raw.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+      if (!match) return null;
 
-    const norm = (s: string) =>
-      s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-
-    const tokenize = (s: string) => norm(s).split(/\s+/).filter(Boolean);
-
-    const matchScore = (a: string, b: string): number => {
-      const ta = tokenize(a); const tb = tokenize(b);
-      if (!ta.length || !tb.length) return 0;
-      return ta.filter(t => tb.includes(t)).length / Math.min(ta.length, tb.length);
+      return {
+        hh: match[1].padStart(2, '0'),
+        mm: match[2],
+        ss: (match[3] ?? '00').padStart(2, '0'),
+      };
     };
 
-    const formatTo24Hours = (t: string | null): string => {
-      if (!t || t === '—' || t.toLowerCase().includes('no clock') || t.toLowerCase().includes('no lunch')) return t || '—';
-      const match = t.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM|am|pm)?$/);
-      if (!match) return t;
-
-      let h = parseInt(match[1], 10);
-      const m = match[2];
-      const mer = match[4]?.toUpperCase();
-
-      if (mer === 'PM' && h !== 12) h += 12;
-      if (mer === 'AM' && h === 12) h = 0;
-
-      return `${h.toString().padStart(2, '0')}:${m}${match[3] ? `:${match[3]}` : ''}`;
+    const formatHHMM = (value: string | null | undefined): string => {
+      const parts = extractTimeParts(value);
+      if (!parts) return '—';
+      return `${parts.hh}:${parts.mm}`;
     };
 
-    const parseTimeToMinutes = (t: string | null): number | null => {
-      if (!t || t === '—' || t.toLowerCase().includes('no clock') || t.toLowerCase().includes('no lunch')) return null;
-      const m24 = t.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-      if (m24) return parseInt(m24[1]) * 60 + parseInt(m24[2]);
-      const m12 = t.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-      if (m12) {
-        let h = parseInt(m12[1]); const m = parseInt(m12[2]); const mer = m12[3].toUpperCase();
-        if (mer === 'PM' && h !== 12) h += 12;
-        if (mer === 'AM' && h === 12) h = 0;
-        return h * 60 + m;
-      }
-      return null;
+    const formatHHMMSS = (value: string | null | undefined): string => {
+      const parts = extractTimeParts(value);
+      if (!parts) return '—';
+      return `${parts.hh}:${parts.mm}:${parts.ss}`;
+    };
+
+    const toMinutes = (value: string | null | undefined): number | null => {
+      const parts = extractTimeParts(value);
+      if (!parts) return null;
+      return this.timeToMinutes(`${parts.hh}:${parts.mm}:${parts.ss}`);
     };
 
     const diffLabel = (minsDiff: number): string => {
-      const abs = Math.abs(minsDiff); const sign = minsDiff >= 0 ? '+' : '-';
-      const h = Math.floor(abs / 60); const m = abs % 60;
+      const abs = Math.abs(minsDiff);
+      const sign = minsDiff >= 0 ? '+' : '-';
+      const h = Math.floor(abs / 60);
+      const m = abs % 60;
       return h > 0 ? `${sign}${h}h ${m}m` : `${sign}${m}m`;
     };
 
-    const actOneIndex = new Map<string, Map<string, any>>();
-    const actVoutIndex = new Map<string, Map<string, any>>();
-
-    for (const row of activityOneData) {
-      const n = norm(row.employee_name ?? '');
-      if (!actOneIndex.has(n)) actOneIndex.set(n, new Map());
-      actOneIndex.get(n)!.set(row.date, row);
-    }
-    for (const row of activityVoutData) {
-      const n = norm(row.employee_name ?? '');
-      if (!actVoutIndex.has(n)) actVoutIndex.set(n, new Map());
-      actVoutIndex.get(n)!.set(row.date, row);
-    }
-
-    const findEntry = (index: Map<string, Map<string, any>>, tcwName: string, date: string) => {
-      let bestKey = ''; let bestScore = 0;
-      for (const [n] of index) {
-        const s = matchScore(tcwName, n);
-        if (s > bestScore) { bestScore = s; bestKey = n; }
-      }
-      if (bestKey && bestScore >= 0.75) return index.get(bestKey)?.get(date) ?? null;
-      return null;
+    const formatHoursTrimmed = (value: number | null | undefined): string => {
+      return parseFloat(Number(value ?? 0).toFixed(2)).toString();
     };
 
-    const result: any[] = [];
+    const formatHoursFixed = (value: number | null | undefined): string => {
+      return Number(value ?? 0).toFixed(2);
+    };
 
-    for (const r of tcwRecords) {
-      const tcwName = r.employee;
-      const date = r.day_date;
+    const hoursToMinutes = (value: number | null | undefined): number => {
+      return Math.max(0, Math.round(Number(value ?? 0) * 60));
+    };
 
-      const totalHours = parseFloat(String(r.hours ?? 0));
-      const tcwIn = formatTo24Hours(r.time_in);
-      const tcwOut = formatTo24Hours(r.time_out);
+    const sourceLabel = (source: string | null | undefined): string => {
+      const raw = String(source ?? '').trim().toLowerCase();
+      if (raw === 'vout') return 'Activity VOUT';
+      if (raw === 'one') return 'Activity ONE';
+      return 'Activity';
+    };
 
-      let tcwLunchIn = 'No lunch';
-      let tcwLunchOut = 'No lunch';
-      let tcwLunchMins = Number(r.lunch_minutes) || 0;
-
-      // ── AQUÍ: Corrección del default warning ──
-      let tcwLunchWarning = '— Not registered';
-
-      if (r.lunch_in && r.lunch_out) {
-        tcwLunchIn = formatTo24Hours(r.lunch_in);
-        tcwLunchOut = formatTo24Hours(r.lunch_out);
-        tcwLunchWarning = tcwLunchMins > 60 ? '⚠️ Lunch exceeded 60 min' : '✅ OK';
+    const buildDiff = (
+      tcwMinutes: number | null,
+      activityMinutes: number | null,
+    ): { mins: number | null; label: string } => {
+      if (tcwMinutes === null || activityMinutes === null) {
+        return { mins: null, label: '—' };
       }
 
-      const oneEntry = findEntry(actOneIndex, tcwName, date);
-      const voutEntry = findEntry(actVoutIndex, tcwName, date);
-      const matchedEntry = voutEntry ?? oneEntry ?? null;
-      const matchSource = voutEntry ? 'Activity VOUT' : oneEntry ? 'Activity ONE' : '—';
+      const mins = activityMinutes - tcwMinutes;
+      return {
+        mins,
+        label: Math.abs(mins) > 3 ? `⚠️ ${diffLabel(mins)}` : `✅ ${diffLabel(mins)}`,
+      };
+    };
 
-      const matchedIn = matchedEntry ? parseTimeToMinutes(matchedEntry.clock_in) : null;
-      const matchedOut = matchedEntry ? parseTimeToMinutes(matchedEntry.clock_out) : null;
+    let fixedPayroll: any[] = [];
+    let variablePayroll: any[] = [];
 
-      let matchedHours = '—';
-      if (matchedEntry && matchedEntry.net_work_hours != null) {
-        matchedHours = Number(matchedEntry.net_work_hours).toFixed(2);
-      }
+    const [fixedResult, variableResult] = await Promise.allSettled([
+      this.getPayrollData('fixed' as WorkSchedule, start_date, end_date),
+      this.getPayrollData('variable' as WorkSchedule, start_date, end_date),
+    ]);
 
-      const actLunchIn = matchedEntry?.lunch_start ?? '—';
-      const actLunchOut = matchedEntry?.lunch_end ?? '—';
-      const actLunchMins = matchedEntry?.lunch_minutes ?? 0;
-      let actLunchWarning = '—';
+    if (fixedResult.status === 'fulfilled') {
+      fixedPayroll = Array.isArray(fixedResult.value) ? fixedResult.value : [];
+    } else {
+      console.error('⚠️ getClockComparisonData fixed payroll failed:', fixedResult.reason?.message ?? fixedResult.reason);
+    }
 
-      // ── AQUÍ: Corrección del default warning ──
-      if (matchedEntry) {
-        if (actLunchIn === 'No lunch' || actLunchMins === 0) {
-          actLunchWarning = '— Not registered';
-        } else if (actLunchMins > 60) {
-          actLunchWarning = '⚠️ Lunch exceeded 60 min';
-        } else {
-          actLunchWarning = '✅ OK';
+    if (variableResult.status === 'fulfilled') {
+      variablePayroll = Array.isArray(variableResult.value) ? variableResult.value : [];
+    } else {
+      console.error('⚠️ getClockComparisonData variable payroll failed:', variableResult.reason?.message ?? variableResult.reason);
+    }
+
+    if (
+      fixedResult.status === 'rejected' &&
+      variableResult.status === 'rejected'
+    ) {
+      throw new InternalServerErrorException(
+        'Failed to build clock comparison data',
+      );
+    }
+
+    const payrollEmployees = [...fixedPayroll, ...variablePayroll];
+    const rows: Array<{
+      date: string;
+      tcw_employee: string;
+      tcw_clock_in: string;
+      tcw_clock_out: string;
+      tcw_clock_out_status: string;
+      tcw_hours: string;
+      tcw_lunch_in: string;
+      tcw_lunch_out: string;
+      tcw_lunch_minutes: number;
+      tcw_lunch_warning: string;
+      activity_employee: string;
+      activity_total_hours: string;
+      activity_clock_in: string;
+      in_diff: string;
+      in_diff_mins: number | null;
+      activity_clock_out: string;
+      out_diff: string;
+      out_diff_mins: number | null;
+      activity_status: string;
+      activity_lunch_in: string;
+      lunch_in_diff: string;
+      lunch_in_diff_mins: number | null;
+      activity_lunch_out: string;
+      lunch_out_diff: string;
+      lunch_out_diff_mins: number | null;
+      activity_lunch_minutes: number;
+      activity_lunch_warning: string;
+      match_source: string;
+      match_result: string;
+      has_tcw_missing_clock_out: boolean;
+      has_activity_clock_out_warning: boolean;
+      has_no_match: boolean;
+      clock_diff_status: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA';
+      lunch_diff_status: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA';
+    }> = [];
+
+    const seen = new Set<string>();
+
+    for (const emp of payrollEmployees) {
+      const employeeNumber = String(emp?.employee_number ?? '');
+      const scheduleDetails = Array.isArray(emp?.schedule_details)
+        ? emp.schedule_details
+        : [];
+
+      for (const day of scheduleDetails) {
+        const date = String(day?.date ?? '');
+        const tcw = day?.time_clock_wizard ?? null;
+        const activity = day?.activity_report ?? null;
+
+        // Esta vista se basa en días con TCW, igual que la comparación original.
+        if (!tcw || !date) continue;
+
+        const uniqueKey = `${employeeNumber}__${date}`;
+        if (seen.has(uniqueKey)) continue;
+        seen.add(uniqueKey);
+
+        const tcwEmployee = String(
+          tcw?.employee_name ??
+          `${emp?.last_name ?? ''} ${emp?.name ?? ''}`.trim() ??
+          '—',
+        );
+
+        const tcwClockIn = tcw?.shift_start ? formatHHMM(tcw.shift_start) : '—';
+        const tcwClockOut = tcw?.shift_end ? formatHHMM(tcw.shift_end) : '—';
+        const tcwMissingClockOut = Boolean(
+          tcw?.missing_clock_out || !tcw?.shift_end,
+        );
+
+        const tcwHours = formatHoursTrimmed(Number(tcw?.worked_hours ?? 0));
+
+        const tcwLunchIn = tcw?.lunch_start ? formatHHMM(tcw.lunch_start) : 'No lunch';
+        const tcwLunchOut = tcw?.lunch_end ? formatHHMM(tcw.lunch_end) : 'No lunch';
+        const tcwLunchMinutes = tcw?.lunch_start && tcw?.lunch_end
+          ? hoursToMinutes(tcw?.lunch_total_hours)
+          : 0;
+
+        let tcwLunchWarning = '— Not registered';
+        if (tcw?.lunch_start && tcw?.lunch_end) {
+          tcwLunchWarning =
+            tcwLunchMinutes > 60 ? '⚠️ Lunch exceeded 60 min' : '✅ OK';
         }
-      }
 
-      const tcwInMins = parseTimeToMinutes(tcwIn);
-      let inDiffMins: number | null = null; let inDiffStr = '—';
-      if (tcwInMins !== null && matchedIn !== null) {
-        inDiffMins = matchedIn - tcwInMins;
-        inDiffStr = Math.abs(inDiffMins) > 3 ? `⚠️ ${diffLabel(inDiffMins)}` : `✅ ${diffLabel(inDiffMins)}`;
-      }
+        const hasActivity = Boolean(activity);
+        const matchSource = hasActivity ? sourceLabel(activity?.source) : '—';
 
-      const tcwOutMins = parseTimeToMinutes(tcwOut);
-      let outDiffMins: number | null = null; let outDiffStr = '—';
-      if (tcwOutMins !== null && matchedOut !== null) {
-        outDiffMins = matchedOut - tcwOutMins;
-        outDiffStr = Math.abs(outDiffMins) > 3 ? `⚠️ ${diffLabel(outDiffMins)}` : `✅ ${diffLabel(outDiffMins)}`;
-      }
+        const activityEmployee = hasActivity
+          ? String(activity?.employee_name ?? '—')
+          : '—';
 
-      // ── DIFFS PARA LUNCH ──
-      const actLunchInMins = parseTimeToMinutes(actLunchIn);
-      const actLunchOutMins = parseTimeToMinutes(actLunchOut);
-      const parsedTcwLunchInMins = parseTimeToMinutes(tcwLunchIn);
-      const parsedTcwLunchOutMins = parseTimeToMinutes(tcwLunchOut);
+        const activityClockIn = hasActivity && activity?.shift_start
+          ? formatHHMMSS(activity.shift_start)
+          : '—';
 
-      let lunchInDiffMins: number | null = null;
-      let lunchInDiffStr = '—';
-      let lunchOutDiffMins: number | null = null;
-      let lunchOutDiffStr = '—';
-      let lunchDiffStatus: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA' = 'NO_DATA';
+        const activityClockOut = hasActivity && activity?.shift_end
+          ? formatHHMMSS(activity.shift_end)
+          : '—';
 
-      if (!matchedEntry) {
-        lunchDiffStatus = 'NO_DATA';
-      } else {
-        const tcwHasLunch = parsedTcwLunchInMins !== null;
-        const actHasLunch = actLunchInMins !== null;
+        const activityHours = hasActivity
+          ? formatHoursFixed(Number(activity?.worked_hours ?? 0))
+          : '—';
 
-        if (!tcwHasLunch && !actHasLunch) {
-          lunchInDiffStr = '—';
-          lunchInDiffMins = null;
-          lunchOutDiffStr = '—';
-          lunchOutDiffMins = null;
+        const activityLunchIn = hasActivity
+          ? activity?.lunch_start
+            ? formatHHMMSS(activity.lunch_start)
+            : 'No lunch'
+          : '—';
+
+        const activityLunchOut = hasActivity
+          ? activity?.lunch_end
+            ? formatHHMMSS(activity.lunch_end)
+            : 'No lunch'
+          : '—';
+
+        const activityLunchMinutes =
+          hasActivity && activity?.lunch_start && activity?.lunch_end
+            ? hoursToMinutes(activity?.lunch_total_hours)
+            : 0;
+
+        let activityLunchWarning = '—';
+        if (hasActivity) {
+          if (!activity?.lunch_start || !activity?.lunch_end || activityLunchMinutes === 0) {
+            activityLunchWarning = '— Not registered';
+          } else if (activityLunchMinutes > 60) {
+            activityLunchWarning = '⚠️ Lunch exceeded 60 min';
+          } else {
+            activityLunchWarning = '✅ OK';
+          }
+        }
+
+        const inDiff = buildDiff(
+          toMinutes(tcw?.shift_start),
+          toMinutes(activity?.shift_start),
+        );
+
+        const outDiff = buildDiff(
+          toMinutes(tcw?.shift_end),
+          toMinutes(activity?.shift_end),
+        );
+
+        const tcwHasLunch =
+          toMinutes(tcw?.lunch_start) !== null && toMinutes(tcw?.lunch_end) !== null;
+
+        const activityHasLunch =
+          toMinutes(activity?.lunch_start) !== null &&
+          toMinutes(activity?.lunch_end) !== null;
+
+        let lunchInDiffMins: number | null = null;
+        let lunchInDiffStr = '—';
+        let lunchOutDiffMins: number | null = null;
+        let lunchOutDiffStr = '—';
+        let lunchDiffStatus: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA' = 'NO_DATA';
+
+        if (!hasActivity) {
           lunchDiffStatus = 'NO_DATA';
-        } else if (tcwHasLunch && !actHasLunch) {
+        } else if (!tcwHasLunch && !activityHasLunch) {
+          lunchDiffStatus = 'NO_DATA';
+        } else if (tcwHasLunch && !activityHasLunch) {
           lunchInDiffStr = '⚠️ Missing in Activity';
           lunchOutDiffStr = '⚠️ Missing in Activity';
           lunchDiffStatus = 'REVIEW_REQUIRED';
-        } else if (!tcwHasLunch && actHasLunch) {
+        } else if (!tcwHasLunch && activityHasLunch) {
           lunchInDiffStr = '⚠️ Missing in TCW';
           lunchOutDiffStr = '⚠️ Missing in TCW';
           lunchDiffStatus = 'REVIEW_REQUIRED';
         } else {
-          lunchInDiffMins = actLunchInMins! - parsedTcwLunchInMins!;
-          lunchInDiffStr = Math.abs(lunchInDiffMins) > 3 ? `⚠️ ${diffLabel(lunchInDiffMins)}` : `✅ ${diffLabel(lunchInDiffMins)}`;
+          lunchInDiffMins =
+            toMinutes(activity?.lunch_start)! - toMinutes(tcw?.lunch_start)!;
+          lunchOutDiffMins =
+            toMinutes(activity?.lunch_end)! - toMinutes(tcw?.lunch_end)!;
 
-          lunchOutDiffMins = actLunchOutMins! - parsedTcwLunchOutMins!;
-          lunchOutDiffStr = Math.abs(lunchOutDiffMins) > 3 ? `⚠️ ${diffLabel(lunchOutDiffMins)}` : `✅ ${diffLabel(lunchOutDiffMins)}`;
+          lunchInDiffStr =
+            Math.abs(lunchInDiffMins) > 3
+              ? `⚠️ ${diffLabel(lunchInDiffMins)}`
+              : `✅ ${diffLabel(lunchInDiffMins)}`;
+
+          lunchOutDiffStr =
+            Math.abs(lunchOutDiffMins) > 3
+              ? `⚠️ ${diffLabel(lunchOutDiffMins)}`
+              : `✅ ${diffLabel(lunchOutDiffMins)}`;
 
           if (Math.abs(lunchInDiffMins) > 3 || Math.abs(lunchOutDiffMins) > 3) {
             lunchDiffStatus = 'REVIEW_REQUIRED';
@@ -3684,67 +3764,80 @@ export class PayrollService {
             lunchDiffStatus = 'OK';
           }
         }
-      }
 
-      let clockOutLabel = '—';
-      if (matchedEntry) {
-        if (matchedEntry.clock_out_status === 'registered') {
-          clockOutLabel = '✅ Clock Out registered';
-        } else if (matchedEntry.clock_out_status === 'no_clock_out') {
-          clockOutLabel = `🟠 NO CLOCK OUT — Last interaction found in ${matchSource}. Please verify the missing Clock Out in ${matchSource}.`;
-        } else if (matchedEntry.clock_out_status === 'no_records') {
-          clockOutLabel = `🟠 NO CLOCK OUT — No activity records found in ${matchSource}. Please verify in ${matchSource}.`;
+        let activityStatus = '—';
+        if (hasActivity) {
+          if (activity?.shift_end) {
+            activityStatus = '✅ Clock Out registered';
+          } else if (activity?.shift_start) {
+            activityStatus = `🟠 NO CLOCK OUT — Last interaction found in ${matchSource}. Please verify the missing Clock Out in ${matchSource}.`;
+          } else {
+            activityStatus = `🟠 NO CLOCK OUT — No activity records found in ${matchSource}. Please verify in ${matchSource}.`;
+          }
         }
+
+        const tcwClockOutStatus = tcwMissingClockOut
+          ? '🟠 Missing Clock Out in TCW — Please verify and correct the missing Clock Out entry.'
+          : '✅ OK';
+
+        const hasInWarning = inDiff.mins !== null && Math.abs(inDiff.mins) > 3;
+        const hasOutWarning = outDiff.mins !== null && Math.abs(outDiff.mins) > 3;
+        const hasAnyClockData = inDiff.mins !== null || outDiff.mins !== null;
+
+        const clockDiffStatus: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA' =
+          !hasAnyClockData
+            ? 'NO_DATA'
+            : hasInWarning || hasOutWarning
+              ? 'REVIEW_REQUIRED'
+              : 'OK';
+
+        rows.push({
+          date,
+          tcw_employee: tcwEmployee,
+          tcw_clock_in: tcwClockIn,
+          tcw_clock_out: tcwClockOut,
+          tcw_clock_out_status: tcwClockOutStatus,
+          tcw_hours: tcwHours,
+          tcw_lunch_in: tcwLunchIn,
+          tcw_lunch_out: tcwLunchOut,
+          tcw_lunch_minutes: tcwLunchMinutes,
+          tcw_lunch_warning: tcwLunchWarning,
+          activity_employee: activityEmployee,
+          activity_total_hours: activityHours,
+          activity_clock_in: activityClockIn,
+          in_diff: inDiff.label,
+          in_diff_mins: inDiff.mins,
+          activity_clock_out: activityClockOut,
+          out_diff: outDiff.label,
+          out_diff_mins: outDiff.mins,
+          activity_status: activityStatus,
+          activity_lunch_in: activityLunchIn,
+          lunch_in_diff: lunchInDiffStr,
+          lunch_in_diff_mins: lunchInDiffMins,
+          activity_lunch_out: activityLunchOut,
+          lunch_out_diff: lunchOutDiffStr,
+          lunch_out_diff_mins: lunchOutDiffMins,
+          activity_lunch_minutes: activityLunchMinutes,
+          activity_lunch_warning: activityLunchWarning,
+          match_source: matchSource,
+          match_result: hasActivity ? '✅ Match found' : '⚠️ No match found',
+          has_tcw_missing_clock_out: tcwMissingClockOut,
+          has_activity_clock_out_warning: Boolean(hasActivity && !activity?.shift_end),
+          has_no_match: !hasActivity,
+          clock_diff_status: clockDiffStatus,
+          lunch_diff_status: lunchDiffStatus,
+        });
       }
-
-      const tcwClockOutStatus = tcwOut === '—'
-        ? '🟠 Missing Clock Out in TCW — Please verify and correct the missing Clock Out entry.'
-        : '✅ OK';
-
-      const clockDiffStatus: 'OK' | 'REVIEW_REQUIRED' | 'NO_DATA' =
-        (inDiffMins === null && outDiffMins === null) ? 'NO_DATA'
-          : (inDiffMins !== null && Math.abs(inDiffMins) > 3) || (outDiffMins !== null && Math.abs(outDiffMins) > 3) ? 'REVIEW_REQUIRED'
-            : 'OK';
-
-      result.push({
-        date,
-        tcw_employee: tcwName,
-        tcw_clock_in: tcwIn,
-        tcw_clock_out: tcwOut,
-        tcw_clock_out_status: tcwClockOutStatus,
-        tcw_hours: parseFloat(totalHours.toFixed(2)).toString(),
-        tcw_lunch_in: tcwLunchIn,
-        tcw_lunch_out: tcwLunchOut,
-        tcw_lunch_minutes: tcwLunchMins,
-        tcw_lunch_warning: tcwLunchWarning,
-        activity_employee: matchedEntry?.employee_name ?? '—',
-        activity_total_hours: matchedHours,
-        activity_clock_in: matchedEntry?.clock_in ?? '—',
-        in_diff: inDiffStr,
-        in_diff_mins: inDiffMins,
-        activity_clock_out: matchedEntry?.clock_out ?? '—',
-        out_diff: outDiffStr,
-        out_diff_mins: outDiffMins,
-        activity_status: clockOutLabel,
-        activity_lunch_in: actLunchIn,
-        lunch_in_diff: lunchInDiffStr,
-        lunch_in_diff_mins: lunchInDiffMins,
-        activity_lunch_out: actLunchOut,
-        lunch_out_diff: lunchOutDiffStr,
-        lunch_out_diff_mins: lunchOutDiffMins,
-        activity_lunch_minutes: actLunchMins,
-        activity_lunch_warning: actLunchWarning,
-        match_source: matchSource,
-        match_result: matchedEntry ? '✅ Match found' : '⚠️ No match found',
-        has_tcw_missing_clock_out: tcwOut === '—',
-        has_activity_clock_out_warning: clockOutLabel.startsWith('🟠'),
-        has_no_match: !matchedEntry,
-        clock_diff_status: clockDiffStatus,
-        lunch_diff_status: lunchDiffStatus,
-      });
     }
 
-    return result;
+    rows.sort((a, b) => {
+      if (a.date === b.date) {
+        return a.tcw_employee.localeCompare(b.tcw_employee);
+      }
+      return a.date.localeCompare(b.date);
+    });
+
+    return rows;
   }
 
   async generatePayrollZip(
