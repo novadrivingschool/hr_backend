@@ -6,7 +6,8 @@ import {
     ValidateNested,
     IsNumber,
     IsUUID,
-    IsEnum
+    IsEnum,
+    IsBoolean
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
@@ -32,6 +33,10 @@ class CreateFixedScheduleDto {
     @IsArray()
     @IsString({ each: true })
     location: string[];
+
+    @IsOptional()
+    @IsBoolean()
+    strict?: boolean;
 }
 
 class CreateScheduleEventDto {
@@ -62,6 +67,10 @@ class CreateScheduleEventDto {
     @IsOptional()
     @IsUUID()
     uuid_extra_hours: string | null;
+
+    @IsOptional()
+    @IsBoolean()
+    strict?: boolean;
 }
 
 export class CreateEmployeeScheduleDto {

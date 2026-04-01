@@ -36,4 +36,7 @@ export class ScheduleEvent {
 
   @Column({ type: 'uuid', nullable: true, default: null })
   uuid_extra_hours: string | null;
+
+  @Column({ type: 'boolean', default: false })
+  strict: boolean;
 }

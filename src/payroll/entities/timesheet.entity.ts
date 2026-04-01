@@ -4,7 +4,6 @@ import { Entity, PrimaryGeneratedColumn, Column, Index, Unique } from 'typeorm';
 @Unique('UQ_timesheet_employee_date_in', ['employee', 'day_date', 'time_in'])
 @Index(['employee', 'day_date'])
 export class Timesheet {
-
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
@@ -22,6 +21,17 @@ export class Timesheet {
 
   @Column({ type: 'varchar', length: 20, name: 'time_out', nullable: true })
   time_out: string | null;
+
+  // ── NUEVAS COLUMNAS PARA EL LUNCH ──
+  @Column({ type: 'varchar', length: 20, name: 'lunch_in', nullable: true })
+  lunch_in: string | null;
+
+  @Column({ type: 'varchar', length: 20, name: 'lunch_out', nullable: true })
+  lunch_out: string | null;
+
+  @Column({ type: 'int', name: 'lunch_minutes', default: 0 })
+  lunch_minutes: number;
+  // ───────────────────────────────────
 
   @Column({ type: 'decimal', precision: 6, scale: 2, name: 'hours', default: 0 })
   hours: number;
@@ -46,5 +56,4 @@ export class Timesheet {
 
   @Column({ type: 'decimal', precision: 8, scale: 2, name: 'total_day_wise_total_hours', default: 0 })
   total_day_wise_total_hours: number;
-
 }

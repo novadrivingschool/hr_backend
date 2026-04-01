@@ -6,7 +6,6 @@ import {
   ManyToOne
 } from 'typeorm';
 
-
 @Entity('fixed_schedule')
 export class FixedSchedule {
   @PrimaryGeneratedColumn()
@@ -27,8 +26,9 @@ export class FixedSchedule {
   @ManyToOne(() => EmployeeSchedule, schedule => schedule.fixed, { onDelete: 'CASCADE' })
   schedule: EmployeeSchedule;
 
-  /* @Column()
-  location: string; */
   @Column({ type: 'jsonb', default: () => "'[]'" })
   location: string[];
+
+  @Column({ type: 'boolean', default: false })
+  strict: boolean;
 }

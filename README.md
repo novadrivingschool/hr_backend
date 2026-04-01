@@ -68,15 +68,15 @@ docker run --name hr-api-dev -d -p 5006:5006 --restart always hr-api-dev
 
 
 ## Production
-docker build -t hr-api-dev .
-docker run --name hr-api-dev \
+docker build -t hr-api .
+docker run --name hr-api \
   -d \
   -p 5006:5006 \
   --restart always \
   -v $(pwd)/.env:/usr/src/app/.env \
-  hr-api-dev
+  hr-api
 
-docker logs hr-api-dev -f
+docker logs hr-api -f
 
 docker system prune -a --volumes
 

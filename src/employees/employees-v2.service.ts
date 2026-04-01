@@ -166,4 +166,14 @@ export class EmployeesV2Service {
 
     return qb.getMany();
   }
+
+  // Returns only active employees with a danubanet_name_1 to optimize performance
+  async getDanubanetList() {
+    return await this.employeeRepo.find({
+      select: ['employee_number', 'name', 'last_name', 'danubanet_name_1'],
+      where: {
+        status: 'Active',
+      },
+    });
+  }
 }

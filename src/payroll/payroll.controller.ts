@@ -41,13 +41,50 @@ export class PayrollController {
       end_date,
     );
 
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="payroll_${work_schedule}_${start_date}_${end_date}.zip"`,
+    );
+
+    return res.send(buffer);
+  }
+  /* @Post('records/pdf')
+  async getPayrollPdf(
+    @Query('work_schedule') work_schedule: string,
+    @Query('start_date') start_date: string,
+    @Query('end_date') end_date: string,
+    @Res() res: Response,
+  ) {
+    if (!work_schedule || !start_date || !end_date) {
+      throw new BadRequestException('work_schedule, start_date y end_date son requeridos');
+    }
+
+    if (!Object.values(WorkSchedule).includes(work_schedule.toLowerCase() as WorkSchedule)) {
+      throw new BadRequestException('work_schedule debe ser "fixed" o "variable"');
+    }
+
+    const hasData = await this.payrollService.hasTimesheetDataForRange(start_date, end_date);
+    if (!hasData) {
+      throw new BadRequestException(
+        `No hay datos de timesheet registrados para el rango ${start_date} — ${end_date}. ` +
+        `Por favor, sube primero el archivo CSV mediante el endpoint correspondiente.`,
+      );
+    }
+
+    const buffer = await this.payrollService.generatePayrollPdf(
+      work_schedule.toLowerCase() as WorkSchedule,
+      start_date,
+      end_date,
+    );
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="payroll_${work_schedule}_${start_date}_${end_date}.pdf"`,
     );
     res.send(buffer);
-  }
+  } */
 
   @Post('records/data')
   async getPayrollData(

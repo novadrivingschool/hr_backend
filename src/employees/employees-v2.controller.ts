@@ -64,6 +64,15 @@ export class EmployeesV2Controller {
   }
 
   /**
+   * READ: Lightweight endpoint for external microservices to match employees
+   * METHOD: GET /v2/employees/list/danubanet
+   */
+  @Get('list/danubanet')
+  getDanubanetList() {
+    return this.employeesService.getDanubanetList();
+  }
+
+  /**
    * READ (ONE): Obtiene la información de un empleado específico por su employee_number.
    * METHOD: GET /v2/employees/:employee_number
    */

@@ -4,6 +4,7 @@ import { CreateBulkScheduleDto, CreateEmployeeScheduleDto } from './dto/create-e
 import { UpdateEmployeeScheduleDto } from './dto/update-employee_schedule.dto';
 import { EmployeesService } from 'src/employees/employees.service';
 import { FilterEventsDto } from './dto/filter-events.dto';
+import { FilterSchedulePanelDto } from './dto/filter-schedule-panel.dto';
 
 @Controller('employee-schedule')
 export class EmployeeScheduleController {
@@ -24,6 +25,11 @@ export class EmployeeScheduleController {
     console.log('------------------ createBulk -------------------');
     console.log(`Creating schedule for ${dto.employee_numbers.length} employee(s)`);
     return this.scheduleService.createBulk(dto);
+  }
+
+  @Post('panel/filter')
+  async filterSchedulePanel(@Body() filters: FilterSchedulePanelDto) {
+    return this.scheduleService.filterSchedulePanel(filters);
   }
 
   @Post('employees/by-departments')
