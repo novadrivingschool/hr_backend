@@ -54,6 +54,18 @@ export interface CreateTimeOffRequestSavedDto {
 
     coordinator_comments?: string;
     hr_comments?: string;
+
+    /** ¿Se paga este time-off? */
+    is_paid?: boolean;
+
+    /** ¿El empleado va a recuperar las horas/días? */
+    recovery_required?: boolean;
+
+    /**
+     * Bloques de horario en los que se recuperarán las horas.
+     * null / undefined si recovery_required === false.
+     */
+    recovery_schedule?: RecoveryEntryDto[] | null;
 }
 
 export interface RecipientDto {
@@ -86,4 +98,10 @@ export interface SendTemplateResponse {
     templateName: string;
     subject: string;
     total: number;
+}
+
+export interface RecoveryEntryDto {
+    date: string;       // YYYY-MM-DD
+    startTime: string;  // HH:mm
+    endTime: string;    // HH:mm
 }

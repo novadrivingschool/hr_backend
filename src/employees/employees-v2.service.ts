@@ -5,6 +5,53 @@ import { Employee } from '../employees/entities/employee.entity';
 import { CreateEmployeeDto } from '../employees/dto/create-employee.dto';
 import { UpdateEmployeeDto } from '../employees/dto/update-employee.dto';
 import { SearchEmployeeDto } from './dto/filter-employee.dto';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import puppeteer from 'puppeteer';
+
+
+type OrgPerson = {
+  employee_number: string;
+  full_name: string;
+  nova_email: string;
+  departments: string[];
+  positions: string[];
+};
+
+type OrgDepartment = {
+  department: string;
+  coordinators: OrgPerson[];
+  staff: OrgPerson[];
+  total_members: number;
+};
+
+type OrganigramData = {
+  generated_at: string;
+  total_top_management: number;
+  total_departments: number;
+  total_employees_processed: number;
+  top_management: OrgPerson[];
+  departments: OrgDepartment[];
+};
+
+type OrgTier = 'Leader' | 'Coordinator' | 'Staff';
+
+type OrganigramPerson = {
+  employee_number: string;
+  full_name: string;
+  nova_email: string;
+  departments: string[];
+  positions: string[];
+  tier: OrgTier;
+};
+
+type DepartmentOrganigram = {
+  department: string;
+  leaders: OrganigramPerson[];
+  coordinators: OrganigramPerson[];
+  staff: OrganigramPerson[];
+  total_members: number;
+};
 
 
 @Injectable()
@@ -13,6 +60,174 @@ export class EmployeesV2Service {
     @InjectRepository(Employee)
     private readonly employeeRepo: Repository<Employee>,
   ) { }
+
+  private async resolveOrganigramTemplatePath(): Promise<string> {
+    const possiblePaths = [
+      path.join(process.cwd(), 'dist', 'src', 'employees', 'templates', 'organigram.html'),
+      path.join(process.cwd(), 'dist', 'employees', 'templates', 'organigram.html'),
+      path.join(process.cwd(), 'src', 'employees', 'templates', 'organigram.html'),
+      path.join(__dirname, 'templates', 'organigram.html'),
+    ];
+
+    for (const filePath of possiblePaths) {
+      try {
+        await fs.access(filePath);
+        return filePath;
+      } catch {
+        // seguimos probando
+      }
+    }
+
+    throw new Error(
+      `organigram.html no fue encontrado. Rutas probadas:\n${possiblePaths.join('\n')}`
+    );
+  }
+
+  private async buildOrganigramHtml(data: any): Promise<string> {
+    const templatePath = await this.resolveOrganigramTemplatePath();
+    const template = await fs.readFile(templatePath, 'utf8');
+    const safeJson = JSON.stringify(data).replace(/</g, '\\u003c');
+
+    return template.replace('__ORG_DATA__', safeJson);
+  }
+
+  private normalizeStringArray(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return [...new Set(
+        value
+          .map((v) => String(v ?? '').trim())
+          .filter(Boolean)
+      )];
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      return [...new Set(
+        value
+          .split(',')
+          .map((v) => v.trim())
+          .filter(Boolean)
+      )];
+    }
+
+    return [];
+  }
+
+  private normalizePositions(positions: string[]): string[] {
+    return positions.map((p) => p.trim().toLowerCase());
+  }
+
+  private isTopManagement(positions: string[]): boolean {
+    const normalized = this.normalizePositions(positions);
+    return normalized.includes('director') || normalized.includes('manager');
+  }
+
+  private isCoordinator(positions: string[]): boolean {
+    const normalized = this.normalizePositions(positions);
+    return normalized.includes('coordinator');
+  }
+
+  private sortPeople(a: OrgPerson, b: OrgPerson): number {
+    return a.full_name.localeCompare(b.full_name);
+  }
+
+  private async buildOrganigramData(): Promise<OrganigramData> {
+    const employees = await this.employeeRepo.find({
+      select: [
+        'employee_number',
+        'name',
+        'last_name',
+        'nova_email',
+        'status',
+        'multi_department',
+        'multi_position',
+      ],
+      where: {
+        status: 'Active',
+      },
+    });
+
+    const topManagementMap = new Map<string, OrgPerson>();
+    const departmentsMap = new Map<string, OrgDepartment>();
+
+    for (const employee of employees) {
+      const departments = this.normalizeStringArray(employee.multi_department);
+      const positions = this.normalizeStringArray(employee.multi_position);
+
+      const person: OrgPerson = {
+        employee_number: employee.employee_number,
+        full_name:
+          `${employee.name || ''} ${employee.last_name || ''}`.trim() ||
+          employee.employee_number,
+        nova_email: employee.nova_email || '',
+        departments,
+        positions,
+      };
+
+      if (this.isTopManagement(positions)) {
+        if (!topManagementMap.has(person.employee_number)) {
+          topManagementMap.set(person.employee_number, person);
+        }
+        continue;
+      }
+
+      if (!departments.length) continue;
+
+      for (const department of departments) {
+        if (!departmentsMap.has(department)) {
+          departmentsMap.set(department, {
+            department,
+            coordinators: [],
+            staff: [],
+            total_members: 0,
+          });
+        }
+
+        const dept = departmentsMap.get(department)!;
+
+        if (this.isCoordinator(positions)) {
+          dept.coordinators.push(person);
+        } else {
+          dept.staff.push(person);
+        }
+      }
+    }
+
+    const top_management = Array.from(topManagementMap.values())
+      .sort((a, b) => this.sortPeople(a, b));
+
+    const departments = Array.from(departmentsMap.values())
+      .map((dept) => {
+        dept.coordinators.sort((a, b) => this.sortPeople(a, b));
+        dept.staff.sort((a, b) => this.sortPeople(a, b));
+        dept.total_members = dept.coordinators.length + dept.staff.length;
+        return dept;
+      })
+      .sort((a, b) => a.department.localeCompare(b.department));
+
+    return {
+      generated_at: new Date().toISOString(),
+      total_top_management: top_management.length,
+      total_departments: departments.length,
+      total_employees_processed: employees.length,
+      top_management,
+      departments,
+    };
+  }
+
+  private getTier(positions: string[]): OrgTier {
+    const normalized = positions.map(p => p.trim().toLowerCase());
+
+    if (normalized.includes('director') || normalized.includes('manager')) {
+      return 'Leader';
+    }
+
+    if (normalized.includes('coordinator')) {
+      return 'Coordinator';
+    }
+
+    return 'Staff';
+  }
+
 
   /**
    * Función utilitaria privada equivalente a la de Python.
@@ -147,7 +362,10 @@ export class EmployeesV2Service {
         'e.last_name',
         'e.employee_number',
         'e.roles',
-        'e.status'
+        'e.status',
+        'e.multi_location',
+        'e.multi_company',
+        'e.nova_email',
       ])
       .where('e.status = :status', { status: 'Active' });
 
@@ -176,4 +394,86 @@ export class EmployeesV2Service {
       },
     });
   }
+
+
+  async getOrganigramPng(): Promise<Buffer> {
+    const data = await this.buildOrganigramData();
+    const html = await this.buildOrganigramHtml(data);
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    try {
+      const page = await browser.newPage();
+
+      page.setDefaultNavigationTimeout(0);
+      page.setDefaultTimeout(0);
+
+      await page.setViewport({
+        width: 1600,
+        height: 1200,
+        deviceScaleFactor: 2,
+      });
+
+      await page.setContent(html, {
+        waitUntil: 'domcontentloaded',
+        timeout: 0,
+      });
+
+      await page.waitForSelector('#app', { timeout: 0 });
+
+      await page.evaluate(async () => {
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      });
+
+      const dimensions = await page.evaluate(() => {
+        const body = document.body;
+        const doc = document.documentElement;
+
+        return {
+          width: Math.max(
+            body.scrollWidth,
+            body.offsetWidth,
+            doc.clientWidth,
+            doc.scrollWidth,
+            doc.offsetWidth,
+            1600,
+          ),
+          height: Math.max(
+            body.scrollHeight,
+            body.offsetHeight,
+            doc.clientHeight,
+            doc.scrollHeight,
+            doc.offsetHeight,
+            900,
+          ),
+        };
+      });
+
+      await page.setViewport({
+        width: Math.ceil(dimensions.width),
+        height: Math.ceil(dimensions.height),
+        deviceScaleFactor: 2,
+      });
+
+      await page.evaluate(async () => {
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+      });
+
+      const image = await page.screenshot({
+        type: 'png',
+        fullPage: true,
+      });
+
+      return Buffer.from(image);
+    } finally {
+      await browser.close();
+    }
+  }
+
+
 }

@@ -10,3 +10,8 @@ export enum StatusEnum {
   NotApproved = 'Not Approved',
   Cancelled = 'Cancelled',
 }
+
+export enum PaymentStatusEnum {
+  Paid = 'Paid',
+  Unpaid = 'Unpaid',
+}

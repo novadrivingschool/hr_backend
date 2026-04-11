@@ -1,4 +1,10 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import {
+    Entity,
+    PrimaryGeneratedColumn,
+    Column,
+    CreateDateColumn,
+    UpdateDateColumn,
+} from 'typeorm';
 import { StatusEnum, TimeTypeEnum } from '../enums';
 
 @Entity('time_off_requests')
@@ -95,4 +101,35 @@ export class TimeOffRequest {
         time: string;
     } | null;
 
+    // ── Pago ─────────────────────────────────────────────────────────────────────
+    @Column({ type: 'boolean', default: false })
+    is_paid: boolean;
+
+    // ── Recuperación ─────────────────────────────────────────────────────────────
+    @Column({ type: 'boolean', default: false })
+    recovery_required: boolean;
+
+    /**
+     * Solo aplica si recovery_required === true.
+     * Cada entry define un bloque de recuperación:
+     *   - date:      YYYY-MM-DD
+     *   - startTime: HH:mm
+     *   - endTime:   HH:mm
+     *
+     * Para timeType=Days  → puede haber N entries (una por día a recuperar)
+     * Para timeType=Hours → normalmente 1 entry
+     */
+    @Column({ type: 'jsonb', nullable: true })
+    recovery_schedule: Array<{
+        date: string;
+        startTime: string;
+        endTime: string;
+    }> | null;
+
+    // ── Auditoría real BD ────────────────────────────────────────────────────────
+    @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
+    createdAt: Date;
+
+    @UpdateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
+    updatedAt: Date;
 }

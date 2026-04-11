@@ -479,9 +479,19 @@ export class PayrollService {
     };
   }
 
-  private calculateHours(start: string, end: string): number {
+  private calculateHours(
+    start: string | null | undefined,
+    end: string | null | undefined,
+  ): number {
+    if (!start || !end) return 0;
+
     const startTime = new Date(start).getTime();
     const endTime = new Date(end).getTime();
+
+    if (Number.isNaN(startTime) || Number.isNaN(endTime) || endTime <= startTime) {
+      return 0;
+    }
+
     return (endTime - startTime) / (1000 * 60 * 60);
   }
 
@@ -1082,6 +1092,10 @@ export class PayrollService {
             timeOffDetails: [],
             extraHoursDetails: [],
           };
+        }
+
+        if (!event.start || !event.end) {
+          continue;
         }
 
         const rawHours = this.calculateHours(event.start, event.end);
@@ -2121,17 +2135,25 @@ export class PayrollService {
         (e) => e.date === dateStr && e.register === RegisterEnum.LUNCH,
       );
 
-      if (eventShift) {
+      if (eventShift?.start && eventShift?.end) {
         const rawHours = this.calculateHours(eventShift.start, eventShift.end);
-        lunchDeducted = eventLunch
-          ? Number(this.calculateHours(eventLunch.start, eventLunch.end).toFixed(2))
+
+        const hasEventLunch = Boolean(eventLunch?.start && eventLunch?.end);
+
+        lunchDeducted = hasEventLunch
+          ? Number(this.calculateHours(eventLunch!.start, eventLunch!.end).toFixed(2))
           : 0;
 
         hoursToday = Math.max(0, rawHours - lunchDeducted);
         shiftStart = this.formatToChicago(dateStr, eventShift.start);
         shiftEnd = this.formatToChicago(dateStr, eventShift.end);
-        lunchStart = eventLunch ? this.formatToChicago(dateStr, eventLunch.start) : null;
-        lunchEnd = eventLunch ? this.formatToChicago(dateStr, eventLunch.end) : null;
+        lunchStart = hasEventLunch
+          ? this.formatToChicago(dateStr, eventLunch!.start)
+          : null;
+        lunchEnd = hasEventLunch
+          ? this.formatToChicago(dateStr, eventLunch!.end)
+          : null;
+
         source = 'Event';
         strict = null;
       } else {
@@ -2184,19 +2206,18 @@ export class PayrollService {
   }
 
   // Parsea un Timestamp (Eventos) o un Time string puro (Fixed) a hora de Chicago 24h
-  private formatToChicago(dateStr: string, timeValue: string): string {
+  private formatToChicago(
+    dateStr: string,
+    timeValue: string | null | undefined,
+  ): string {
+    if (!timeValue) return '';
+
     let dateObj = new Date(timeValue);
 
-    // Si timeValue es solo la hora (ej. "08:00:00" en FixedSchedule), getTime() será NaN.
-    // Lo unimos con la fecha del día actual iterado para poder convertirlo a Date.
     if (isNaN(dateObj.getTime())) {
-      // Nota: Asume que las "08:00:00" guardadas en Postgres están en UTC ('Z').
-      // Si en la base de datos se guardaron directamente en la hora local de Chicago, 
-      // quita la letra 'Z' del string de abajo.
       dateObj = new Date(`${dateStr}T${timeValue}Z`);
     }
 
-    // 'en-GB' es el truco más confiable en JS para forzar formato 24 horas (HH:mm:ss) 
     return dateObj.toLocaleTimeString('en-GB', {
       timeZone: 'America/Chicago',
       hour: '2-digit',

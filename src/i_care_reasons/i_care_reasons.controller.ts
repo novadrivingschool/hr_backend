@@ -1,7 +1,8 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe, Query } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe, Query, Res } from '@nestjs/common';
 import { ICareReasonsService } from './i_care_reasons.service';
 import { CreateICareReasonDto } from './dto/create-i_care_reason.dto';
 import { UpdateICareReasonDto } from './dto/update-i_care_reason.dto';
+import { Response } from 'express';
 
 @Controller('i-care-reasons')
 export class ICareReasonsController {
@@ -15,6 +16,14 @@ export class ICareReasonsController {
   @Get()
   findAll(@Query('category') category?: string) {
     return this.iCareReasonsService.findAll(category);
+  }
+
+  @Get('export/excel')
+  async exportExcel(
+    @Res() res: Response,
+    @Query('category') category?: string,
+  ) {
+    return this.iCareReasonsService.exportExcel(res, category);
   }
 
   @Get(':id')

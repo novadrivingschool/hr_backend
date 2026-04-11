@@ -45,6 +45,17 @@ class ApprovalDto {
     time: string;  // hora en formato HH:mm:ss
 }
 
+class RecoveryEntryDto {
+    @IsString()
+    date: string;           // YYYY-MM-DD
+
+    @IsString()
+    startTime: string;      // HH:mm
+
+    @IsString()
+    endTime: string;        // HH:mm
+}
+
 export class CreateTimeOffRequestDto {
     @IsOptional()
     @IsString()
@@ -134,4 +145,26 @@ export class CreateTimeOffRequestDto {
     @IsOptional()
     @IsString()
     hr_comments?: string;
+
+    // ── Pago ──────────────────────────────────────────────────────────────────
+    @IsOptional()
+    @IsBoolean()
+    @Transform(({ value }) => value === true || value === 'true')
+    is_paid?: boolean;
+
+    // ── Recuperación ──────────────────────────────────────────────────────────
+    @IsOptional()
+    @IsBoolean()
+    @Transform(({ value }) => value === true || value === 'true')
+    recovery_required?: boolean;
+
+    /**
+     * Solo se valida si recovery_required es true.
+     * El frontend envía el arreglo; si no aplica, manda null / omite el campo.
+     */
+    @IsOptional()
+    @IsArray()
+    @ValidateNested({ each: true })
+    @Type(() => RecoveryEntryDto)
+    recovery_schedule?: RecoveryEntryDto[] | null;
 }

@@ -1,6 +1,15 @@
 /* src\employee_schedule\employee_schedule.service.ts */
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
-import { CreateBulkScheduleDto, CreateEmployeeScheduleDto } from './dto/create-employee_schedule.dto';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  CreateBulkScheduleDto,
+  CreateEmployeeScheduleDto,
+  CreateScheduleEventDto,
+} from './dto/create-employee_schedule.dto';
 import { UpdateEmployeeScheduleDto } from './dto/update-employee_schedule.dto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EmployeeSchedule } from './entities/employee_schedule.entity';
@@ -11,6 +20,7 @@ import { Employee } from 'src/employees/entities/employee.entity';
 import { FilterEventsDto } from './dto/filter-events.dto';
 import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
 import { FilterSchedulePanelDto } from './dto/filter-schedule-panel.dto';
+import { randomUUID } from 'crypto';
 
 @Injectable()
 export class EmployeeScheduleService {
@@ -30,11 +40,9 @@ export class EmployeeScheduleService {
 
     try {
       if (!dto.employee_number) {
-        console.error('❌ [create] Employee number is required');
         throw new BadRequestException('Employee number is required');
       }
 
-      // Buscar si ya existe un registro para este empleado
       let schedule = await this.scheduleRepo.findOne({
         where: { employee_number: dto.employee_number },
         relations: ['fixed', 'events'],
@@ -47,16 +55,30 @@ export class EmployeeScheduleService {
         schedule = await this.scheduleRepo.save(schedule);
       }
 
-      // 🟦 Manejar fixed
+      // 🟦 Fixed schedules
       if (dto.fixed?.length) {
         for (const f of dto.fixed) {
-          const fixedPayload = {
-            ...f,
+          const fixedPayload: Partial<FixedSchedule> = {
+            weekdays: f.weekdays,
+            start: f.start,
+            end: f.end,
+            register: f.register,
+            location: f.location ?? [],
             strict: f.strict ?? false,
           };
 
           if (f.id) {
-            await this.fixedRepo.update(f.id, fixedPayload);
+            const existingFixed = await this.fixedRepo.findOne({
+              where: { id: f.id },
+              relations: ['schedule'],
+            });
+
+            if (!existingFixed) {
+              throw new NotFoundException(`FixedSchedule with id ${f.id} not found`);
+            }
+
+            Object.assign(existingFixed, fixedPayload, { schedule });
+            await this.fixedRepo.save(existingFixed);
           } else {
             const newFixed = this.fixedRepo.create({
               ...fixedPayload,
@@ -67,50 +89,90 @@ export class EmployeeScheduleService {
         }
       }
 
-      // 🟨 Manejar events
+      // 🟨 Variable events
       if (dto.events?.length) {
         for (const e of dto.events) {
-          if (e.id) {
-            await this.eventRepo.update(e.id, e);
+          const existingEvent = e.id
+            ? await this.eventRepo.findOne({
+              where: { id: e.id },
+              relations: ['schedule'],
+            })
+            : null;
+
+          if (e.id && !existingEvent) {
+            throw new NotFoundException(`ScheduleEvent with id ${e.id} not found`);
+          }
+
+          const previousTorUuid =
+            existingEvent?.register === RegisterEnum.TIME_OFF_REQUEST
+              ? existingEvent.uuid_tor
+              : null;
+
+          const payload = this.buildScheduleEventPayload(e, existingEvent ?? undefined);
+
+          let savedEvent: ScheduleEvent;
+
+          if (existingEvent) {
+            Object.assign(existingEvent, payload, { schedule });
+            savedEvent = await this.eventRepo.save(existingEvent);
           } else {
-            const newEvent = this.eventRepo.create({ ...e, schedule });
-            await this.eventRepo.save(newEvent);
+            const newEvent = this.eventRepo.create({
+              ...payload,
+              schedule,
+            });
+            savedEvent = await this.eventRepo.save(newEvent);
+          }
+
+          // Si antes era TOR y dejó de serlo, o cambió de uuid_tor, limpia sus recoveries anteriores
+          if (
+            previousTorUuid &&
+            (savedEvent.register !== RegisterEnum.TIME_OFF_REQUEST ||
+              savedEvent.uuid_tor !== previousTorUuid)
+          ) {
+            await this.deleteTimeOffRecoveryEvents(schedule.id, previousTorUuid);
+          }
+
+          // Si es TOR, sincroniza sus recovery events
+          if (savedEvent.register === RegisterEnum.TIME_OFF_REQUEST) {
+            await this.syncTimeOffRecoveryEvents(schedule, savedEvent);
           }
         }
       }
 
-      // Retornar datos actualizados
       const updated = await this.scheduleRepo.findOne({
         where: { employee_number: dto.employee_number },
         relations: ['fixed', 'events'],
       });
 
       if (!updated) {
-        console.error('❌ [create] Schedule created but failed to fetch updated data for employee:', dto.employee_number);
-        throw new InternalServerErrorException('Schedule created but failed to fetch updated data');
+        throw new InternalServerErrorException(
+          'Schedule created but failed to fetch updated data',
+        );
       }
 
-      console.log('✅ [create] Schedule successfully created/updated for employee:', dto.employee_number);
-      console.log('📤 [create] Result:', JSON.stringify(updated, null, 2));
+      console.log(
+        '✅ [create] Schedule successfully created/updated for employee:',
+        dto.employee_number,
+      );
 
       return updated;
     } catch (error) {
-      console.error('❌ [create] Error creating/updating schedule:', error.message);
-      console.error(error.stack);
-      throw new InternalServerErrorException('Failed to create/update Employee schedule');
+      console.error('❌ [create] Error creating/updating schedule:', error?.message || error);
+      console.error(error?.stack);
+
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
+
+      throw new InternalServerErrorException(
+        'Failed to create/update Employee schedule',
+      );
     }
   }
 
-
-
-  /* async findAll(): Promise<EmployeeSchedule[]> {
-    try {
-      return await this.scheduleRepo.find();
-    } catch (error) {
-      console.error('Error fetching schedules:', error);
-      throw new InternalServerErrorException('Failed to retrieve Employee schedules');
-    }
-  } */
   async findAll(): Promise<Record<string, { fixed: any[]; events: any[] }>> {
     try {
       const schedules = await this.scheduleRepo.find({
@@ -137,7 +199,12 @@ export class EmployeeScheduleService {
             start: e.start,
             end: e.end,
             location: e.location,
+            uuid_tor: e.uuid_tor,
+            uuid_extra_hours: e.uuid_extra_hours,
             strict: e.strict,
+            is_paid: e.is_paid,
+            will_make_up_hours: e.will_make_up_hours,
+            make_up_schedule: e.make_up_schedule,
           })),
         };
       }
@@ -149,7 +216,6 @@ export class EmployeeScheduleService {
     }
   }
 
-
   async findByEmployeeNumber(employeeNumber: string): Promise<EmployeeSchedule> {
     try {
       const schedule = await this.scheduleRepo.findOne({
@@ -157,7 +223,9 @@ export class EmployeeScheduleService {
       });
 
       if (!schedule) {
-        throw new NotFoundException(`Employee schedule for employee ${employeeNumber} not found`);
+        throw new NotFoundException(
+          `Employee schedule for employee ${employeeNumber} not found`,
+        );
       }
 
       return schedule;
@@ -219,15 +287,18 @@ export class EmployeeScheduleService {
         start: e.start,
         end: e.end,
         location: e.location,
+        uuid_tor: e.uuid_tor,
+        uuid_extra_hours: e.uuid_extra_hours,
         strict: e.strict,
+        is_paid: e.is_paid,
+        will_make_up_hours: e.will_make_up_hours,
+        make_up_schedule: e.make_up_schedule,
       }));
     } catch (error) {
       console.error('❌ [findEvents] Error filtering events:', error.message);
       throw new InternalServerErrorException('Failed to filter schedule events');
     }
   }
-
-  // employee_schedule.service.ts — agrega este método
 
   async createBulk(dto: CreateBulkScheduleDto): Promise<{
     success: string[];
@@ -246,7 +317,10 @@ export class EmployeeScheduleService {
         success.push(employee_number);
       } catch (err) {
         console.warn(`[createBulk] Failed for ${employee_number}: ${err?.message}`);
-        failed.push({ employee_number, error: err?.message ?? 'Unknown error' });
+        failed.push({
+          employee_number,
+          error: err?.message ?? 'Unknown error',
+        });
       }
     }
 
@@ -277,41 +351,20 @@ export class EmployeeScheduleService {
     }));
   }
 
-  async deleteEventsByUuidExtraHours(uuid_extra_hours: string): Promise<{ deleted: number }> {
-    const schedule = await this.scheduleRepo
-      .createQueryBuilder('s')
-      .innerJoin('s.events', 'e')
-      .where('e.uuid_extra_hours = :uuid', { uuid: uuid_extra_hours })
-      .getOne();
-
-    if (!schedule) {
-      return { deleted: 0 };
-    }
-
-    const result = await this.eventRepo
-      .createQueryBuilder()
-      .delete()
-      .from(ScheduleEvent)
-      .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
-      .andWhere('uuid_extra_hours = :uuid', { uuid: uuid_extra_hours })
-      .execute();
-
-    return { deleted: result.affected ?? 0 };
-  }
-
   async getEmployeesListByDepartments(departments: string[]): Promise<any[]> {
     const qb = this.employeeRepo
       .createQueryBuilder('emp')
       .where('emp.status = :status', { status: 'Active' });
 
     if (departments.length) {
-      // multi_department is JSON; cast to jsonb and check containment for each dept
       const conditions = departments
         .map((_, i) => `emp.multi_department::jsonb @> :dep${i}`)
         .join(' OR ');
+
       const params = Object.fromEntries(
-        departments.map((d, i) => [`dep${i}`, JSON.stringify([d])])
+        departments.map((d, i) => [`dep${i}`, JSON.stringify([d])]),
       );
+
       qb.andWhere(`(${conditions})`, params);
     }
 
@@ -341,10 +394,15 @@ export class EmployeeScheduleService {
       employee_number: string;
       register: RegisterEnum;
       date: string;
-      start: string;
-      end: string;
+      start: string | null;
+      end: string | null;
       location: string[];
+      uuid_tor: string | null;
+      uuid_extra_hours: string | null;
       strict: boolean;
+      is_paid: boolean | null;
+      will_make_up_hours: boolean | null;
+      make_up_schedule: any[] | null;
       isFixed: false;
     }>;
     fixed: Array<{
@@ -363,18 +421,26 @@ export class EmployeeScheduleService {
       total_events: number;
       total_fixed: number;
     };
-    work_summary: Record<string, Record<string, {
-      work_shift_minutes: number;
-      lunch_minutes: number;
-      extra_hours_minutes: number;
-      time_off_minutes: number;
-      work_shift_real_minutes: number;
-      work_shift_label: string;
-      lunch_label: string;
-      extra_hours_label: string;
-      time_off_label: string;
-      work_shift_real_label: string;
-    }>>;
+    work_summary: Record<
+      string,
+      Record<
+        string,
+        {
+          work_shift_minutes: number;
+          lunch_minutes: number;
+          extra_hours_minutes: number;
+          time_off_minutes: number;
+          time_off_recovery_minutes: number;
+          work_shift_real_minutes: number;
+          work_shift_label: string;
+          lunch_label: string;
+          extra_hours_label: string;
+          time_off_label: string;
+          time_off_recovery_label: string;
+          work_shift_real_label: string;
+        }
+      >
+    >;
   }> {
     try {
       const {
@@ -395,7 +461,6 @@ export class EmployeeScheduleService {
         throw new BadRequestException('start_date cannot be greater than end_date');
       }
 
-      // 1) candidatos por empleado/departamento
       const employeeQb = this.employeeRepo
         .createQueryBuilder('emp')
         .where('emp.status = :status', { status: 'Active' });
@@ -437,18 +502,24 @@ export class EmployeeScheduleService {
         };
       }
 
-      const candidateEmployeeNumbers = candidateEmployees.map(emp => emp.employee_number);
+      const candidateEmployeeNumbers = candidateEmployees.map(
+        emp => emp.employee_number,
+      );
 
-      // 2) eventos variables
       let events: Array<{
         id: number;
         employee_number: string;
         register: RegisterEnum;
         date: string;
-        start: string;
-        end: string;
+        start: string | null;
+        end: string | null;
         location: string[];
+        uuid_tor: string | null;
+        uuid_extra_hours: string | null;
         strict: boolean;
+        is_paid: boolean | null;
+        will_make_up_hours: boolean | null;
+        make_up_schedule: any[] | null;
         isFixed: false;
       }> = [];
 
@@ -487,12 +558,16 @@ export class EmployeeScheduleService {
           start: e.start,
           end: e.end,
           location: e.location,
+          uuid_tor: e.uuid_tor,
+          uuid_extra_hours: e.uuid_extra_hours,
           strict: e.strict,
+          is_paid: e.is_paid,
+          will_make_up_hours: e.will_make_up_hours,
+          make_up_schedule: e.make_up_schedule,
           isFixed: false as const,
         }));
       }
 
-      // 3) fixed schedules
       let fixed: Array<{
         id: number;
         employee_number: string;
@@ -528,9 +603,10 @@ export class EmployeeScheduleService {
           .addOrderBy('fixed.id', 'ASC')
           .getMany();
 
-        // solo fixed que tengan al menos una ocurrencia en el rango pedido
         fixed = rawFixed
-          .filter(f => this.fixedMatchesDateRange(f.weekdays, start_date, end_date))
+          .filter(f =>
+            this.fixedMatchesDateRange(f.weekdays, start_date, end_date),
+          )
           .map(f => ({
             id: f.id,
             employee_number: f.schedule.employee_number,
@@ -544,7 +620,6 @@ export class EmployeeScheduleService {
           }));
       }
 
-      // 4) empleados que sí tienen resultados
       const matchedEmployeeNumbers = new Set<string>([
         ...events.map(e => e.employee_number),
         ...fixed.map(f => f.employee_number),
@@ -585,35 +660,174 @@ export class EmployeeScheduleService {
     }
   }
 
+  private buildScheduleEventPayload(
+    dto: CreateScheduleEventDto,
+    existing?: ScheduleEvent,
+  ): Partial<ScheduleEvent> {
+    const isTimeOffRequest = dto.register === RegisterEnum.TIME_OFF_REQUEST;
+    const isTimeOffRecovery = dto.register === RegisterEnum.TIME_OFF_RECOVERY;
+    const isExtraHours = dto.register === RegisterEnum.EXTRA_HOURS;
+    const isOff = dto.register === RegisterEnum.OFF;
+
+    const willMakeUpHours = isTimeOffRequest
+      ? dto.will_make_up_hours ?? existing?.will_make_up_hours ?? false
+      : null;
+
+    const rawMakeUpSchedule = Array.isArray(dto.make_up_schedule)
+      ? dto.make_up_schedule
+      : Array.isArray(existing?.make_up_schedule)
+        ? existing?.make_up_schedule
+        : [];
+
+    const normalizedMakeUpSchedule = rawMakeUpSchedule.map(slot => ({
+      date: slot.date,
+      start: slot.start,
+      end: slot.end,
+      location: Array.isArray(slot.location) ? slot.location : [],
+      strict: slot.strict ?? false,
+    }));
+
+    return {
+      date: dto.date,
+      start: isOff ? null : dto.start,
+      end: isOff ? null : dto.end,
+      register: dto.register,
+      location: Array.isArray(dto.location) ? dto.location : [],
+      strict: dto.strict ?? existing?.strict ?? false,
+
+      uuid_tor: isTimeOffRequest
+        ? dto.uuid_tor ?? existing?.uuid_tor ?? randomUUID()
+        : isTimeOffRecovery
+          ? dto.uuid_tor ?? existing?.uuid_tor ?? null
+          : null,
+
+      uuid_extra_hours: isExtraHours
+        ? dto.uuid_extra_hours ?? existing?.uuid_extra_hours ?? null
+        : null,
+
+      is_paid: isTimeOffRequest
+        ? dto.is_paid ?? existing?.is_paid ?? false
+        : null,
+
+      will_make_up_hours: isTimeOffRequest
+        ? willMakeUpHours
+        : null,
+
+      make_up_schedule: isTimeOffRequest
+        ? willMakeUpHours
+          ? normalizedMakeUpSchedule
+          : []
+        : null,
+    };
+  }
+
+  private async syncTimeOffRecoveryEvents(
+    schedule: EmployeeSchedule,
+    torEvent: ScheduleEvent,
+  ): Promise<void> {
+    const uuidTor = torEvent.uuid_tor;
+
+    if (!uuidTor) return;
+
+    await this.deleteTimeOffRecoveryEvents(schedule.id, uuidTor);
+
+    const slots = Array.isArray(torEvent.make_up_schedule)
+      ? torEvent.make_up_schedule
+      : [];
+
+    if (!torEvent.will_make_up_hours || !slots.length) {
+      return;
+    }
+
+    const recoveryEvents = slots.map(slot =>
+      this.eventRepo.create({
+        schedule,
+        register: RegisterEnum.TIME_OFF_RECOVERY,
+        date: slot.date,
+        start: slot.start,
+        end: slot.end,
+        location:
+          Array.isArray(slot.location) && slot.location.length
+            ? slot.location
+            : torEvent.location ?? [],
+        strict: slot.strict ?? torEvent.strict ?? false,
+        uuid_tor: uuidTor,
+        uuid_extra_hours: null,
+        is_paid: null,
+        will_make_up_hours: null,
+        make_up_schedule: null,
+      }),
+    );
+
+    if (recoveryEvents.length) {
+      await this.eventRepo.save(recoveryEvents);
+    }
+  }
+
+  private async deleteTimeOffRecoveryEvents(
+    scheduleId: number,
+    uuidTor: string,
+  ): Promise<void> {
+    if (!uuidTor) return;
+
+    await this.eventRepo
+      .createQueryBuilder()
+      .delete()
+      .from(ScheduleEvent)
+      .where('"scheduleId" = :scheduleId', { scheduleId })
+      .andWhere('uuid_tor = :uuidTor', { uuidTor })
+      .andWhere('register = :register', {
+        register: RegisterEnum.TIME_OFF_RECOVERY,
+      })
+      .execute();
+  }
 
   private async buildWorkSummary(
     employeeNumbers: string[],
     startDate: string,
     endDate: string,
-  ): Promise<Record<string, Record<string, {
-    work_shift_minutes: number;
-    lunch_minutes: number;
-    extra_hours_minutes: number;
-    time_off_minutes: number;
-    work_shift_real_minutes: number;
-    work_shift_label: string;
-    lunch_label: string;
-    extra_hours_label: string;
-    time_off_label: string;
-    work_shift_real_label: string;
-  }>>> {
-    const summary: Record<string, Record<string, {
-      work_shift_minutes: number;
-      lunch_minutes: number;
-      extra_hours_minutes: number;
-      time_off_minutes: number;
-      work_shift_real_minutes: number;
-      work_shift_label: string;
-      lunch_label: string;
-      extra_hours_label: string;
-      time_off_label: string;
-      work_shift_real_label: string;
-    }>> = {};
+  ): Promise<
+    Record<
+      string,
+      Record<
+        string,
+        {
+          work_shift_minutes: number;
+          lunch_minutes: number;
+          extra_hours_minutes: number;
+          time_off_minutes: number;
+          time_off_recovery_minutes: number;
+          work_shift_real_minutes: number;
+          work_shift_label: string;
+          lunch_label: string;
+          extra_hours_label: string;
+          time_off_label: string;
+          time_off_recovery_label: string;
+          work_shift_real_label: string;
+        }
+      >
+    >
+  > {
+    const summary: Record<
+      string,
+      Record<
+        string,
+        {
+          work_shift_minutes: number;
+          lunch_minutes: number;
+          extra_hours_minutes: number;
+          time_off_minutes: number;
+          time_off_recovery_minutes: number;
+          work_shift_real_minutes: number;
+          work_shift_label: string;
+          lunch_label: string;
+          extra_hours_label: string;
+          time_off_label: string;
+          time_off_recovery_label: string;
+          work_shift_real_label: string;
+        }
+      >
+    > = {};
 
     const ensureBucket = (employeeNumber: string, date: string) => {
       if (!summary[employeeNumber]) summary[employeeNumber] = {};
@@ -623,11 +837,13 @@ export class EmployeeScheduleService {
           lunch_minutes: 0,
           extra_hours_minutes: 0,
           time_off_minutes: 0,
+          time_off_recovery_minutes: 0,
           work_shift_real_minutes: 0,
           work_shift_label: this.formatMinutes(0),
           lunch_label: this.formatMinutes(0),
           extra_hours_label: this.formatMinutes(0),
           time_off_label: this.formatMinutes(0),
+          time_off_recovery_label: this.formatMinutes(0),
           work_shift_real_label: this.formatMinutes(0),
         };
       }
@@ -653,14 +869,16 @@ export class EmployeeScheduleService {
       const bucket = ensureBucket(employeeNumber, event.date);
       const minutes = this.diffDateTimeMinutes(event.start, event.end);
 
-      if (event.register === 'Work Shift') {
+      if (event.register === RegisterEnum.WORK_SHIFT) {
         bucket.work_shift_minutes += minutes;
-      } else if (event.register === 'Lunch') {
+      } else if (event.register === RegisterEnum.LUNCH) {
         bucket.lunch_minutes += minutes;
-      } else if (event.register === 'Extra Hours') {
+      } else if (event.register === RegisterEnum.EXTRA_HOURS) {
         bucket.extra_hours_minutes += minutes;
-      } else if (event.register === 'Time Off Request') {
+      } else if (event.register === RegisterEnum.TIME_OFF_REQUEST) {
         bucket.time_off_minutes += minutes;
+      } else if (event.register === RegisterEnum.TIME_OFF_RECOVERY) {
+        bucket.time_off_recovery_minutes += minutes;
       }
     }
 
@@ -678,9 +896,9 @@ export class EmployeeScheduleService {
     for (const item of expandedFixed) {
       const bucket = ensureBucket(item.employee_number, item.date);
 
-      if (item.register === 'Work Shift') {
+      if (item.register === RegisterEnum.WORK_SHIFT) {
         bucket.work_shift_minutes += item.minutes;
-      } else if (item.register === 'Lunch') {
+      } else if (item.register === RegisterEnum.LUNCH) {
         bucket.lunch_minutes += item.minutes;
       }
     }
@@ -688,12 +906,20 @@ export class EmployeeScheduleService {
     for (const employeeNumber of Object.keys(summary)) {
       for (const date of Object.keys(summary[employeeNumber])) {
         const bucket = summary[employeeNumber][date];
-        bucket.work_shift_real_minutes = Math.max(bucket.work_shift_minutes - bucket.lunch_minutes, 0);
+        bucket.work_shift_real_minutes = Math.max(
+          bucket.work_shift_minutes - bucket.lunch_minutes,
+          0,
+        );
         bucket.work_shift_label = this.formatMinutes(bucket.work_shift_minutes);
         bucket.lunch_label = this.formatMinutes(bucket.lunch_minutes);
         bucket.extra_hours_label = this.formatMinutes(bucket.extra_hours_minutes);
         bucket.time_off_label = this.formatMinutes(bucket.time_off_minutes);
-        bucket.work_shift_real_label = this.formatMinutes(bucket.work_shift_real_minutes);
+        bucket.time_off_recovery_label = this.formatMinutes(
+          bucket.time_off_recovery_minutes,
+        );
+        bucket.work_shift_real_label = this.formatMinutes(
+          bucket.work_shift_real_minutes,
+        );
       }
     }
 
@@ -726,7 +952,9 @@ export class EmployeeScheduleService {
       const date = current.toISOString().slice(0, 10);
 
       for (const fixed of fixedSchedules) {
-        if (!Array.isArray(fixed.weekdays) || !fixed.weekdays.includes(isoDay)) continue;
+        if (!Array.isArray(fixed.weekdays) || !fixed.weekdays.includes(isoDay)) {
+          continue;
+        }
 
         result.push({
           employee_number: fixed.schedule.employee_number,
@@ -742,7 +970,14 @@ export class EmployeeScheduleService {
     return result;
   }
 
-  private diffDateTimeMinutes(start: string | Date, end: string | Date): number {
+  private diffDateTimeMinutes(
+    start: string | Date | null | undefined,
+    end: string | Date | null | undefined,
+  ): number {
+    if (!start || !end) {
+      return 0;
+    }
+
     const startMs = new Date(start).getTime();
     const endMs = new Date(end).getTime();
 
@@ -754,11 +989,18 @@ export class EmployeeScheduleService {
   }
 
   private diffTimeStringMinutes(start: string, end: string): number {
-    const [startHour, startMinute] = (start || '00:00').substring(0, 5).split(':').map(Number);
-    const [endHour, endMinute] = (end || '00:00').substring(0, 5).split(':').map(Number);
+    const [startHour, startMinute] = (start || '00:00')
+      .substring(0, 5)
+      .split(':')
+      .map(Number);
 
-    const startTotal = (startHour * 60) + startMinute;
-    const endTotal = (endHour * 60) + endMinute;
+    const [endHour, endMinute] = (end || '00:00')
+      .substring(0, 5)
+      .split(':')
+      .map(Number);
+
+    const startTotal = startHour * 60 + startMinute;
+    const endTotal = endHour * 60 + endMinute;
 
     return Math.max(endTotal - startTotal, 0);
   }
@@ -774,7 +1016,11 @@ export class EmployeeScheduleService {
       return `${hours} ${hours === 1 ? 'hr' : 'hrs'}`;
     }
 
-    const compact = hours.toFixed(2).replace(/\.00$/, '').replace(/(\.\d)0$/, '$1');
+    const compact = hours
+      .toFixed(2)
+      .replace(/\.00$/, '')
+      .replace(/(\.\d)0$/, '$1');
+
     return `${compact} hrs`;
   }
 
@@ -791,8 +1037,8 @@ export class EmployeeScheduleService {
     const end = new Date(`${endDate}T00:00:00.000Z`);
 
     while (current <= end) {
-      const jsDay = current.getUTCDay(); // 0=Sun ... 6=Sat
-      const isoDay = jsDay === 0 ? 7 : jsDay; // 1=Mon ... 7=Sun
+      const jsDay = current.getUTCDay();
+      const isoDay = jsDay === 0 ? 7 : jsDay;
 
       if (weekdaySet.has(isoDay)) {
         return true;
@@ -804,4 +1050,139 @@ export class EmployeeScheduleService {
     return false;
   }
 
+  async deleteEvent(eventId: number): Promise<{
+    deleted: boolean;
+    deleted_recovery_hours: number;
+  }> {
+    console.log('🗑️ [deleteEvent] START');
+    console.log('🗑️ [deleteEvent] incoming eventId:', eventId);
+
+    if (!Number.isInteger(eventId) || eventId <= 0) {
+      console.log('❌ [deleteEvent] invalid eventId');
+      throw new BadRequestException('A valid event id is required');
+    }
+
+    return this.eventRepo.manager.transaction(async manager => {
+      const eventRepo = manager.getRepository(ScheduleEvent);
+
+      const event = await eventRepo.findOne({
+        where: { id: eventId },
+        relations: ['schedule'],
+      });
+
+      console.log('🗑️ [deleteEvent] parent event found:', event
+        ? {
+          id: event.id,
+          register: event.register,
+          uuid_tor: event.uuid_tor,
+          employee_number: event.schedule?.employee_number ?? null,
+          schedule_id: event.schedule?.id ?? null,
+        }
+        : null
+      );
+
+      if (!event) {
+        console.log('❌ [deleteEvent] parent event not found');
+        throw new NotFoundException(`ScheduleEvent with id ${eventId} not found`);
+      }
+
+      let deletedRecoveryHours = 0;
+
+      if (
+        event.register === RegisterEnum.TIME_OFF_REQUEST &&
+        event.uuid_tor
+      ) {
+        console.log('🧩 [deleteEvent] TOR detected, looking for children...');
+        console.log('🧩 [deleteEvent] parent uuid_tor:', event.uuid_tor);
+
+        const recoveryEvents = await eventRepo.find({
+          where: {
+            uuid_tor: event.uuid_tor,
+            register: RegisterEnum.TIME_OFF_RECOVERY,
+          },
+        });
+
+        console.log(
+          '🧩 [deleteEvent] children found:',
+          recoveryEvents.map(ev => ({
+            id: ev.id,
+            register: ev.register,
+            uuid_tor: ev.uuid_tor,
+            date: ev.date,
+            start: ev.start,
+            end: ev.end,
+          })),
+        );
+
+        if (recoveryEvents.length) {
+          const recoveryIds = recoveryEvents.map(ev => ev.id);
+
+          console.log('🧩 [deleteEvent] deleting children first, ids:', recoveryIds);
+
+          const recoveryDeleteResult = await eventRepo.delete(recoveryIds);
+
+          deletedRecoveryHours = recoveryDeleteResult.affected ?? 0;
+
+          console.log(
+            '✅ [deleteEvent] children deleted count:',
+            deletedRecoveryHours,
+          );
+        } else {
+          console.log(
+            '⚠️ [deleteEvent] no children found for parent uuid_tor:',
+            event.uuid_tor,
+          );
+        }
+      } else {
+        console.log('ℹ️ [deleteEvent] event is not TOR or has no uuid_tor');
+        console.log('ℹ️ [deleteEvent] register:', event.register);
+        console.log('ℹ️ [deleteEvent] uuid_tor:', event.uuid_tor);
+      }
+
+      console.log('🗑️ [deleteEvent] deleting parent event id:', event.id);
+
+      const deleteResult = await eventRepo.delete(event.id);
+
+      console.log(
+        '✅ [deleteEvent] parent delete affected:',
+        deleteResult.affected ?? 0,
+      );
+
+      if (!deleteResult.affected) {
+        console.log('❌ [deleteEvent] failed deleting parent');
+        throw new InternalServerErrorException(
+          `Failed to delete ScheduleEvent with id ${eventId}`,
+        );
+      }
+
+      console.log('🏁 [deleteEvent] FINISHED');
+      console.log('🏁 [deleteEvent] result:', {
+        deleted: true,
+        deleted_recovery_hours: deletedRecoveryHours,
+      });
+
+      return {
+        deleted: true,
+        deleted_recovery_hours: deletedRecoveryHours,
+      };
+    });
+  }
+
+  private async deleteTimeOffRecoveryEventsByUuid(
+    uuidTor: string,
+  ): Promise<number> {
+    if (!uuidTor) return 0;
+
+    const result = await this.eventRepo
+      .createQueryBuilder()
+      .delete()
+      .from(ScheduleEvent)
+      .where('uuid_tor = :uuidTor', { uuidTor })
+      .andWhere('register = :register', {
+        register: RegisterEnum.TIME_OFF_RECOVERY,
+      })
+      .execute();
+
+    return result.affected ?? 0;
+  }
 }

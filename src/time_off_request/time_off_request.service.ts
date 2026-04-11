@@ -13,6 +13,7 @@ import { TimeOffApiClient } from './api/time-off.api';
 import { EmployeeScheduleService } from 'src/employee_schedule/employee_schedule.service';
 import { ScheduleEvent } from 'src/schedule_event/entities/schedule_event.entity';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
+import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
 
 interface EmployeeNumbersByPermissionResponse {
   permission: string;
@@ -814,51 +815,121 @@ export class TimeOffRequestService {
     role: 'staff' | 'hr' | 'coordinator',
     reason?: string,
   ): Promise<{ message: string; data: TimeOffRequest }> {
-    const request = await this.findOne(id);
-
-    // ✅ Ahora Pending Y Approved pueden cancelarse
-    const cancellableStatuses: StatusEnum[] = [StatusEnum.Pending, StatusEnum.Approved];
-    if (!cancellableStatuses.includes(request.status)) {
-      throw new BadRequestException(
-        `Cannot cancel a request with status "${request.status}". Only Pending or Approved requests can be cancelled.`,
-      );
-    }
-
-    const chicagoNow = moment().tz('America/Chicago');
-    request.status = StatusEnum.Cancelled;
-    request.cancellation_info = {
-      cancelled_by,
-      role,
-      reason: reason ?? '',
-      date: chicagoNow.format('YYYY-MM-DD'),
-      time: chicagoNow.format('HH:mm:ss'),
-    };
-
-    const updated = await this.timeOffRequestRepo.save(request);
-
-    // ✅ Si estaba Approved → borrar los eventos del schedule
-    if (request.status === StatusEnum.Cancelled && cancellableStatuses.includes(StatusEnum.Approved)) {
-      // Verificamos que el status PREVIO era Approved
-      const wasApproved = updated.hr_approval?.approved === true;
-      if (wasApproved) {
-        await this._deleteScheduleEventsFromTimeOff(updated);
-      }
-    }
-
     try {
-      await this.apiClient.sendStaffTemplate({
-        templateName: 'time_off_staff_notification',
-        formData: { ...updated },
-        actor: role === 'hr' ? 'HR' : role === 'coordinator' ? 'Coordinator' : 'System',
-      });
-    } catch (err) {
-      this.logger.warn(`Cancel notification failed for request ${id}: ${err?.message}`);
-    }
+      console.log('🟥 [cancelRequest] START');
+      console.log(
+        '🟥 [cancelRequest] incoming:',
+        JSON.stringify({ id, cancelled_by, role, reason }, null, 2),
+      );
 
-    return {
-      message: `Time-off request cancelled by ${cancelled_by} (${role})`,
-      data: updated,
-    };
+      const request = await this.findOne(id);
+
+      console.log(
+        '🟥 [cancelRequest] request found:',
+        JSON.stringify(
+          {
+            id: request.id,
+            status: request.status,
+            employee_number: request.employee_data?.employee_number,
+            hr_approval: request.hr_approval,
+            coordinator_approval: request.coordinator_approval,
+          },
+          null,
+          2,
+        ),
+      );
+
+      const cancellableStatuses: StatusEnum[] = [
+        StatusEnum.Pending,
+        StatusEnum.Approved,
+      ];
+
+      if (!cancellableStatuses.includes(request.status)) {
+        throw new BadRequestException(
+          `Cannot cancel a request with status "${request.status}". Only Pending or Approved requests can be cancelled.`,
+        );
+      }
+
+      const wasApproved = request.status === StatusEnum.Approved;
+      console.log('🟥 [cancelRequest] wasApproved:', wasApproved);
+
+      const chicagoNow = moment().tz('America/Chicago');
+
+      request.status = StatusEnum.Cancelled;
+      request.cancellation_info = {
+        cancelled_by,
+        role,
+        reason: reason ?? '',
+        date: chicagoNow.format('YYYY-MM-DD'),
+        time: chicagoNow.format('HH:mm:ss'),
+      };
+
+      const updated = await this.timeOffRequestRepo.save(request);
+
+      console.log(
+        '🟥 [cancelRequest] request updated:',
+        JSON.stringify(
+          {
+            id: updated.id,
+            status: updated.status,
+            cancellation_info: updated.cancellation_info,
+          },
+          null,
+          2,
+        ),
+      );
+
+      // Solo si ANTES estaba Approved, se borran eventos del schedule
+      if (wasApproved) {
+        console.log(
+          `🧩 [cancelRequest] TOR ${id} was approved, deleting schedule events and recovery hours...`,
+        );
+
+        await this._deleteScheduleEventsFromTimeOff(updated);
+
+        console.log(
+          `✅ [cancelRequest] schedule events deleted for TOR ${id}`,
+        );
+      } else {
+        console.log(
+          `ℹ️ [cancelRequest] TOR ${id} was not approved yet, no schedule events to delete`,
+        );
+      }
+
+      try {
+        await this.apiClient.sendStaffTemplate({
+          templateName: 'time_off_staff_notification',
+          formData: { ...updated },
+          actor:
+            role === 'hr'
+              ? 'HR'
+              : role === 'coordinator'
+                ? 'Coordinator'
+                : 'System',
+        });
+      } catch (err) {
+        this.logger.warn(
+          `[cancelRequest] Cancel notification failed for request ${id}: ${err?.message}`,
+        );
+      }
+
+      console.log('🏁 [cancelRequest] END');
+
+      return {
+        message: `Time-off request cancelled by ${cancelled_by} (${role})`,
+        data: updated,
+      };
+    } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof BadRequestException
+      ) {
+        throw error;
+      }
+
+      this.logger.error(`[cancelRequest] Failed for request ID ${id}`, error.stack);
+      throw new InternalServerErrorException('Error cancelling time off request');
+    }
   }
 
   // ✅ NUEVO método reopenRequest
@@ -963,89 +1034,227 @@ export class TimeOffRequestService {
 
   private async _createScheduleEventsFromTimeOff(request: TimeOffRequest): Promise<void> {
     try {
+      console.log('🟦 [_createScheduleEventsFromTimeOff] START');
+      console.log(
+        '🟦 [_createScheduleEventsFromTimeOff] request summary:',
+        JSON.stringify(
+          {
+            id: request?.id,
+            timeType: request?.timeType,
+            recovery_required: request?.recovery_required,
+            recovery_schedule: request?.recovery_schedule,
+            is_paid: request?.is_paid,
+            hourDate: request?.hourDate,
+            startTime: request?.startTime,
+            endTime: request?.endTime,
+            startDate: request?.startDate,
+            endDate: request?.endDate,
+            employee_number: request?.employee_data?.employee_number,
+            multi_location: request?.employee_data?.multi_location,
+          },
+          null,
+          2,
+        ),
+      );
+
       const { timeType, employee_data } = request;
       const employeeNumber = employee_data?.employee_number;
 
       if (!employeeNumber) {
-        this.logger.warn('[_createScheduleEventsFromTimeOff] No employee_number found, skipping');
+        console.log('❌ [_createScheduleEventsFromTimeOff] No employee_number found, skipping');
         return;
       }
+
+      const normalizedRecoverySchedule = Array.isArray(request.recovery_schedule)
+        ? request.recovery_schedule
+          .map((item, index) => {
+            if (!item?.date || !item?.startTime || !item?.endTime) {
+              console.log(
+                `❌ [_createScheduleEventsFromTimeOff] invalid recovery slot #${index + 1}:`,
+                JSON.stringify(item, null, 2),
+              );
+              return null;
+            }
+
+            const startUTC = moment
+              .tz(
+                `${item.date} ${String(item.startTime).substring(0, 5)}`,
+                'YYYY-MM-DD HH:mm',
+                'America/Chicago',
+              )
+              .utc()
+              .format('YYYY-MM-DDTHH:mm:ss');
+
+            const endUTC = moment
+              .tz(
+                `${item.date} ${String(item.endTime).substring(0, 5)}`,
+                'YYYY-MM-DD HH:mm',
+                'America/Chicago',
+              )
+              .utc()
+              .format('YYYY-MM-DDTHH:mm:ss');
+
+            const normalized = {
+              date: item.date,
+              start: startUTC,
+              end: endUTC,
+              location: employee_data?.multi_location ?? [],
+              strict: false,
+            };
+
+            console.log(
+              `🟨 [_createScheduleEventsFromTimeOff] normalized recovery slot #${index + 1}:`,
+              JSON.stringify(
+                {
+                  raw: item,
+                  normalized,
+                },
+                null,
+                2,
+              ),
+            );
+
+            return normalized;
+          })
+          .filter((item): item is {
+            date: string;
+            start: string;
+            end: string;
+            location: string[];
+            strict: boolean;
+          } => item !== null)
+        : [];
+
+      console.log(
+        '🟨 [_createScheduleEventsFromTimeOff] normalizedRecoverySchedule.length:',
+        normalizedRecoverySchedule.length,
+      );
 
       const events: Array<{
         id: null;
         date: string;
         start: string;
         end: string;
-        register: string;
+        register: RegisterEnum;
         location: string[];
         uuid_tor: string;
+        is_paid: boolean;
+        will_make_up_hours: boolean;
+        make_up_schedule: Array<{
+          date: string;
+          start: string;
+          end: string;
+          location: string[];
+          strict: boolean;
+        }>;
+        strict: boolean;
       }> = [];
 
-      // ── CASE 1: Days — 09:00 → 18:00 Chicago por cada día ────────────────────
       if (timeType === TimeTypeEnum.Days) {
         const { startDate, endDate } = request;
         const start = moment(startDate, 'YYYY-MM-DD');
         const end = moment(endDate, 'YYYY-MM-DD');
 
+        console.log('🟦 [_createScheduleEventsFromTimeOff] DAYS branch');
+        console.log('🟦 [_createScheduleEventsFromTimeOff] parsed start valid:', start.isValid(), 'value:', startDate);
+        console.log('🟦 [_createScheduleEventsFromTimeOff] parsed end valid:', end.isValid(), 'value:', endDate);
+
         if (!start.isValid() || !end.isValid()) {
-          this.logger.warn('[_createScheduleEventsFromTimeOff] Invalid dates (Days), skipping');
+          console.log('❌ [_createScheduleEventsFromTimeOff] Invalid dates (Days), skipping');
           return;
         }
 
         const totalDays = end.diff(start, 'days') + 1;
+        console.log('🟦 [_createScheduleEventsFromTimeOff] totalDays:', totalDays);
 
         for (let i = 0; i < totalDays; i++) {
           const day = start.clone().add(i, 'days');
           const dateStr = day.format('YYYY-MM-DD');
 
-          const startUTC = moment.tz(`${dateStr} 09:00`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
-            .utc().format('YYYY-MM-DDTHH:mm:ss');
-          const endUTC = moment.tz(`${dateStr} 18:00`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
-            .utc().format('YYYY-MM-DDTHH:mm:ss');
+          const startUTC = moment
+            .tz(`${dateStr} 09:00`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+            .utc()
+            .format('YYYY-MM-DDTHH:mm:ss');
 
-          events.push({
+          const endUTC = moment
+            .tz(`${dateStr} 18:00`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+            .utc()
+            .format('YYYY-MM-DDTHH:mm:ss');
+
+          const event = {
             id: null,
             date: dateStr,
             start: startUTC,
             end: endUTC,
-            register: 'Time Off Request',
+            register: RegisterEnum.TIME_OFF_REQUEST,
             location: employee_data?.multi_location ?? [],
-            uuid_tor: request.id, // ← referencia al TOR
-          });
-        }
+            uuid_tor: request.id,
+            is_paid: request.is_paid ?? false,
+            will_make_up_hours: request.recovery_required ?? false,
+            make_up_schedule: normalizedRecoverySchedule,
+            strict: false,
+          };
 
-        // ── CASE 2: Hours — usa startTime/endTime del request ────────────────────
+          console.log(
+            `🟩 [_createScheduleEventsFromTimeOff] parent DAYS event #${i + 1}:`,
+            JSON.stringify(event, null, 2),
+          );
+
+          events.push(event);
+        }
       } else if (timeType === TimeTypeEnum.Hours) {
         const { hourDate, startTime, endTime } = request;
 
+        console.log('🟦 [_createScheduleEventsFromTimeOff] HOURS branch');
+        console.log(
+          '🟦 [_createScheduleEventsFromTimeOff] raw hour inputs:',
+          JSON.stringify({ hourDate, startTime, endTime }, null, 2),
+        );
+
         if (!hourDate || !startTime || !endTime) {
-          this.logger.warn('[_createScheduleEventsFromTimeOff] Missing hourDate/startTime/endTime (Hours), skipping');
+          console.log('❌ [_createScheduleEventsFromTimeOff] Missing hourDate/startTime/endTime (Hours), skipping');
           return;
         }
 
         const dateStr = moment(hourDate, 'YYYY-MM-DD').format('YYYY-MM-DD');
-        const startUTC = moment.tz(`${dateStr} ${startTime.substring(0, 5)}`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
-          .utc().format('YYYY-MM-DDTHH:mm:ss');
-        const endUTC = moment.tz(`${dateStr} ${endTime.substring(0, 5)}`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
-          .utc().format('YYYY-MM-DDTHH:mm:ss');
 
-        events.push({
+        const startUTC = moment
+          .tz(`${dateStr} ${startTime.substring(0, 5)}`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+          .utc()
+          .format('YYYY-MM-DDTHH:mm:ss');
+
+        const endUTC = moment
+          .tz(`${dateStr} ${endTime.substring(0, 5)}`, 'YYYY-MM-DD HH:mm', 'America/Chicago')
+          .utc()
+          .format('YYYY-MM-DDTHH:mm:ss');
+
+        const event = {
           id: null,
           date: dateStr,
           start: startUTC,
           end: endUTC,
-          register: 'Time Off Request',
+          register: RegisterEnum.TIME_OFF_REQUEST,
           location: employee_data?.multi_location ?? [],
-          uuid_tor: request.id, // ← referencia al TOR
-        });
+          uuid_tor: request.id,
+          is_paid: request.is_paid ?? false,
+          will_make_up_hours: request.recovery_required ?? false,
+          make_up_schedule: normalizedRecoverySchedule,
+          strict: false,
+        };
 
+        console.log(
+          '🟩 [_createScheduleEventsFromTimeOff] parent HOURS event:',
+          JSON.stringify(event, null, 2),
+        );
+
+        events.push(event);
       } else {
-        this.logger.warn(`[_createScheduleEventsFromTimeOff] Unknown timeType: ${timeType}, skipping`);
+        console.log(`❌ [_createScheduleEventsFromTimeOff] Unknown timeType: ${timeType}, skipping`);
         return;
       }
 
       if (!events.length) {
-        this.logger.warn('[_createScheduleEventsFromTimeOff] No events to create, skipping');
+        console.log('❌ [_createScheduleEventsFromTimeOff] No events to create, skipping');
         return;
       }
 
@@ -1055,11 +1264,17 @@ export class TimeOffRequestService {
         events,
       };
 
-      this.logger.log(`[_createScheduleEventsFromTimeOff] Creating ${events.length} event(s) for ${employeeNumber} | type: ${timeType} | uuid_tor: ${request.id}`);
-      await this.employeeScheduleService.create(payload as any);
-      this.logger.log(`[_createScheduleEventsFromTimeOff] ✅ Done for ${employeeNumber}`);
+      console.log(
+        '📦 [_createScheduleEventsFromTimeOff] payload to employeeScheduleService.create:',
+        JSON.stringify(payload, null, 2),
+      );
 
+      await this.employeeScheduleService.create(payload as any);
+
+      console.log(`✅ [_createScheduleEventsFromTimeOff] Done for ${employeeNumber}`);
     } catch (err) {
+      console.log('❌ [_createScheduleEventsFromTimeOff] ERROR MESSAGE:', err?.message);
+      console.log('❌ [_createScheduleEventsFromTimeOff] ERROR STACK:', err?.stack);
       this.logger.warn(`[_createScheduleEventsFromTimeOff] Failed (non-blocking): ${err?.message}`);
     }
   }

@@ -63,8 +63,14 @@ export class EmployeeScheduleController {
     return this.scheduleService.getEmployeesList();
   }
 
-  @Delete('events/extra-hours/:uuid')
+  /* @Delete('events/extra-hours/:uuid')
   async deleteEventsByExtraHours(@Param('uuid') uuid: string) {
     return this.scheduleService.deleteEventsByUuidExtraHours(uuid);
+  } */
+
+  @Delete('events/:id')
+  async deleteEvent(@Param('id') id: string) {
+    console.log('🎯 [controller.deleteEvent] incoming id:', id);
+    return this.scheduleService.deleteEvent(Number(id));
   }
 }

@@ -10,12 +10,15 @@ import {
   HttpStatus,
   Query,
   ParseArrayPipe,
-  BadRequestException
+  BadRequestException,
+  Res
 } from '@nestjs/common';
 import { EmployeesV2Service } from './employees-v2.service';
 import { CreateEmployeeDto } from '../employees/dto/create-employee.dto';
 import { UpdateEmployeeDto } from '../employees/dto/update-employee.dto';
 import { SearchEmployeeDto } from './dto/filter-employee.dto';
+import { Response } from 'express';
+
 
 
 @Controller('v2/employees')
@@ -71,6 +74,20 @@ export class EmployeesV2Controller {
   getDanubanetList() {
     return this.employeesService.getDanubanetList();
   }
+
+  @Get('organigram')
+async getOrganigram(@Res() res: Response) {
+  const image = await this.employeesService.getOrganigramPng();
+
+  res.set({
+    'Content-Type': 'image/png',
+    'Content-Disposition': 'inline; filename="organigram.png"',
+    'Content-Length': image.length.toString(),
+    'Cache-Control': 'no-store',
+  });
+
+  res.send(image);
+}
 
   /**
    * READ (ONE): Obtiene la información de un empleado específico por su employee_number.
