@@ -29,6 +29,11 @@ import { ICareReasonsModule } from './i_care_reasons/i_care_reasons.module';
 import { EmployeeAccountingModule } from './employee-accounting/employee-accounting.module';
 import { PayrollModule } from './payroll/payroll.module';
 import { HolidaysModule } from './holidays/holidays.module';
+import { InstructorServicesModule } from './instructor_services/instructor_services.module';
+import { InstructorRestrictionsModule } from './instructor_restrictions/instructor_restrictions.module';
+import { InstructorVehiclePickupDropoffModule } from './instructor_vehicle_pickup_dropoff/instructor_vehicle_pickup_dropoff.module';
+import { HappyFormModule } from './happy_form/happy_form.module';
+import { TimesheetRecordsModule } from './timesheet-records/timesheet-records.module';
 
 
 dotenv.config();
@@ -80,6 +85,11 @@ dotenv.config();
         __dirname + '/i_care_reasons/entities/*.entity.{ts,js}', // <-- Solo las entidades de ICareReasons
         __dirname + '/employee-accounting/entities/*.entity.{ts,js}', // <-- Solo las entidades de EmployeeAccounting
         __dirname + '/Holidays/entities/*.entity.{ts,js}',
+        __dirname + '/instructor_services/entities/*.entity.{ts,js}', // <-- Solo las entidades de InstructorServices
+        __dirname + '/instructor_restrictions/entities/*.entity.{ts,js}', // <-- Solo las entidades de InstructorRestrictions
+        __dirname + '/instructor_vehicle_pickup_dropoff/entities/*.entity.{ts,js}', // <-- Solo las entidades de InstructorVehiclePickupDropoff
+        __dirname + '/happy_form/entities/*.entity.{ts,js}', // <-- Solo las entidades de HappyForm
+        __dirname + '/timesheet-records/entities/*.entity.{ts,js}', // <-- Solo las entidades de TimesheetRecords
       ],
     }),
     TimeOffRequestModule,
@@ -109,6 +119,11 @@ dotenv.config();
     EmployeeAccountingModule,
     PayrollModule,
     HolidaysModule,
+    InstructorServicesModule,
+    InstructorRestrictionsModule,
+    InstructorVehiclePickupDropoffModule,
+    HappyFormModule,
+    TimesheetRecordsModule
   ],
 })
 export class AppModule { }

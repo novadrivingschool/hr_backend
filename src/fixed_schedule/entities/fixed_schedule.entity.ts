@@ -3,7 +3,9 @@ import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
-  ManyToOne
+  ManyToOne,
+  CreateDateColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 
 @Entity('fixed_schedule')
@@ -29,6 +31,24 @@ export class FixedSchedule {
   @Column({ type: 'jsonb', default: () => "'[]'" })
   location: string[];
 
+  @Column({ type: 'varchar', nullable: true, default: null })
+  services: string | null;
+
+  @Column({ type: 'varchar', nullable: true, default: null })
+  restrictions: string | null;
+
+  @Column({ type: 'varchar', nullable: true, default: null })
+  vehicle_drop: string | null;
+
   @Column({ type: 'boolean', default: false })
   strict: boolean;
+
+  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  created_at: Date;
+
+  @UpdateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  updated_at: Date;
+
+  @Column({ type: 'text', nullable: true, default: null })
+  notes: string | null;
 }

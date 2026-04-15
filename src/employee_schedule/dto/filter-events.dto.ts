@@ -1,4 +1,3 @@
-// dto/filter-events.dto.ts
 import { IsOptional, IsString, IsDateString, IsArray } from 'class-validator';
 import { Transform } from 'class-transformer';
 
@@ -20,4 +19,32 @@ export class FilterEventsDto {
   @IsOptional()
   @IsString()
   register?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => Array.isArray(value) ? value : [value])
+  location?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => Array.isArray(value) ? value : [value])
+  services?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => Array.isArray(value) ? value : [value])
+  restrictions?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => Array.isArray(value) ? value : [value])
+  vehicle_drop?: string[];
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }

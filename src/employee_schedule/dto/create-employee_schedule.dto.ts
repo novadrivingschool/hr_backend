@@ -35,8 +35,24 @@ export class CreateFixedScheduleDto {
   location: string[];
 
   @IsOptional()
+  @IsString()
+  services?: string;
+
+  @IsOptional()
+  @IsString()
+  restrictions?: string;
+
+  @IsOptional()
+  @IsString()
+  vehicle_drop?: string;
+
+  @IsOptional()
   @IsBoolean()
   strict?: boolean;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
 
 export class CreateTimeOffRecoverySlotDto {
@@ -55,8 +71,24 @@ export class CreateTimeOffRecoverySlotDto {
   location?: string[];
 
   @IsOptional()
+  @IsString()
+  services?: string;
+
+  @IsOptional()
+  @IsString()
+  restrictions?: string;
+
+  @IsOptional()
+  @IsString()
+  vehicle_drop?: string;
+
+  @IsOptional()
   @IsBoolean()
   strict?: boolean;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
 
 export class CreateScheduleEventDto {
@@ -67,11 +99,6 @@ export class CreateScheduleEventDto {
   @IsString()
   date: string;
 
-  /* @IsString()
-  start: string;
-
-  @IsString()
-  end: string; */
   @ValidateIf(o => o.register !== RegisterEnum.OFF)
   @IsString()
   start: string;
@@ -88,6 +115,18 @@ export class CreateScheduleEventDto {
   location: string[];
 
   @IsOptional()
+  @IsString()
+  services?: string;
+
+  @IsOptional()
+  @IsString()
+  restrictions?: string;
+
+  @IsOptional()
+  @IsString()
+  vehicle_drop?: string;
+
+  @IsOptional()
   @IsUUID()
   uuid_tor: string | null;
 
@@ -99,7 +138,6 @@ export class CreateScheduleEventDto {
   @IsBoolean()
   strict?: boolean;
 
-  // Solo aplica cuando register === TIME_OFF_REQUEST
   @IsOptional()
   @IsBoolean()
   is_paid?: boolean;
@@ -113,6 +151,10 @@ export class CreateScheduleEventDto {
   @ValidateNested({ each: true })
   @Type(() => CreateTimeOffRecoverySlotDto)
   make_up_schedule?: CreateTimeOffRecoverySlotDto[];
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
 }
 
 export class CreateEmployeeScheduleDto {

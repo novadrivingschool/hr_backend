@@ -27,6 +27,11 @@ import { ICareReason } from 'src/i_care_reasons/entities/i_care_reason.entity';
 import { EmployeeAccounting } from 'src/employee-accounting/entities/employee-accounting.entity';
 import { Timesheet } from 'src/payroll/entities/timesheet.entity';
 import { Holiday } from 'src/holidays/entities/holiday.entity';
+import { InstructorVehiclePickupDropoff } from 'src/instructor_vehicle_pickup_dropoff/entities/instructor_vehicle_pickup_dropoff.entity';
+import { InstructorRestriction } from 'src/instructor_restrictions/entities/instructor_restriction.entity';
+import { InstructorService } from 'src/instructor_services/entities/instructor_service.entity';
+import { HappyForm } from 'src/happy_form/entities/happy_form.entity';
+import { TimesheetRecord } from 'src/timesheet-records/entities/timesheet-record.entity';
 
 dotenv.config();
 
@@ -73,7 +78,12 @@ export const AppDataSource = new DataSource({
     ICareReason,
     EmployeeAccounting,
     Timesheet,
-    Holiday
+    Holiday,
+    InstructorVehiclePickupDropoff,
+    InstructorRestriction,
+    InstructorService,
+    HappyForm,
+    TimesheetRecord
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

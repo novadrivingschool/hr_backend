@@ -1,10 +1,11 @@
-/* src\schedule_event\entities\schedule_event.entity.ts */
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
 import {
   Entity,
   PrimaryGeneratedColumn,
   Column,
   ManyToOne,
+  CreateDateColumn,
+  UpdateDateColumn,
 } from 'typeorm';
 import { RegisterEnum } from './register.enum';
 
@@ -27,11 +28,6 @@ export class ScheduleEvent {
   @Column({ type: 'date' })
   date: string;
 
-  /* @Column({ type: 'timestamp' })
-  start: string;
-
-  @Column({ type: 'timestamp' })
-  end: string; */
   @Column({ type: 'timestamp', nullable: true, default: null })
   start: string | null;
 
@@ -44,6 +40,15 @@ export class ScheduleEvent {
   @Column({ type: 'jsonb', default: () => "'[]'" })
   location: string[];
 
+  @Column({ type: 'varchar', nullable: true, default: null })
+  services: string | null;
+
+  @Column({ type: 'varchar', nullable: true, default: null })
+  restrictions: string | null;
+
+  @Column({ type: 'varchar', nullable: true, default: null })
+  vehicle_drop: string | null;
+
   @Column({ type: 'uuid', nullable: true, default: null })
   uuid_tor: string | null;
 
@@ -53,7 +58,6 @@ export class ScheduleEvent {
   @Column({ type: 'boolean', default: false })
   strict: boolean;
 
-  // Solo para register === TIME_OFF_REQUEST
   @Column({ type: 'boolean', nullable: true, default: null })
   is_paid: boolean | null;
 
@@ -62,4 +66,13 @@ export class ScheduleEvent {
 
   @Column({ type: 'jsonb', nullable: true, default: null })
   make_up_schedule: MakeUpScheduleItem[] | null;
+
+  @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  created_at: Date;
+
+  @UpdateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  updated_at: Date;
+
+  @Column({ type: 'text', nullable: true, default: null })
+  notes: string | null;
 }

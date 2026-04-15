@@ -1,4 +1,3 @@
-// src/employee_schedule/dto/filter-schedule-panel.dto.ts
 import {
   IsArray,
   IsBoolean,
@@ -7,7 +6,7 @@ import {
   IsOptional,
   IsString,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
 
 export class FilterSchedulePanelDto {
@@ -33,13 +32,30 @@ export class FilterSchedulePanelDto {
   register?: RegisterEnum[];
 
   @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  location?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  services?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  restrictions?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  vehicle_drop?: string[];
+
+  @IsOptional()
   @Type(() => Boolean)
   @IsBoolean()
   strict?: boolean;
 
-  // undefined => todos
-  // true      => solo fixed
-  // false     => solo variables
   @IsOptional()
   @Type(() => Boolean)
   @IsBoolean()
