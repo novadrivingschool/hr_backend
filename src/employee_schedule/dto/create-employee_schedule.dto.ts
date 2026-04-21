@@ -11,7 +11,9 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
+import { RegisterEnum, OUTAGE_REASONS } from 'src/schedule_event/entities/register.enum';
+
+const OUTAGE_END_OPTIONAL_REASONS = [OUTAGE_REASONS[0], OUTAGE_REASONS[1]]; // 'No Internet', 'Power Outage'
 
 export class CreateFixedScheduleDto {
   @IsOptional()
@@ -103,7 +105,10 @@ export class CreateScheduleEventDto {
   @IsString()
   start: string;
 
-  @ValidateIf(o => o.register !== RegisterEnum.OFF)
+  @ValidateIf(o =>
+    o.register !== RegisterEnum.OFF &&
+    !(o.register === RegisterEnum.OUTAGE && OUTAGE_END_OPTIONAL_REASONS.includes(o.reason))
+  )
   @IsString()
   end: string;
 
@@ -155,6 +160,10 @@ export class CreateScheduleEventDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }
 
 export class CreateEmployeeScheduleDto {

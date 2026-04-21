@@ -17,6 +17,12 @@ type MakeUpScheduleItem = {
   strict: boolean;
 };
 
+export type ApprovalRecord = {
+  approved_by: string;
+  employee_number: string;
+  approved_at: string;
+};
+
 @Entity('schedule_event')
 export class ScheduleEvent {
   @PrimaryGeneratedColumn()
@@ -75,4 +81,13 @@ export class ScheduleEvent {
 
   @Column({ type: 'text', nullable: true, default: null })
   notes: string | null;
+
+  @Column({ type: 'varchar', nullable: true, default: null })
+  reason: string | null;
+
+  @Column({ type: 'jsonb', nullable: true, default: null })
+  approval_1: ApprovalRecord | null;
+
+  @Column({ type: 'jsonb', nullable: true, default: null })
+  approval_2: ApprovalRecord | null;
 }

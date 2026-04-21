@@ -21,7 +21,10 @@ import {
   Repository,
   SelectQueryBuilder,
 } from 'typeorm';
-import { ScheduleEvent } from 'src/schedule_event/entities/schedule_event.entity';
+import {
+  ApprovalRecord,
+  ScheduleEvent,
+} from 'src/schedule_event/entities/schedule_event.entity';
 import { Employee } from 'src/employees/entities/employee.entity';
 import { FilterEventsDto } from './dto/filter-events.dto';
 import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
@@ -312,6 +315,7 @@ export class EmployeeScheduleService {
       multi_location: emp.multi_location,
       multi_company: emp.multi_company,
       multi_position: emp.multi_position,
+      multi_type_of_job: emp.multi_type_of_job,
     }));
   }
 
@@ -389,6 +393,8 @@ export class EmployeeScheduleService {
         is_paid: e.is_paid,
         will_make_up_hours: e.will_make_up_hours,
         make_up_schedule: e.make_up_schedule,
+        approval_1: e.approval_1,
+        approval_2: e.approval_2,
       }));
     } catch (error) {
       console.error('❌ [findEvents] Error filtering events:', error.message);
@@ -494,6 +500,8 @@ export class EmployeeScheduleService {
       multi_department: emp.multi_department,
       multi_location: emp.multi_location,
       multi_company: emp.multi_company,
+      multi_position: emp.multi_position,
+      multi_type_of_job: emp.multi_type_of_job,
     }));
   }
 
@@ -505,6 +513,8 @@ export class EmployeeScheduleService {
       multi_department: string[];
       multi_location: string[];
       multi_company: string[];
+      multi_position: string[];
+      multi_type_of_job: string[];
     }>;
     events: Array<{
       id: number;
@@ -518,12 +528,15 @@ export class EmployeeScheduleService {
       restrictions: string | null;
       vehicle_drop: string | null;
       notes: string | null;
+      reason: string | null;
       uuid_tor: string | null;
       uuid_extra_hours: string | null;
       strict: boolean;
       is_paid: boolean | null;
       will_make_up_hours: boolean | null;
       make_up_schedule: any[] | null;
+      approval_1: ApprovalRecord | null;
+      approval_2: ApprovalRecord | null;
       isFixed: false;
     }>;
     fixed: Array<{
@@ -573,6 +586,8 @@ export class EmployeeScheduleService {
         end_date,
         employee_number = [],
         departments = [],
+        positions = [],
+        type_of_job = [],
         register = [],
         location = [],
         services = [],
@@ -581,6 +596,7 @@ export class EmployeeScheduleService {
         notes = [],
         strict,
         isFixed,
+        is_paid,
       } = filters as FilterSchedulePanelDto & { notes?: string[] };
 
       if (!start_date || !end_date) {
@@ -608,6 +624,30 @@ export class EmployeeScheduleService {
 
         const params = Object.fromEntries(
           departments.map((d, i) => [`dep${i}`, JSON.stringify([d])]),
+        );
+
+        employeeQb.andWhere(`(${conditions})`, params);
+      }
+
+      if (positions.length) {
+        const conditions = positions
+          .map((_, i) => `emp.multi_position::jsonb @> :pos${i}`)
+          .join(' OR ');
+
+        const params = Object.fromEntries(
+          positions.map((p, i) => [`pos${i}`, JSON.stringify([p])]),
+        );
+
+        employeeQb.andWhere(`(${conditions})`, params);
+      }
+
+      if (type_of_job.length) {
+        const conditions = type_of_job
+          .map((_, i) => `emp.multi_type_of_job::jsonb @> :toj${i}`)
+          .join(' OR ');
+
+        const params = Object.fromEntries(
+          type_of_job.map((t, i) => [`toj${i}`, JSON.stringify([t])]),
         );
 
         employeeQb.andWhere(`(${conditions})`, params);
@@ -648,12 +688,15 @@ export class EmployeeScheduleService {
         restrictions: string | null;
         vehicle_drop: string | null;
         notes: string | null;
+        reason: string | null;
         uuid_tor: string | null;
         uuid_extra_hours: string | null;
         strict: boolean;
         is_paid: boolean | null;
         will_make_up_hours: boolean | null;
         make_up_schedule: any[] | null;
+        approval_1: ApprovalRecord | null;
+        approval_2: ApprovalRecord | null;
         isFixed: false;
       }> = [];
 
@@ -677,6 +720,16 @@ export class EmployeeScheduleService {
 
         if (typeof strict === 'boolean') {
           eventsQb.andWhere('event.strict = :strict', { strict });
+        }
+
+        if (typeof is_paid === 'boolean') {
+          eventsQb.andWhere(
+            `(event.register = :torRegister AND event.is_paid = :isPaid)`,
+            {
+              torRegister: RegisterEnum.TIME_OFF_REQUEST,
+              isPaid: is_paid,
+            },
+          );
         }
 
         this.applyLocationJsonbFilter(eventsQb, 'event.location', 'eventLoc', location);
@@ -712,12 +765,15 @@ export class EmployeeScheduleService {
           restrictions: e.restrictions,
           vehicle_drop: e.vehicle_drop,
           notes: e.notes,
+          reason: e.reason,
           uuid_tor: e.uuid_tor,
           uuid_extra_hours: e.uuid_extra_hours,
           strict: e.strict,
           is_paid: e.is_paid,
           will_make_up_hours: e.will_make_up_hours,
           make_up_schedule: e.make_up_schedule,
+          approval_1: e.approval_1,
+          approval_2: e.approval_2,
           isFixed: false as const,
         }));
       }
@@ -810,6 +866,8 @@ export class EmployeeScheduleService {
           multi_department: emp.multi_department,
           multi_location: emp.multi_location,
           multi_company: emp.multi_company,
+          multi_position: emp.multi_position,
+          multi_type_of_job: emp.multi_type_of_job,
         }));
 
       const work_summary = await this.buildWorkSummary(
@@ -869,10 +927,12 @@ export class EmployeeScheduleService {
         strict: Boolean(slot.strict),
       }));
 
+    const isOutage = dto.register === RegisterEnum.OUTAGE;
+
     return {
       date: dto.date,
-      start: isOff ? null : dto.start,
-      end: isOff ? null : dto.end,
+      start: isOff ? null : this.buildTimestamp(dto.date, dto.start),
+      end: isOff ? null : this.buildTimestamp(dto.date, dto.end),
       register: dto.register,
       location: Array.isArray(dto.location) ? dto.location : [],
       services: dto.services ?? existing?.services ?? null,
@@ -880,6 +940,10 @@ export class EmployeeScheduleService {
       vehicle_drop: dto.vehicle_drop ?? existing?.vehicle_drop ?? null,
       notes: dto.notes ?? existing?.notes ?? null,
       strict: dto.strict ?? existing?.strict ?? false,
+
+      reason: isOutage
+        ? dto.reason ?? existing?.reason ?? null
+        : null,
 
       uuid_tor: isTimeOffRequest
         ? dto.uuid_tor ?? existing?.uuid_tor ?? randomUUID()
@@ -891,7 +955,7 @@ export class EmployeeScheduleService {
         ? dto.uuid_extra_hours ?? existing?.uuid_extra_hours ?? null
         : null,
 
-      is_paid: isTimeOffRequest
+      is_paid: (isTimeOffRequest || isOutage)
         ? dto.is_paid ?? existing?.is_paid ?? false
         : null,
 
@@ -1737,6 +1801,73 @@ export class EmployeeScheduleService {
     };
   }
 
+  /**
+   * Converts a YYYY-MM-DD date + HH:MM local-Chicago time into a UTC ISO string
+   * suitable for inserting into a `timestamp` column.
+   * If `time` is already a full timestamp (contains more than HH:MM), it is returned as-is.
+   * Returns null if either argument is missing.
+   */
+  private buildTimestamp(
+    date: string | null | undefined,
+    time: string | null | undefined,
+  ): string | null {
+    if (!time || !date) return null;
+
+    const raw = String(time).trim();
+
+    // If it's a recognised full-timestamp string, pass through unchanged
+    if (
+      /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(raw) ||   // ISO / PG datetime
+      /^\d{4}-\d{2}-\d{2}$/.test(raw)                       // date-only (unusual but safe)
+    ) {
+      return raw;
+    }
+
+    // If it's not a bare HH:MM, it's not a valid time — return null
+    if (!/^\d{1,2}:\d{2}$/.test(raw)) return null;
+
+    const [year, month, day] = String(date).split('-').map(Number);
+    const [hour, minute] = String(time).split(':').map(Number);
+
+    if (
+      Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day) ||
+      Number.isNaN(hour) || Number.isNaN(minute)
+    ) {
+      return null;
+    }
+
+    // Start with a UTC guess where HH:MM matches the desired Chicago local time.
+    // Then iteratively correct for the Chicago offset (handles DST transparently).
+    let utcMs = Date.UTC(year, month - 1, day, hour, minute, 0);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const probe = new Date(utcMs);
+      const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: this.chicagoTimeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        hourCycle: 'h23',
+      }).formatToParts(probe);
+
+      const pMap = Object.fromEntries(parts.map(p => [p.type, p.value])) as Record<string, string>;
+      const chicagoHour = parseInt(pMap.hour, 10);
+      const chicagoMinute = parseInt(pMap.minute, 10);
+
+      // How many minutes off are we?
+      const diffMinutes = (hour - chicagoHour) * 60 + (minute - chicagoMinute);
+      if (diffMinutes === 0) break;
+
+      // Correct and try again
+      utcMs += diffMinutes * 60_000;
+    }
+
+    return new Date(utcMs).toISOString();
+  }
+
   private normalizeDateOnly(value: string | Date | null | undefined): string | null {
     if (!value) {
       return null;
@@ -1869,6 +2000,7 @@ export class EmployeeScheduleService {
 
     const allowedPairs = new Set([
       [RegisterEnum.WORK_SHIFT, RegisterEnum.LUNCH].sort().join('|'),
+      [RegisterEnum.WORK_SHIFT, RegisterEnum.OUTAGE].sort().join('|'),
     ]);
 
     return allowedPairs.has([left, right].sort().join('|'));

@@ -16,6 +16,7 @@ import { PDFDocument } from 'pdf-lib';
 import archiver from 'archiver';
 import { PassThrough } from 'stream';
 import * as JSZip from 'jszip';
+import { TimesheetRecord } from 'src/timesheet-records/entities/timesheet-record.entity';
 
 type EmployeePdfItem = {
   employee_number: string;
@@ -56,6 +57,8 @@ export class PayrollService {
     private readonly holidayRepository: Repository<Holiday>,
     @InjectRepository(EmployeeSchedule)
     private readonly scheduleRepo: Repository<EmployeeSchedule>,
+    @InjectRepository(TimesheetRecord)
+    private readonly timesheetRecordRepository: Repository<TimesheetRecord>,
   ) { }
 
   private formatPayrollRangeText(
@@ -3982,5 +3985,548 @@ export class PayrollService {
     } finally {
       await browser.close();
     }
+  }
+
+  async getTimesheetRecordsForRange(
+    start_date: string,
+    end_date: string,
+  ) {
+    const rows = await this.timesheetRecordRepository  // <-- también necesitas inyectar TimesheetRecord repository
+      .createQueryBuilder('t')
+      .where('t.day_date >= :start_date', { start_date })
+      .andWhere('t.day_date <= :end_date', { end_date })
+      .orderBy('t.day_date', 'ASC')
+      .addOrderBy('t.employee', 'ASC')
+      .addOrderBy('t.time_in', 'ASC')
+      .getMany();
+
+    return rows.map((row) => ({
+      tcw_employee: row.employee,
+      tcw_date: String(row.day_date).slice(0, 10),
+      tcw_time_in: row.time_in ?? null,
+      tcw_time_out: row.time_out ?? null,
+      tcw_hours: this.roundPayroll(row.hours),
+      tcw_paid_break: this.roundPayroll(row.paid_break),
+      tcw_unpaid_break: this.roundPayroll(row.unpaid_break),
+      tcw_total_hours: this.roundPayroll(row.total_hours),
+    }));
+  }
+
+  private buildTcwNameVariants(tcwName: string): string[] {
+    const tokens = this.tokenizeName(tcwName);
+    if (tokens.length < 2) return [this.normalizeName(tcwName)];
+
+    const variants: string[] = [];
+
+    variants.push(tokens.join(' '));
+    variants.push([...tokens].reverse().join(' '));
+
+    const [first, ...rest] = tokens;
+    variants.push([...rest, first].join(' '));
+
+    const last = tokens[tokens.length - 1];
+    const withoutLast = tokens.slice(0, -1);
+    variants.push([last, ...withoutLast].join(' '));
+
+    return [...new Set(variants)];
+  }
+
+  private matchScoreDetail(tcwName: string, activityName: string): number {
+    const variants = this.buildTcwNameVariants(tcwName);
+    const actTokens = this.tokenizeName(activityName);
+    let best = 0;
+
+    for (const variant of variants) {
+      const varTokens = this.tokenizeName(variant);
+      const matches = varTokens.filter(t => actTokens.includes(t)).length;
+      const score = matches / Math.min(varTokens.length, actTokens.length);
+      if (score > best) best = score;
+    }
+
+    return best;
+  }
+
+  private buildActivityIndexDetail(rows: any[]) {
+    const index = new Map<string, Map<string, any[]>>();
+    for (const row of rows) {
+      const n = this.normalizeName(row.employee_name ?? '');
+      const date = String(row.date ?? '').slice(0, 10);
+      if (!n || !date) continue;
+      if (!index.has(n)) index.set(n, new Map());
+      const dateMap = index.get(n)!;
+      if (!dateMap.has(date)) dateMap.set(date, []);
+      dateMap.get(date)!.push(row);
+    }
+    return index;
+  }
+
+  private findActivityRowsDetail(
+    index: Map<string, Map<string, any[]>>,
+    tcwName: string,
+    date: string,
+  ): any[] {
+    let bestKey = '';
+    let bestScore = 0;
+
+    for (const [n] of index) {
+      const s = this.matchScoreDetail(tcwName, n);
+      if (s > bestScore) { bestScore = s; bestKey = n; }
+    }
+
+    console.log(`🔍 Match for "${tcwName}" on ${date}: bestKey="${bestKey}" score=${bestScore}`);
+
+    if (bestKey && bestScore >= 0.75) {
+      return index.get(bestKey)?.get(date) ?? [];
+    }
+    return [];
+  }
+
+
+  async getClockComparisonDetail(
+    start_date: string,
+    end_date: string,
+    employees?: string[],
+  ) {
+    const tcwRows = await this.timesheetRecordRepository
+      .createQueryBuilder('t')
+      .where('t.day_date >= :start_date', { start_date })
+      .andWhere('t.day_date <= :end_date', { end_date })
+      .orderBy('t.day_date', 'ASC')
+      .addOrderBy('t.employee', 'ASC')
+      .getMany();
+
+    const filteredTcwRows = employees?.length
+      ? tcwRows.filter(row =>
+        employees.some(emp =>
+          this.matchScoreDetail(row.employee, emp) >= 0.75,
+        ),
+      )
+      : tcwRows;
+
+    console.log('=== TCW SAMPLE ===');
+    console.log(JSON.stringify(filteredTcwRows.slice(0, 3), null, 2));
+
+    let activityOneData: any[] = [];
+    try {
+      const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
+      const { data } = await axios.post(
+        `${baseUrl}/new-activity/clock-report/data`,
+        { start_date, end_date },
+        { timeout: 15_000 },
+      );
+      activityOneData = data?.data ?? [];
+      console.log('=== ACTIVITY ONE SAMPLE ===');
+      console.log(JSON.stringify(activityOneData.slice(0, 3), null, 2));
+    } catch (error) {
+      console.error('⚠️ Activity ONE clock-report/data failed:', error.message);
+    }
+
+    let activityVoutData: any[] = [];
+    try {
+      const baseUrl = process.env.VOUT_API;
+      const { data } = await axios.post(
+        `${baseUrl}/activity_report/clock-report/data`,
+        { start_date, end_date },
+        { timeout: 15_000 },
+      );
+      activityVoutData = data?.data ?? [];
+      console.log('=== ACTIVITY VOUT SAMPLE ===');
+      console.log(JSON.stringify(activityVoutData.slice(0, 3), null, 2));
+    } catch (error) {
+      console.error('⚠️ Activity VOUT clock-report/data failed:', error.message);
+    }
+
+    const oneIndex = this.buildActivityIndexDetail(activityOneData);
+    const voutIndex = this.buildActivityIndexDetail(activityVoutData);
+
+    const toHHMMSS = (value: string | null | undefined): string | null => {
+      if (!value) return null;
+      const raw = String(value).trim();
+      if (!raw || raw === '0' || raw.toLowerCase() === 'null') return null;
+      if (raw.toLowerCase().includes('no clock') || raw.toLowerCase().includes('no lunch')) return null;
+
+      const m24s = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+      if (m24s) return `${m24s[1].padStart(2, '0')}:${m24s[2]}:${m24s[3]}`;
+
+      const m24 = raw.match(/^(\d{1,2}):(\d{2})$/);
+      if (m24) return `${m24[1].padStart(2, '0')}:${m24[2]}:00`;
+
+      const m12 = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
+      if (m12) {
+        let h = parseInt(m12[1]);
+        const min = m12[2];
+        const sec = m12[3] ?? '00';
+        const mer = m12[4].toUpperCase();
+        if (mer === 'PM' && h !== 12) h += 12;
+        if (mer === 'AM' && h === 12) h = 0;
+        return `${h.toString().padStart(2, '0')}:${min}:${sec}`;
+      }
+
+      return null;
+    };
+
+    const diffHours = (inTime: string | null, outTime: string | null): number => {
+      const inMin = this.timeToMinutes(inTime);
+      const outMin = this.timeToMinutes(outTime);
+      if (inMin === null || outMin === null) return 0;
+      let diff = outMin - inMin;
+      if (diff < 0) diff += 24 * 60;
+      return this.round2(diff / 60);
+    };
+
+    const minutesDiff = (a: string | null, b: string | null): number | null => {
+      const aMin = this.timeToMinutes(a);
+      const bMin = this.timeToMinutes(b);
+      if (aMin === null || bMin === null) return null;
+      return Math.abs(aMin - bMin);
+    };
+
+    const tcwGrouped = new Map<string, {
+      employee: string;
+      date: string;
+      intervals: typeof filteredTcwRows;
+    }>();
+
+    for (const row of filteredTcwRows) {
+      const date = String(row.day_date).slice(0, 10);
+      const key = `${row.employee}__${date}`;
+      if (!tcwGrouped.has(key)) {
+        tcwGrouped.set(key, { employee: row.employee, date, intervals: [] });
+      }
+      tcwGrouped.get(key)!.intervals.push(row);
+    }
+
+    type DetailRow = {
+      tcw_employee: string;
+      tcw_date: string;
+      tcw_time_in: string | null;
+      tcw_time_out: string | null;
+      tcw_hours: number;
+      tcw_paid_break: number;
+      tcw_unpaid_break: number;
+      tcw_total_hours: number;
+      activity_in_event: string | null;
+      activity_out_event: string | null;
+      activity_in_time: string | null;
+      activity_out_time: string | null;
+      activity_worked_hours: number;
+      activity_source: string | null;
+      difference_hours: number;
+      status: 'fine' | 'error';
+    };
+
+    const result: DetailRow[] = [];
+
+    for (const [, group] of tcwGrouped) {
+      const { employee, date, intervals } = group;
+
+      intervals.sort((a, b) => {
+        const aMin = this.timeToMinutes(toHHMMSS(a.time_in));
+        const bMin = this.timeToMinutes(toHHMMSS(b.time_in));
+        if (aMin === null && bMin === null) return 0;
+        if (aMin === null) return 1;
+        if (bMin === null) return -1;
+        return aMin - bMin;
+      });
+
+      const voutRows = this.findActivityRowsDetail(voutIndex, employee, date);
+      const oneRows = this.findActivityRowsDetail(oneIndex, employee, date);
+      const activityRows = voutRows.length ? voutRows : oneRows;
+      const activitySource = voutRows.length
+        ? 'Activity VOUT'
+        : oneRows.length
+          ? 'Activity ONE'
+          : null;
+
+      console.log(`📋 Employee: "${employee}" | Date: ${date} | VOUT rows: ${voutRows.length} | ONE rows: ${oneRows.length}`);
+
+      const actClockIn = toHHMMSS(
+        activityRows[0]?.clock_in ?? activityRows[0]?.time_in ?? null,
+      );
+      const actLunchIn = toHHMMSS(
+        activityRows[0]?.lunch_in ?? activityRows[0]?.lunch_start ?? null,
+      );
+      const actLunchOut = toHHMMSS(
+        activityRows[0]?.lunch_out ?? activityRows[0]?.lunch_end ?? null,
+      );
+      const actClockOut = toHHMMSS(
+        activityRows[activityRows.length - 1]?.clock_out ??
+        activityRows[activityRows.length - 1]?.time_out ??
+        null,
+      );
+
+      console.log(`  actClockIn=${actClockIn} | actLunchIn=${actLunchIn} | actLunchOut=${actLunchOut} | actClockOut=${actClockOut}`);
+
+      const tcwTotalHours = this.round2(Number(intervals[0]?.total_hours ?? 0));
+
+      let lunchOutIntervalIndex: number | null = null;
+      let lunchInIntervalIndex: number | null = null;
+
+      if (actLunchIn && actLunchOut) {
+        for (let i = 0; i < intervals.length; i++) {
+          const tcwOut = toHHMMSS(intervals[i].time_out);
+          const tcwIn = toHHMMSS(intervals[i].time_in);
+
+          const diffOut = minutesDiff(tcwOut, actLunchIn);
+          if (diffOut !== null && diffOut <= 5 && lunchOutIntervalIndex === null) {
+            lunchOutIntervalIndex = i;
+          }
+
+          const diffIn = minutesDiff(tcwIn, actLunchOut);
+          if (diffIn !== null && diffIn <= 5 && lunchInIntervalIndex === null) {
+            lunchInIntervalIndex = i;
+          }
+        }
+      }
+
+      console.log(`  lunchOutIntervalIndex=${lunchOutIntervalIndex} | lunchInIntervalIndex=${lunchInIntervalIndex}`);
+
+      const lastIntervalIndex = intervals.length - 1;
+
+      for (let i = 0; i < intervals.length; i++) {
+        const interval = intervals[i];
+        const tcwIn = toHHMMSS(interval.time_in);
+        const tcwOut = toHHMMSS(interval.time_out);
+        const tcwWorked = this.round2(Number(interval.hours ?? 0));
+
+        let actInEvent: string | null = null;
+        let actOutEvent: string | null = null;
+        let actInTime: string | null = null;
+        let actOutTime: string | null = null;
+
+        if (i === 0) {
+          actInEvent = 'in';
+          actInTime = actClockIn;
+          if (lunchOutIntervalIndex === 0) {
+            actOutEvent = 'out for lunch';
+            actOutTime = actLunchIn;
+          } else if (i === lastIntervalIndex) {
+            actOutEvent = 'out';
+            actOutTime = actClockOut;
+          } else {
+            actOutEvent = null;
+            actOutTime = null;
+          }
+        } else if (i === lunchInIntervalIndex) {
+          actInEvent = 'back from lunch';
+          actInTime = actLunchOut;
+          if (lunchOutIntervalIndex === i) {
+            actOutEvent = 'out for lunch';
+            actOutTime = actLunchIn;
+          } else if (i === lastIntervalIndex) {
+            actOutEvent = 'out';
+            actOutTime = actClockOut;
+          } else {
+            actOutEvent = null;
+            actOutTime = null;
+          }
+        } else if (i === lastIntervalIndex) {
+          actInEvent = null;
+          actOutEvent = 'out';
+          actInTime = null;
+          actOutTime = actClockOut;
+        } else {
+          actInEvent = null;
+          actOutEvent = null;
+          actInTime = null;
+          actOutTime = null;
+        }
+
+        const actWorked = diffHours(actInTime, actOutTime);
+        const differenceHours = this.round2(tcwWorked - actWorked);
+        const hasActivity = actInTime !== null || actOutTime !== null;
+        const status: 'fine' | 'error' =
+          !hasActivity || Math.abs(differenceHours) > 0.08 ? 'error' : 'fine';
+
+        result.push({
+          tcw_employee: employee,
+          tcw_date: date,
+          tcw_time_in: tcwIn,
+          tcw_time_out: tcwOut,
+          tcw_hours: tcwWorked,
+          tcw_paid_break: this.round2(Number(interval.paid_break ?? 0)),
+          tcw_unpaid_break: this.round2(Number(interval.unpaid_break ?? 0)),
+          tcw_total_hours: tcwTotalHours,
+          activity_in_event: actInEvent,
+          activity_out_event: actOutEvent,
+          activity_in_time: actInTime,
+          activity_out_time: actOutTime,
+          activity_worked_hours: actWorked,
+          activity_source: activitySource,
+          difference_hours: differenceHours,
+          status,
+        });
+      }
+    }
+
+    result.sort((a, b) => {
+      if (a.tcw_date === b.tcw_date) {
+        if (a.tcw_employee === b.tcw_employee) {
+          const aMin = this.timeToMinutes(a.tcw_time_in);
+          const bMin = this.timeToMinutes(b.tcw_time_in);
+          if (aMin === null && bMin === null) return 0;
+          if (aMin === null) return 1;
+          if (bMin === null) return -1;
+          return aMin - bMin;
+        }
+        return a.tcw_employee.localeCompare(b.tcw_employee);
+      }
+      return a.tcw_date.localeCompare(b.tcw_date);
+    });
+
+    return result;
+  }
+
+  async exportClockComparisonDetailExcel(
+    start_date: string,
+    end_date: string,
+    employees?: string[],
+  ): Promise<Buffer> {
+    const data = await this.getClockComparisonDetail(start_date, end_date, employees);
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Nova ONE';
+    wb.created = new Date();
+
+    const ws = wb.addWorksheet('Clock Comparison Detail', {
+      properties: { tabColor: { argb: 'FF1A2C4E' } },
+    });
+
+    const columns = [
+      { header: 'Employee', key: 'tcw_employee', width: 28 },
+      { header: 'Date', key: 'tcw_date', width: 14 },
+      { header: 'TCW — Time In', key: 'tcw_time_in', width: 16 },
+      { header: 'TCW — Time Out', key: 'tcw_time_out', width: 16 },
+      { header: 'TCW — Hours', key: 'tcw_hours', width: 14 },
+      { header: 'Activity — In Time', key: 'activity_in_time', width: 18 },
+      { header: 'Activity — Out Time', key: 'activity_out_time', width: 18 },
+      { header: 'Activity — Worked Hrs', key: 'activity_worked_hours', width: 20 },
+      { header: 'Activity — Source', key: 'activity_source', width: 18 },
+      { header: 'Difference Hours', key: 'difference_hours', width: 18 },
+      { header: 'Status', key: 'status', width: 12 },
+      { header: 'Time Break', key: 'time_break', width: 14 },
+    ];
+
+    ws.columns = columns;
+
+    // Header styling
+    const headerRow = ws.getRow(1);
+    headerRow.height = 28;
+
+    const tcwHeaderColor = 'FF1A2C4E';
+    const actHeaderColor = 'FF1565C0';
+    const metaHeaderColor = 'FF37474F';
+
+    const headerColors: Record<number, string> = {
+      1: tcwHeaderColor, 2: tcwHeaderColor,
+      3: tcwHeaderColor, 4: tcwHeaderColor, 5: tcwHeaderColor,
+      6: actHeaderColor, 7: actHeaderColor, 8: actHeaderColor, 9: actHeaderColor,
+      10: metaHeaderColor, 11: metaHeaderColor, 12: metaHeaderColor,
+    };
+
+    for (let c = 1; c <= columns.length; c++) {
+      const cell = headerRow.getCell(c);
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10, name: 'Arial' };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerColors[c] ?? tcwHeaderColor } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF000000' } },
+        left: { style: 'thin', color: { argb: 'FF000000' } },
+        bottom: { style: 'thin', color: { argb: 'FF000000' } },
+        right: { style: 'thin', color: { argb: 'FF000000' } },
+      };
+    }
+
+    // Track employee grouping
+    let currentEmployee = '';
+    const ERROR_BG = 'FFFDE8E8';
+    const ERROR_TEXT = 'FFC0392B';
+    const FINE_TEXT = 'FF27AE60';
+    const BORDER_COLOR = 'FFAAB4C8';
+    const DIVIDER_COLOR = 'FF1A2C4E';
+
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const nextRow = data[i + 1];
+      const isLastRowOfEmployee = !nextRow || nextRow.tcw_employee !== row.tcw_employee;
+
+      if (row.tcw_employee !== currentEmployee) {
+        currentEmployee = row.tcw_employee;
+      }
+
+      const isError = row.status === 'error';
+      const bgColor = isError ? ERROR_BG : 'FFFFFFFF';
+
+      const excelRow = ws.addRow({
+        tcw_employee: row.tcw_employee,
+        tcw_date: row.tcw_date,
+        tcw_time_in: row.tcw_time_in ?? '—',
+        tcw_time_out: row.tcw_time_out ?? '—',
+        tcw_hours: row.tcw_hours,
+        activity_in_time: row.activity_in_time ?? '—',
+        activity_out_time: row.activity_out_time ?? '—',
+        activity_worked_hours: row.activity_worked_hours,
+        activity_source: row.activity_source ?? '—',
+        difference_hours: row.difference_hours,
+        status: row.status.toUpperCase(),
+        time_break: (Number(row.tcw_paid_break ?? 0) > 0 || Number(row.tcw_unpaid_break ?? 0) > 0) ? 'SI' : 'NO',
+      });
+
+      excelRow.height = 22;
+
+      for (let c = 1; c <= columns.length; c++) {
+        const cell = excelRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.font = {
+          name: 'Arial',
+          size: 9.5,
+          color: { argb: 'FF1A2C4E' },
+          bold: c === 1 || c === 11,
+        };
+        cell.alignment = { vertical: 'middle', horizontal: c >= 3 ? 'center' : 'left' };
+        cell.border = {
+          top: { style: 'thin', color: { argb: BORDER_COLOR } },
+          left: { style: 'thin', color: { argb: BORDER_COLOR } },
+          bottom: isLastRowOfEmployee
+            ? { style: 'medium', color: { argb: DIVIDER_COLOR } }
+            : { style: 'thin', color: { argb: BORDER_COLOR } },
+          right: { style: 'thin', color: { argb: BORDER_COLOR } },
+        };
+      }
+
+      // Status cell special formatting
+      const statusCell = excelRow.getCell(11);
+      if (isError) {
+        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEF4444' } };
+        statusCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9.5, name: 'Arial' };
+      } else {
+        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } };
+        statusCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9.5, name: 'Arial' };
+      }
+
+      // Difference hours coloring
+      const diffCell = excelRow.getCell(10);
+      const diff = Number(row.difference_hours ?? 0);
+      if (Math.abs(diff) > 0.08) {
+        diffCell.font = { bold: true, color: { argb: 'FF1A2C4E' }, size: 9.5, name: 'Arial' };
+      } else {
+        diffCell.font = { color: { argb: 'FF1A2C4E' }, size: 9.5, name: 'Arial' };
+      }
+
+      // Time Break cell special formatting
+      const hasBreak = Number(row.tcw_paid_break ?? 0) > 0 || Number(row.tcw_unpaid_break ?? 0) > 0;
+      const timeBreakCell = excelRow.getCell(12);
+      timeBreakCell.fill = {
+        type: 'pattern', pattern: 'solid',
+        fgColor: { argb: hasBreak ? 'FFFFF3CD' : 'FFFFFFFF' },
+      };
+      timeBreakCell.font = { bold: true, color: { argb: hasBreak ? 'FF856404' : 'FF6B7280' }, size: 9.5, name: 'Arial' };
+    }
+
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+
+    const buf = await wb.xlsx.writeBuffer();
+    return Buffer.from(buf);
   }
 }

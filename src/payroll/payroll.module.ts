@@ -11,6 +11,7 @@ import { MulterModule } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { Timesheet } from './entities/timesheet.entity';
 import { Holiday } from 'src/holidays/entities/holiday.entity';
+import { TimesheetRecord } from 'src/timesheet-records/entities/timesheet-record.entity';
 
 @Module({
   controllers: [PayrollController],
@@ -21,7 +22,8 @@ import { Holiday } from 'src/holidays/entities/holiday.entity';
     ScheduleEvent,
     Employee,
     Timesheet,
-    Holiday
+    Holiday,
+    TimesheetRecord
   ]),
     EmployeesModule,
   MulterModule.register({

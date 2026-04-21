@@ -183,4 +183,79 @@ export class PayrollController {
       data,
     };
   }
+
+  @Post('timesheets/records-by-range')
+  async getTimesheetRecordsByRange(
+    @Body() body: { start_date: string; end_date: string },
+  ) {
+    const { start_date, end_date } = body;
+
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+
+    const data = await this.payrollService.getTimesheetRecordsForRange(start_date, end_date);
+
+    return {
+      ok: true,
+      total: data.length,
+      data,
+    };
+  }
+
+  @Post('timesheets/clock-comparison/detail')
+  async getClockComparisonDetail(
+    @Body() body: {
+      start_date: string;
+      end_date: string;
+      employees?: string[];
+    },
+  ) {
+    const { start_date, end_date, employees } = body;
+
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+
+    const data = await this.payrollService.getClockComparisonDetail(
+      start_date,
+      end_date,
+      employees,
+    );
+
+    return {
+      ok: true,
+      total: data.length,
+      data,
+    };
+  }
+
+  @Post('timesheets/clock-comparison/detail/export')
+  async exportClockComparisonDetail(
+    @Body() body: { start_date: string; end_date: string; employees?: string[] },
+    @Res() res: Response,
+  ) {
+    const { start_date, end_date, employees } = body;
+
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+
+    const buf = await this.payrollService.exportClockComparisonDetailExcel(
+      start_date,
+      end_date,
+      employees,
+    );
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const now = new Date();
+    const ymd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const fname = `ClockComparisonDetail_${start_date}_${end_date}_${ymd}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.send(buf);
+  }
+
+
 }

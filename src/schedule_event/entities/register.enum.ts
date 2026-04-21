@@ -6,4 +6,14 @@ export enum RegisterEnum {
   EXTRA_HOURS = 'Extra Hours',
   LUNCH = 'Lunch',
   OFF = 'Off',
+  OUTAGE = 'Outage',
 }
+
+export const OUTAGE_REASONS = [
+  'No Internet',
+  'Power Outage',
+  'Last Minute Cancellation',
+  'Illness',
+] as const;
+
+export type OutageReason = typeof OUTAGE_REASONS[number];

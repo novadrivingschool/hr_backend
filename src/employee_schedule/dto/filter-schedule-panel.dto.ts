@@ -52,6 +52,16 @@ export class FilterSchedulePanelDto {
   vehicle_drop?: string[];
 
   @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  positions?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  type_of_job?: string[];
+
+  @IsOptional()
   @Type(() => Boolean)
   @IsBoolean()
   strict?: boolean;
@@ -60,4 +70,9 @@ export class FilterSchedulePanelDto {
   @Type(() => Boolean)
   @IsBoolean()
   isFixed?: boolean;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  is_paid?: boolean;
 }
