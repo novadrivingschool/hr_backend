@@ -85,6 +85,8 @@ export class EmployeeScheduleService {
               vehicle_drop: f.vehicle_drop ?? null,
               notes: f.notes ?? null,
               strict: f.strict ?? false,
+              start_date: f.start_date,
+              end_date: f.end_date ?? null,
             };
 
             await this.validateFixedScheduleOverlap({
@@ -791,6 +793,8 @@ export class EmployeeScheduleService {
         vehicle_drop: string | null;
         notes: string | null;
         strict: boolean;
+        start_date: string;
+        end_date: string | null;
         isFixed: true;
       }> = [];
 
@@ -834,7 +838,18 @@ export class EmployeeScheduleService {
           .getMany();
 
         fixed = rawFixed
-          .filter(f => this.fixedMatchesDateRange(f.weekdays, start_date, end_date))
+          .filter(f => {
+            // Must match weekdays within the panel date range
+            if (!this.fixedMatchesDateRange(f.weekdays, start_date, end_date)) {
+              return false;
+            }
+            // Fixed schedule must be active during the panel date range:
+            //   f.start_date <= panel end_date
+            //   AND (f.end_date IS NULL OR f.end_date >= panel start_date)
+            if (f.start_date > end_date) return false;
+            if (f.end_date && f.end_date < start_date) return false;
+            return true;
+          })
           .map(f => ({
             id: f.id,
             employee_number: f.schedule.employee_number,
@@ -848,18 +863,16 @@ export class EmployeeScheduleService {
             vehicle_drop: f.vehicle_drop,
             notes: f.notes,
             strict: f.strict,
+            start_date: f.start_date,
+            end_date: f.end_date ?? null,
             isFixed: true as const,
           }));
       }
 
-      const matchedEmployeeNumbers = new Set<string>([
-        ...events.map(e => e.employee_number),
-        ...fixed.map(f => f.employee_number),
-      ]);
-
-      const employees = candidateEmployees
-        .filter(emp => matchedEmployeeNumbers.has(emp.employee_number))
-        .map(emp => ({
+      // Return ALL candidate employees (those matching employee-level filters:
+      // employee_number, department, position, type_of_job). Whether they have
+      // events or not is irrelevant — the grid must always show them.
+      const employees = candidateEmployees.map(emp => ({
           employee_number: emp.employee_number,
           name: `${emp.name} ${emp.last_name}`.trim(),
           status: emp.status,
@@ -1136,60 +1149,7 @@ export class EmployeeScheduleService {
       }
     }
 
-    const candidateWeekday = this.getIsoWeekday(candidateRange.date);
-
-    if (candidateWeekday) {
-      const existingFixed = await fixedRepo
-        .createQueryBuilder('fixed')
-        .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
-        .andWhere('fixed.start IS NOT NULL')
-        .andWhere('fixed.end IS NOT NULL')
-        .orderBy('fixed.id', 'ASC')
-        .getMany();
-
-      for (const fixed of existingFixed) {
-        const fixedRange = this.getFixedTimeRange(
-          fixed.weekdays,
-          fixed.start,
-          fixed.end,
-        );
-
-        if (!fixedRange) {
-          continue;
-        }
-
-        if (!fixedRange.weekdays.includes(candidateWeekday)) {
-          continue;
-        }
-
-        if (this.isAllowedOverlap(candidateRegister, fixed.register)) {
-          continue;
-        }
-
-        if (
-          this.timeRangesOverlap(
-            candidateRange.startMinutes,
-            candidateRange.endMinutes,
-            fixedRange.startMinutes,
-            fixedRange.endMinutes,
-          )
-        ) {
-          conflicts.push({
-            conflict_type: 'fixed',
-            relation: 'event_vs_fixed',
-            id: fixed.id,
-            register: fixed.register,
-            date: null,
-            weekdays: fixedRange.weekdays,
-            start: fixedRange.startLabel,
-            end: fixedRange.endLabel,
-            location: fixed.location ?? [],
-            strict: fixed.strict ?? false,
-            notes: fixed.notes ?? null,
-          });
-        }
-      }
-    }
+    // Fixed schedules never block variable events — overlap fixed+variable is always allowed.
 
     if (conflicts.length) {
       throw this.buildScheduleOverlapException({
@@ -1211,7 +1171,9 @@ export class EmployeeScheduleService {
     }
   }
 
-  private async validateFixedScheduleOverlap(params: {
+  // Fixed schedules never block each other or variable events — overlap is always allowed.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  private async validateFixedScheduleOverlap(_params: {
     schedule: EmployeeSchedule;
     employeeNumber: string;
     candidate: Partial<FixedSchedule> & { id?: number | null };
@@ -1219,166 +1181,7 @@ export class EmployeeScheduleService {
     eventRepo: Repository<ScheduleEvent>;
     excludeFixedId?: number;
   }): Promise<void> {
-    const {
-      schedule,
-      employeeNumber,
-      candidate,
-      fixedRepo,
-      eventRepo,
-      excludeFixedId,
-    } = params;
-
-    const candidateRange = this.getFixedTimeRange(
-      candidate.weekdays,
-      candidate.start,
-      candidate.end,
-    );
-
-    if (!candidateRange) {
-      return;
-    }
-
-    const candidateRegister = String(candidate.register ?? '').trim();
-
-    if (!candidateRegister) {
-      return;
-    }
-
-    const conflicts: any[] = [];
-
-    const existingFixed = await fixedRepo
-      .createQueryBuilder('fixed')
-      .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
-      .andWhere('fixed.start IS NOT NULL')
-      .andWhere('fixed.end IS NOT NULL')
-      .orderBy('fixed.id', 'ASC')
-      .getMany();
-
-    for (const fixed of existingFixed) {
-      if (excludeFixedId && fixed.id === excludeFixedId) {
-        continue;
-      }
-
-      const fixedRange = this.getFixedTimeRange(
-        fixed.weekdays,
-        fixed.start,
-        fixed.end,
-      );
-
-      if (!fixedRange) {
-        continue;
-      }
-
-      const sharedWeekdays = this.getSharedWeekdays(
-        candidateRange.weekdays,
-        fixedRange.weekdays,
-      );
-
-      if (!sharedWeekdays.length) {
-        continue;
-      }
-
-      if (this.isAllowedOverlap(candidateRegister, fixed.register)) {
-        continue;
-      }
-
-      if (
-        this.timeRangesOverlap(
-          candidateRange.startMinutes,
-          candidateRange.endMinutes,
-          fixedRange.startMinutes,
-          fixedRange.endMinutes,
-        )
-      ) {
-        conflicts.push({
-          conflict_type: 'fixed',
-          relation: 'fixed_vs_fixed',
-          id: fixed.id,
-          register: fixed.register,
-          date: null,
-          weekdays: fixedRange.weekdays,
-          shared_weekdays: sharedWeekdays,
-          start: fixedRange.startLabel,
-          end: fixedRange.endLabel,
-          location: fixed.location ?? [],
-          strict: fixed.strict ?? false,
-          notes: fixed.notes ?? null,
-        });
-      }
-    }
-
-    const existingEvents = await eventRepo
-      .createQueryBuilder('event')
-      .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
-      .andWhere('event.start IS NOT NULL')
-      .andWhere('event.end IS NOT NULL')
-      .orderBy('event.date', 'ASC')
-      .addOrderBy('event.start', 'ASC')
-      .getMany();
-
-    for (const event of existingEvents) {
-      const eventRange = this.getEventTimeRange(
-        event.date,
-        event.start,
-        event.end,
-      );
-
-      if (!eventRange) {
-        continue;
-      }
-
-      const eventWeekday = this.getIsoWeekday(eventRange.date);
-
-      if (!eventWeekday || !candidateRange.weekdays.includes(eventWeekday)) {
-        continue;
-      }
-
-      if (this.isAllowedOverlap(candidateRegister, event.register)) {
-        continue;
-      }
-
-      if (
-        this.timeRangesOverlap(
-          candidateRange.startMinutes,
-          candidateRange.endMinutes,
-          eventRange.startMinutes,
-          eventRange.endMinutes,
-        )
-      ) {
-        conflicts.push({
-          conflict_type: 'event',
-          relation: 'fixed_vs_event',
-          id: event.id,
-          register: event.register,
-          date: eventRange.date,
-          weekdays: null,
-          start: eventRange.startLabel,
-          end: eventRange.endLabel,
-          location: event.location ?? [],
-          strict: event.strict ?? false,
-          notes: event.notes ?? null,
-        });
-      }
-    }
-
-    if (conflicts.length) {
-      throw this.buildScheduleOverlapException({
-        employeeNumber,
-        attempted: {
-          type: 'fixed',
-          id: candidate.id ?? null,
-          register: candidateRegister,
-          date: null,
-          weekdays: candidateRange.weekdays,
-          start: candidateRange.startLabel,
-          end: candidateRange.endLabel,
-          location: Array.isArray(candidate.location) ? candidate.location : [],
-          strict: candidate.strict ?? false,
-          notes: candidate.notes ?? null,
-        },
-        conflicts,
-      });
-    }
+    return;
   }
 
   private buildScheduleOverlapException(params: {

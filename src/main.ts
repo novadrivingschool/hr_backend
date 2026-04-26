@@ -28,6 +28,7 @@ async function bootstrap() {
     new ValidationPipe({
       whitelist: true,
       forbidNonWhitelisted: true,
+      transform: true, // required so @Type() transforms nested DTOs before whitelist check
     })
   );
 

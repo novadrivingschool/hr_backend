@@ -51,4 +51,10 @@ export class FixedSchedule {
 
   @Column({ type: 'text', nullable: true, default: null })
   notes: string | null;
+
+  @Column({ type: 'date' })
+  start_date: string;
+
+  @Column({ type: 'date', nullable: true, default: null })
+  end_date: string | null;
 }

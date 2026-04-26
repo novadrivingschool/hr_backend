@@ -55,6 +55,13 @@ export class CreateFixedScheduleDto {
   @IsOptional()
   @IsString()
   notes?: string;
+
+  @IsString()
+  start_date: string;
+
+  @IsOptional()
+  @IsString()
+  end_date?: string | null;
 }
 
 export class CreateTimeOffRecoverySlotDto {
