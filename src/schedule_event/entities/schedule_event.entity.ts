@@ -8,6 +8,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { RegisterEnum } from './register.enum';
+import { CustomerEnum } from './customer.enum';
 
 type MakeUpScheduleItem = {
   date: string;
@@ -90,4 +91,7 @@ export class ScheduleEvent {
 
   @Column({ type: 'jsonb', nullable: true, default: null })
   approval_2: ApprovalRecord | null;
+
+  @Column({ type: 'varchar', nullable: true, default: null })
+  customer: CustomerEnum | null;
 }

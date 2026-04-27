@@ -11,6 +11,7 @@ import {
   CreateEmployeeScheduleDto,
   CreateScheduleEventDto,
 } from './dto/create-employee_schedule.dto';
+import { CustomerEnum } from 'src/schedule_event/entities/customer.enum';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EmployeeSchedule } from './entities/employee_schedule.entity';
 import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
@@ -74,6 +75,7 @@ export class EmployeeScheduleService {
         // 🟦 Fixed schedules
         if (dto.fixed?.length) {
           for (const f of dto.fixed) {
+            const fixedHasCustomer = f.register === 'Work Shift';
             const fixedPayload: Partial<FixedSchedule> = {
               weekdays: f.weekdays,
               start: f.start,
@@ -87,6 +89,7 @@ export class EmployeeScheduleService {
               strict: f.strict ?? false,
               start_date: f.start_date,
               end_date: f.end_date ?? null,
+              customer: fixedHasCustomer ? (f.customer ?? CustomerEnum.NOVA) : null,
             };
 
             await this.validateFixedScheduleOverlap({
@@ -599,6 +602,7 @@ export class EmployeeScheduleService {
         strict,
         isFixed,
         is_paid,
+        customer,
       } = filters as FilterSchedulePanelDto & { notes?: string[] };
 
       if (!start_date || !end_date) {
@@ -750,6 +754,10 @@ export class EmployeeScheduleService {
         );
         this.applyStringInFilter(eventsQb, 'event.notes', 'eventNotes', notes);
 
+        if (customer) {
+          eventsQb.andWhere('event.customer = :customer', { customer });
+        }
+
         const rawEvents = await eventsQb
           .orderBy('event.date', 'ASC')
           .addOrderBy('event.start', 'ASC')
@@ -776,6 +784,7 @@ export class EmployeeScheduleService {
           make_up_schedule: e.make_up_schedule,
           approval_1: e.approval_1,
           approval_2: e.approval_2,
+          customer: e.customer ?? null,
           isFixed: false as const,
         }));
       }
@@ -832,6 +841,10 @@ export class EmployeeScheduleService {
         );
         this.applyStringInFilter(fixedQb, 'fixed.notes', 'fixedNotes', notes);
 
+        if (customer) {
+          fixedQb.andWhere('fixed.customer = :customerFixed', { customerFixed: customer });
+        }
+
         const rawFixed = await fixedQb
           .orderBy('schedule.employee_number', 'ASC')
           .addOrderBy('fixed.id', 'ASC')
@@ -865,6 +878,7 @@ export class EmployeeScheduleService {
             strict: f.strict,
             start_date: f.start_date,
             end_date: f.end_date ?? null,
+            customer: f.customer ?? null,
             isFixed: true as const,
           }));
       }
@@ -942,6 +956,13 @@ export class EmployeeScheduleService {
 
     const isOutage = dto.register === RegisterEnum.OUTAGE;
 
+    const customerRegisters = [
+      RegisterEnum.WORK_SHIFT,
+      RegisterEnum.EXTRA_HOURS,
+      RegisterEnum.TIME_OFF_RECOVERY,
+    ];
+    const hasCustomer = customerRegisters.includes(dto.register);
+
     return {
       date: dto.date,
       start: isOff ? null : this.buildTimestamp(dto.date, dto.start),
@@ -953,6 +974,7 @@ export class EmployeeScheduleService {
       vehicle_drop: dto.vehicle_drop ?? existing?.vehicle_drop ?? null,
       notes: dto.notes ?? existing?.notes ?? null,
       strict: dto.strict ?? existing?.strict ?? false,
+      customer: hasCustomer ? (dto.customer ?? existing?.customer ?? CustomerEnum.NOVA) : null,
 
       reason: isOutage
         ? dto.reason ?? existing?.reason ?? null

@@ -12,6 +12,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { RegisterEnum, OUTAGE_REASONS } from 'src/schedule_event/entities/register.enum';
+import { CustomerEnum } from 'src/schedule_event/entities/customer.enum';
 
 const OUTAGE_END_OPTIONAL_REASONS = [OUTAGE_REASONS[0], OUTAGE_REASONS[1]]; // 'No Internet', 'Power Outage'
 
@@ -62,6 +63,10 @@ export class CreateFixedScheduleDto {
   @IsOptional()
   @IsString()
   end_date?: string | null;
+
+  @IsOptional()
+  @IsEnum(CustomerEnum)
+  customer?: CustomerEnum;
 }
 
 export class CreateTimeOffRecoverySlotDto {
@@ -171,6 +176,10 @@ export class CreateScheduleEventDto {
   @IsOptional()
   @IsString()
   reason?: string;
+
+  @IsOptional()
+  @IsEnum(CustomerEnum)
+  customer?: CustomerEnum;
 }
 
 export class CreateEmployeeScheduleDto {

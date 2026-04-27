@@ -8,6 +8,7 @@ import {
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
+import { CustomerEnum } from 'src/schedule_event/entities/customer.enum';
 
 export class FilterSchedulePanelDto {
   @IsDateString()
@@ -75,4 +76,8 @@ export class FilterSchedulePanelDto {
   @Type(() => Boolean)
   @IsBoolean()
   is_paid?: boolean;
+
+  @IsOptional()
+  @IsEnum(CustomerEnum)
+  customer?: CustomerEnum;
 }

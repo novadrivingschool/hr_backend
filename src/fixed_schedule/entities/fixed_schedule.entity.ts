@@ -7,6 +7,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { CustomerEnum } from 'src/schedule_event/entities/customer.enum';
 
 @Entity('fixed_schedule')
 export class FixedSchedule {
@@ -57,4 +58,7 @@ export class FixedSchedule {
 
   @Column({ type: 'date', nullable: true, default: null })
   end_date: string | null;
+
+  @Column({ type: 'varchar', nullable: true, default: null })
+  customer: CustomerEnum | null;
 }
