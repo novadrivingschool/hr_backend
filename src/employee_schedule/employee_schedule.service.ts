@@ -952,6 +952,7 @@ export class EmployeeScheduleService {
           ? slot.location.map((value: any) => String(value))
           : [],
         strict: Boolean(slot.strict),
+        notes: slot.notes ? String(slot.notes) : null,
       }));
 
     const isOutage = dto.register === RegisterEnum.OUTAGE;
@@ -1039,13 +1040,14 @@ export class EmployeeScheduleService {
         services: torEvent.services ?? null,
         restrictions: torEvent.restrictions ?? null,
         vehicle_drop: torEvent.vehicle_drop ?? null,
-        notes: torEvent.notes ?? null,
+        notes: (slot as any).notes ?? torEvent.notes ?? null,
         strict: slot.strict ?? torEvent.strict ?? false,
         uuid_tor: uuidTor,
         uuid_extra_hours: null,
         is_paid: null,
         will_make_up_hours: null,
         make_up_schedule: null,
+        customer: CustomerEnum.NOVA,
       };
 
       await this.validateScheduleEventOverlap({
@@ -1101,77 +1103,122 @@ export class EmployeeScheduleService {
       excludeEventId,
     } = params;
 
-    const candidateRange = this.getEventTimeRange(
-      candidate.date,
-      candidate.start,
-      candidate.end,
-    );
-
-    if (!candidateRange) {
-      return;
-    }
-
     const candidateRegister = String(candidate.register ?? '').trim();
 
     if (!candidateRegister) {
       return;
     }
 
+    const candidateRange = this.getEventTimeRange(
+      candidate.date,
+      candidate.start,
+      candidate.end,
+    );
+
+    // Resolve the candidate date string (needed even when times are missing)
+    const candidateDateStr =
+      candidateRange?.date ?? this.normalizeDateOnly(candidate.date);
+
+    if (!candidateDateStr) {
+      return;
+    }
+
     const conflicts: any[] = [];
 
-    const existingEvents = await eventRepo
-      .createQueryBuilder('event')
-      .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
-      .andWhere('event.date = :date', { date: candidateRange.date })
-      .andWhere('event.start IS NOT NULL')
-      .andWhere('event.end IS NOT NULL')
-      .orderBy('event.start', 'ASC')
-      .getMany();
+    // ── 1. Time-range conflict: both candidate and existing have times ──────
+    if (candidateRange) {
+      const existingEvents = await eventRepo
+        .createQueryBuilder('event')
+        .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
+        .andWhere('event.date = :date', { date: candidateDateStr })
+        .andWhere('event.start IS NOT NULL')
+        .andWhere('event.end IS NOT NULL')
+        .orderBy('event.start', 'ASC')
+        .getMany();
 
-    for (const existing of existingEvents) {
-      if (excludeEventId && existing.id === excludeEventId) {
-        continue;
-      }
+      for (const existing of existingEvents) {
+        if (excludeEventId && existing.id === excludeEventId) {
+          continue;
+        }
 
-      const existingRange = this.getEventTimeRange(
-        existing.date,
-        existing.start,
-        existing.end,
-      );
+        const existingRange = this.getEventTimeRange(
+          existing.date,
+          existing.start,
+          existing.end,
+        );
 
-      if (!existingRange) {
-        continue;
-      }
+        if (!existingRange) {
+          continue;
+        }
 
-      if (this.isAllowedOverlap(candidateRegister, existing.register)) {
-        continue;
-      }
+        if (this.isAllowedOverlap(candidateRegister, existing.register)) {
+          continue;
+        }
 
-      if (
-        this.timeRangesOverlap(
-          candidateRange.startMinutes,
-          candidateRange.endMinutes,
-          existingRange.startMinutes,
-          existingRange.endMinutes,
-        )
-      ) {
-        conflicts.push({
-          conflict_type: 'event',
-          relation: 'event_vs_event',
-          id: existing.id,
-          register: existing.register,
-          date: existingRange.date,
-          weekdays: null,
-          start: existingRange.startLabel,
-          end: existingRange.endLabel,
-          location: existing.location ?? [],
-          strict: existing.strict ?? false,
-          notes: existing.notes ?? null,
-        });
+        if (
+          this.timeRangesOverlap(
+            candidateRange.startMinutes,
+            candidateRange.endMinutes,
+            existingRange.startMinutes,
+            existingRange.endMinutes,
+          )
+        ) {
+          conflicts.push({
+            conflict_type: 'event',
+            relation: 'event_vs_event',
+            id: existing.id,
+            register: existing.register,
+            date: existingRange.date,
+            weekdays: null,
+            start: existingRange.startLabel,
+            end: existingRange.endLabel,
+            location: existing.location ?? [],
+            strict: existing.strict ?? false,
+            notes: existing.notes ?? null,
+          });
+        }
       }
     }
 
-    // Fixed schedules never block variable events — overlap fixed+variable is always allowed.
+    // ── 2. (reserved for future day-level conflict checks) ──────────────────
+
+    // ── 3. Fixed schedule conflict: OFF vs active fixed Work Shifts ──────────
+    const FIXED_CONFLICT_MAP: Partial<Record<string, string[]>> = {
+      [RegisterEnum.OFF]: [RegisterEnum.WORK_SHIFT],
+    };
+
+    const conflictingFixedRegisters = FIXED_CONFLICT_MAP[candidateRegister] ?? [];
+
+    if (conflictingFixedRegisters.length) {
+      // ISO weekday: 1 = Monday … 7 = Sunday
+      const d = new Date(candidateDateStr + 'T12:00:00');
+      const isoWeekday = d.getDay() === 0 ? 7 : d.getDay();
+
+      const activeFixed = await fixedRepo
+        .createQueryBuilder('fixed')
+        .where('"scheduleId" = :scheduleId', { scheduleId: schedule.id })
+        .andWhere('fixed.register IN (:...registers)', { registers: conflictingFixedRegisters })
+        .andWhere(':weekday = ANY(fixed.weekdays)', { weekday: isoWeekday })
+        .andWhere('fixed.start_date <= :date', { date: candidateDateStr })
+        .andWhere('(fixed.end_date IS NULL OR fixed.end_date >= :date)', { date: candidateDateStr })
+        .getMany();
+
+      for (const fixed of activeFixed) {
+        conflicts.push({
+          conflict_type: 'fixed',
+          relation: 'event_vs_fixed',
+          id: fixed.id,
+          register: fixed.register,
+          date: candidateDateStr,
+          weekdays: fixed.weekdays,
+          start: fixed.start,
+          end: fixed.end,
+          location: fixed.location ?? [],
+          strict: fixed.strict ?? false,
+          notes: fixed.notes ?? null,
+        });
+      }
+    }
 
     if (conflicts.length) {
       throw this.buildScheduleOverlapException({
@@ -1180,10 +1227,10 @@ export class EmployeeScheduleService {
           type: 'event',
           id: candidate.id ?? null,
           register: candidateRegister,
-          date: candidateRange.date,
+          date: candidateDateStr,
           weekdays: null,
-          start: candidateRange.startLabel,
-          end: candidateRange.endLabel,
+          start: candidateRange?.startLabel ?? null,
+          end: candidateRange?.endLabel ?? null,
           location: Array.isArray(candidate.location) ? candidate.location : [],
           strict: candidate.strict ?? false,
           notes: candidate.notes ?? null,
@@ -1823,6 +1870,11 @@ export class EmployeeScheduleService {
       return false;
     }
 
+    // A Time Off Request can coexist with any other event type
+    if (left === RegisterEnum.TIME_OFF_REQUEST || right === RegisterEnum.TIME_OFF_REQUEST) {
+      return true;
+    }
+
     const allowedPairs = new Set([
       [RegisterEnum.WORK_SHIFT, RegisterEnum.LUNCH].sort().join('|'),
       [RegisterEnum.WORK_SHIFT, RegisterEnum.OUTAGE].sort().join('|'),
@@ -2261,6 +2313,23 @@ export class EmployeeScheduleService {
         deleted_recovery_hours: deletedRecoveryHours,
       };
     });
+  }
+
+  async deleteEventsByUuidExtraHours(
+    uuid: string,
+  ): Promise<{ affected: number }> {
+    if (!uuid) throw new BadRequestException('uuid is required');
+
+    const result = await this.eventRepo
+      .createQueryBuilder()
+      .delete()
+      .from(ScheduleEvent)
+      .where('uuid_extra_hours = :uuid', { uuid })
+      .execute();
+
+    const affected = result.affected ?? 0;
+    console.log(`[deleteEventsByUuidExtraHours] deleted ${affected} event(s) for uuid_extra_hours=${uuid}`);
+    return { affected };
   }
 
   private async deleteTimeOffRecoveryEventsByUuid(

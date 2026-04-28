@@ -16,6 +16,7 @@ type MakeUpScheduleItem = {
   end: string;
   location: string[];
   strict: boolean;
+  notes?: string | null;
 };
 
 export type ApprovalRecord = {

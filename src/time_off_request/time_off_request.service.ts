@@ -1100,6 +1100,7 @@ export class TimeOffRequestService {
               end: endUTC,
               location: employee_data?.multi_location ?? [],
               strict: false,
+              notes: null,
             };
 
             console.log(
@@ -1122,6 +1123,7 @@ export class TimeOffRequestService {
             end: string;
             location: string[];
             strict: boolean;
+            notes: null;
           } => item !== null)
         : [];
 
@@ -1146,6 +1148,7 @@ export class TimeOffRequestService {
           end: string;
           location: string[];
           strict: boolean;
+          notes: string | null;
         }>;
         strict: boolean;
       }> = [];
