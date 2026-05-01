@@ -476,6 +476,8 @@ export class EmployeeScheduleService {
       vehicle_drop: f.vehicle_drop,
       notes: f.notes,
       strict: f.strict,
+      start_date: f.start_date ?? null,
+      end_date: f.end_date ?? null,
     }));
   }
 
@@ -613,14 +615,16 @@ export class EmployeeScheduleService {
         throw new BadRequestException('start_date cannot be greater than end_date');
       }
 
-      const employeeQb = this.employeeRepo
-        .createQueryBuilder('emp')
-        .where('emp.status = :status', { status: 'Active' });
+      const employeeQb = this.employeeRepo.createQueryBuilder('emp');
 
       if (employee_number.length) {
-        employeeQb.andWhere('emp.employee_number IN (:...employeeNumbers)', {
+        // Búsqueda por employee_number específico: no filtrar por status
+        employeeQb.where('emp.employee_number IN (:...employeeNumbers)', {
           employeeNumbers: employee_number,
         });
+      } else {
+        // Vista general: solo empleados activos
+        employeeQb.where('emp.status = :status', { status: 'Active' });
       }
 
       if (departments.length) {
