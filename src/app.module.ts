@@ -34,6 +34,7 @@ import { InstructorRestrictionsModule } from './instructor_restrictions/instruct
 import { InstructorVehiclePickupDropoffModule } from './instructor_vehicle_pickup_dropoff/instructor_vehicle_pickup_dropoff.module';
 import { HappyFormModule } from './happy_form/happy_form.module';
 import { TimesheetRecordsModule } from './timesheet-records/timesheet-records.module';
+import { InventoryModule } from './inventory/inventory.module';
 
 
 dotenv.config();
@@ -57,6 +58,11 @@ dotenv.config();
         rejectUnauthorized: false, // Úsalo solo si tienes certificados autofirmados
       },
       logging: false,
+      extra: {
+        max: 5,          // máximo de conexiones en el pool
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+      },
       // ✅ Aquí defines solo las entidades que SÍ quieres que entren en las migraciones
       entities: [
         __dirname + '/time_off_request/entities/*.entity.{ts,js}',
@@ -90,6 +96,7 @@ dotenv.config();
         __dirname + '/instructor_vehicle_pickup_dropoff/entities/*.entity.{ts,js}', // <-- Solo las entidades de InstructorVehiclePickupDropoff
         __dirname + '/happy_form/entities/*.entity.{ts,js}', // <-- Solo las entidades de HappyForm
         __dirname + '/timesheet-records/entities/*.entity.{ts,js}', // <-- Solo las entidades de TimesheetRecords
+        __dirname + '/inventory/entities/*.entity.{ts,js}',
       ],
     }),
     TimeOffRequestModule,
@@ -123,7 +130,8 @@ dotenv.config();
     InstructorRestrictionsModule,
     InstructorVehiclePickupDropoffModule,
     HappyFormModule,
-    TimesheetRecordsModule
+    TimesheetRecordsModule,
+    InventoryModule
   ],
 })
 export class AppModule { }

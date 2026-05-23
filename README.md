@@ -83,3 +83,24 @@ docker system prune -a --volumes
 
 
 apt-get update && apt-get install -y libnspr4 libnss3 libxss1 libgtk-3-0 libgbm1
+
+---
+
+## Docker Compose
+
+> Dev usa Compose **v1** (`docker-compose`).
+
+### Dev (Compose v1)
+
+```bash
+# Build + levantar
+docker-compose -f docker-compose.dev.yml up --build -d
+
+# Bajar
+docker-compose -f docker-compose.dev.yml down
+
+# Logs
+docker-compose -f docker-compose.dev.yml logs -f
+```
+
+> El `.env` se monta como volumen — cualquier cambio en el archivo aplica al reiniciar el contenedor sin necesidad de rebuild.

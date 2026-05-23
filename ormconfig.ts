@@ -32,6 +32,10 @@ import { InstructorRestriction } from 'src/instructor_restrictions/entities/inst
 import { InstructorService } from 'src/instructor_services/entities/instructor_service.entity';
 import { HappyForm } from 'src/happy_form/entities/happy_form.entity';
 import { TimesheetRecord } from 'src/timesheet-records/entities/timesheet-record.entity';
+import { InvWarehouse } from 'src/inventory/entities/inv_warehouse.entity';
+import { InvItem } from 'src/inventory/entities/inv_item.entity';
+import { InvTransfer } from 'src/inventory/entities/inv_transfer.entity';
+import { InvDispatch } from 'src/inventory/entities/inv_dispatch.entity';
 
 dotenv.config();
 
@@ -83,7 +87,11 @@ export const AppDataSource = new DataSource({
     InstructorRestriction,
     InstructorService,
     HappyForm,
-    TimesheetRecord
+    TimesheetRecord,
+    InvWarehouse,
+    InvItem,
+    InvTransfer,
+    InvDispatch,
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,
