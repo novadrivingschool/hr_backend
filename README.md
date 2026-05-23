@@ -103,4 +103,17 @@ docker-compose -f docker-compose.dev.yml down
 docker-compose -f docker-compose.dev.yml logs -f
 ```
 
+### Prod (Compose v2)
+
+```bash
+# Build + levantar
+docker compose -f docker-compose.prod.yml up --build -d
+
+# Bajar
+docker compose -f docker-compose.prod.yml down
+
+# Logs
+docker compose -f docker-compose.prod.yml logs -f
+```
+
 > El `.env` se monta como volumen — cualquier cambio en el archivo aplica al reiniciar el contenedor sin necesidad de rebuild.

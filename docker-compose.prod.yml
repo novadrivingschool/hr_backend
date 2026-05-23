@@ -1,0 +1,11 @@
+services:
+  hr-api:
+    build:
+      context: .
+    image: hr-api
+    container_name: hr-api
+    ports:
+      - "5006:5006"
+    volumes:
+      - ./.env:/usr/src/app/.env
+    restart: always
