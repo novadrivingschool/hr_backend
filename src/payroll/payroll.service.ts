@@ -9,6 +9,7 @@ import { WorkSchedule } from 'src/employees/entities/work-schedule.enum';
 import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
 import * as puppeteer from 'puppeteer';
 import { buildSingleEmployeeHtml } from './templates/payroll-report.template';
+import { buildSummaryEmployeeHtml } from './templates/payroll-summary-report.template';
 import axios from 'axios';
 import * as ExcelJS from 'exceljs';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
@@ -17,6 +18,7 @@ import archiver from 'archiver';
 import { PassThrough } from 'stream';
 import * as JSZip from 'jszip';
 import { TimesheetRecord } from 'src/timesheet-records/entities/timesheet-record.entity';
+import { EmployeeRateHistory } from 'src/employees/entities/employee-rate-history.entity';
 
 type EmployeePdfItem = {
   employee_number: string;
@@ -59,6 +61,8 @@ export class PayrollService {
     private readonly scheduleRepo: Repository<EmployeeSchedule>,
     @InjectRepository(TimesheetRecord)
     private readonly timesheetRecordRepository: Repository<TimesheetRecord>,
+    @InjectRepository(EmployeeRateHistory)
+    private readonly rateHistoryRepository: Repository<EmployeeRateHistory>,
   ) { }
 
   private formatPayrollRangeText(
@@ -1043,6 +1047,7 @@ export class PayrollService {
           corporate_rate: true,
           mechanics_rate: true,
           office_maintenance: true,
+          rate_office_staff: true,
           amount_bonus: true,
           bonus_type: true,
           type_of_comissions: true,
@@ -1422,6 +1427,32 @@ export class PayrollService {
           advanced_amount,
         );
 
+        const validRate = (() => {
+          // Todos los seasonals que se cruzan con el período del payroll
+          const matchingSeasonals = (rawRates || [])
+            .filter(
+              (r) =>
+                r.type_of_rate === 'variable' &&
+                r.startDate &&
+                r.endDate &&
+                r.startDate! <= end_date &&
+                r.endDate! >= start_date,
+            )
+            .sort((a, b) => (a.startDate! > b.startDate! ? 1 : -1));
+
+          return {
+            seasonal_rates: matchingSeasonals.map((r) => ({
+              amount: r.rate,
+              start_date: r.startDate,
+              end_date: r.endDate,
+              season: r.type,
+            })),
+            office_rate: {
+              amount: (emp as any).rate_office_staff ?? 0,
+            },
+          };
+        })();
+
         return {
           ...emp,
           authorized_hours: metrics.total_authorized_hours,
@@ -1432,6 +1463,7 @@ export class PayrollService {
           days_worked: metrics.days_worked_count,
           schedule_details,
           effective_rates,
+          valid_rate: validRate,
           time_off: {
             total_requests: eventsByEmployee[employeeNumber]?.timeOffCount ?? 0,
             total_hours: round(eventsByEmployee[employeeNumber]?.timeOffHours ?? 0),
@@ -2131,55 +2163,84 @@ export class PayrollService {
       let lunchStart: string | null = null;
       let lunchEnd: string | null = null;
 
-      const eventShift = schedule.events?.find(
-        (e) => e.date === dateStr && e.register === RegisterEnum.WORK_SHIFT,
+      const eventShifts = (schedule.events ?? []).filter(
+        (e) => e.date === dateStr && e.register === RegisterEnum.WORK_SHIFT && e.start && e.end,
       );
       const eventLunch = schedule.events?.find(
         (e) => e.date === dateStr && e.register === RegisterEnum.LUNCH,
       );
 
-      if (eventShift?.start && eventShift?.end) {
-        const rawHours = this.calculateHours(eventShift.start, eventShift.end);
+      let dayShifts: Array<{ customer: string | null; hours: number }> = [];
 
+      if (eventShifts.length > 0) {
         const hasEventLunch = Boolean(eventLunch?.start && eventLunch?.end);
 
         lunchDeducted = hasEventLunch
           ? Number(this.calculateHours(eventLunch!.start, eventLunch!.end).toFixed(2))
           : 0;
 
-        hoursToday = Math.max(0, rawHours - lunchDeducted);
-        shiftStart = this.formatToChicago(dateStr, eventShift.start);
-        shiftEnd = this.formatToChicago(dateStr, eventShift.end);
-        lunchStart = hasEventLunch
-          ? this.formatToChicago(dateStr, eventLunch!.start)
-          : null;
-        lunchEnd = hasEventLunch
-          ? this.formatToChicago(dateStr, eventLunch!.end)
-          : null;
+        const totalRaw = eventShifts.reduce(
+          (sum, es) => sum + this.calculateHours(es.start, es.end), 0,
+        );
 
+        hoursToday = Math.max(0, totalRaw - lunchDeducted);
+        shiftStart = this.formatToChicago(dateStr, eventShifts[0].start);
+        shiftEnd = this.formatToChicago(dateStr, eventShifts[eventShifts.length - 1].end);
+        lunchStart = hasEventLunch ? this.formatToChicago(dateStr, eventLunch!.start) : null;
+        lunchEnd = hasEventLunch ? this.formatToChicago(dateStr, eventLunch!.end) : null;
         source = 'Event';
         strict = null;
+
+        dayShifts = eventShifts.map((es) => {
+          const rawH = this.calculateHours(es.start, es.end);
+          const lunchOverlapH = hasEventLunch
+            ? this.overlapMinutes(
+                this.formatToChicago(dateStr, es.start),
+                this.formatToChicago(dateStr, es.end),
+                this.formatToChicago(dateStr, eventLunch!.start),
+                this.formatToChicago(dateStr, eventLunch!.end),
+              ) / 60
+            : 0;
+          return {
+            customer: es.customer ?? null,
+            hours: Number(Math.max(0, rawH - lunchOverlapH).toFixed(2)),
+          };
+        });
       } else {
-        const fixedShift = schedule.fixed?.find(
+        const fixedShifts = (schedule.fixed ?? []).filter(
           (f) => f.weekdays.includes(dayOfWeek) && f.register === 'Work Shift',
         );
         const fixedLunch = schedule.fixed?.find(
           (f) => f.weekdays.includes(dayOfWeek) && f.register === 'Lunch',
         );
 
-        if (fixedShift) {
-          const rawHours = this.calculateTimeDiff(fixedShift.start, fixedShift.end);
+        if (fixedShifts.length > 0) {
           lunchDeducted = fixedLunch
             ? Number(this.calculateTimeDiff(fixedLunch.start, fixedLunch.end).toFixed(2))
             : 0;
 
-          hoursToday = Math.max(0, rawHours - lunchDeducted);
-          shiftStart = fixedShift.start;
-          shiftEnd = fixedShift.end;
+          const totalRaw = fixedShifts.reduce(
+            (sum, fs) => sum + this.calculateTimeDiff(fs.start, fs.end), 0,
+          );
+
+          hoursToday = Math.max(0, totalRaw - lunchDeducted);
+          shiftStart = fixedShifts[0].start;
+          shiftEnd = fixedShifts[fixedShifts.length - 1].end;
           lunchStart = fixedLunch?.start ?? null;
           lunchEnd = fixedLunch?.end ?? null;
           source = 'Fixed';
-          strict = fixedShift.strict ?? null;
+          strict = fixedShifts[0].strict ?? null;
+
+          dayShifts = fixedShifts.map((fs) => {
+            const rawH = this.calculateTimeDiff(fs.start, fs.end);
+            const lunchOverlapH = fixedLunch
+              ? this.overlapMinutes(fs.start, fs.end, fixedLunch.start, fixedLunch.end) / 60
+              : 0;
+            return {
+              customer: fs.customer ?? null,
+              hours: Number(Math.max(0, rawH - lunchOverlapH).toFixed(2)),
+            };
+          });
         }
       }
 
@@ -2187,7 +2248,7 @@ export class PayrollService {
         totalHours += hoursToday;
         daysWorked++;
 
-        dailyDetails.push({
+        (dailyDetails as any[]).push({
           date: dateStr,
           start: shiftStart,
           end: shiftEnd,
@@ -2197,6 +2258,7 @@ export class PayrollService {
           lunch_end: lunchEnd,
           lunch_hours: Number(lunchDeducted.toFixed(2)),
           total_hours: Number(hoursToday.toFixed(2)),
+          shifts: dayShifts,
         });
       }
     }
@@ -2295,6 +2357,56 @@ export class PayrollService {
      }
    } */
 
+  async generatePayrollSummaryPdf(
+    start_date: string,
+    end_date: string,
+    employees: string[],
+  ): Promise<Buffer> {
+    // Determinamos el work_schedule del primer empleado encontrado
+    const empRecord = await this.employeeRepository.findOne({
+      where: { employee_number: employees[0] },
+      select: { work_schedule: true },
+    });
+    const work_schedule = (empRecord?.work_schedule as any) ?? 'fixed';
+
+    const data = await this.getPayrollSummary(work_schedule, start_date, end_date, employees);
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(0);
+      page.setDefaultTimeout(0);
+
+      const emp = data[0];
+      const html = buildSummaryEmployeeHtml(emp);
+
+      await page.setContent(html, { waitUntil: 'load', timeout: 0 });
+
+      const contentHeight = await page.evaluate(() => {
+        const container = document.getElementById('report-container');
+        return container ? container.offsetHeight : document.body.scrollHeight;
+      });
+
+      const finalHeight = Math.max(contentHeight + 36, 900);
+
+      const pdfBuffer = await page.pdf({
+        width: '800px',
+        height: `${finalHeight}px`,
+        printBackground: true,
+        margin: { top: '0', right: '0', bottom: '0', left: '0' },
+        timeout: 0,
+      });
+
+      return Buffer.from(pdfBuffer);
+    } finally {
+      await browser.close();
+    }
+  }
+
   async hasTimesheetDataForRange(start_date: string, end_date: string): Promise<boolean> {
     const count = await this.timesheetRepository
       .createQueryBuilder('t')
@@ -2304,6 +2416,383 @@ export class PayrollService {
       .getCount();
 
     return count > 0;
+  }
+
+  async getPayrollSummary(
+    work_schedule: WorkSchedule,
+    start_date: string,
+    end_date: string,
+    employeeFilter?: string[],
+  ) {
+    const round = (v: number | null | undefined) =>
+      Number(Number(v ?? 0).toFixed(2));
+
+    // 1. Empleados activos del work_schedule
+    const whereClause: any = { status: 'Active', work_schedule };
+    if (employeeFilter?.length) {
+      whereClause.employee_number = In(employeeFilter);
+    }
+
+    const employees = await this.employeeRepository.find({
+      where: whereClause,
+      select: {
+        employee_number: true,
+        name: true,
+        last_name: true,
+        work_schedule: true,
+        type_of_income: true,
+        pay_frequency: true,
+        type_of_schedule: true,
+        payment_method: true,
+        assignment_rate: true,
+        btw_rate: true,
+        class_c_rate: true,
+        cr_rate: true,
+        ss_rate: true,
+        corporate_rate: true,
+        mechanics_rate: true,
+        office_maintenance: true,
+        rate_office_staff: true,
+      },
+    });
+
+    if (!employees.length) return [];
+
+    const employeeNumbers = employees.map((e) => e.employee_number);
+
+    // 2. Rate history de todos los empleados en paralelo
+    const rateHistoryRecords = await this.rateHistoryRepository
+      .createQueryBuilder('rh')
+      .where('rh.employee_number IN (:...nums)', { nums: employeeNumbers })
+      .orderBy('rh.start_date', 'ASC')
+      .getMany();
+
+    const rateHistoryMap = new Map<string, EmployeeRateHistory[]>();
+    for (const r of rateHistoryRecords) {
+      if (!rateHistoryMap.has(r.employee_number)) {
+        rateHistoryMap.set(r.employee_number, []);
+      }
+      rateHistoryMap.get(r.employee_number)!.push(r);
+    }
+
+    // 3. Resto de datos necesarios para los totales
+    const empList = employees.map((e) => ({
+      employee_number: e.employee_number,
+      name: e.name,
+      last_name: e.last_name,
+    }));
+
+    const [
+      advancedByEmployee,
+      activityDaily,
+      tcwDaily,
+      holidaysInRange,
+      compensationMap,
+      ratesMap,
+      commissionsMap,
+    ] = await Promise.all([
+      this.fetchAdvancedRequests(start_date, end_date),
+      this.fetchActivityReportDailyData(empList, start_date, end_date),
+      this.fetchTcwDailyData(empList, start_date, end_date),
+      this.fetchHolidaysInRange(start_date, end_date),
+      this.fetchCompensations(employeeNumbers, start_date, end_date),
+      this.fetchRatesByDateRange(start_date, end_date),
+      this.fetchCommissions(employeeNumbers, start_date, end_date),
+    ]);
+
+    const holidaysNormalized = holidaysInRange.map((h) => ({
+      id: h.id,
+      name: h.name,
+      date: h.date,
+    }));
+
+    const masterSchedules = await this.scheduleRepo.find({
+      where: { employee_number: In(employeeNumbers) },
+      relations: ['fixed', 'events'],
+    });
+    const scheduleMap = new Map(
+      masterSchedules.map((s) => [s.employee_number, s]),
+    );
+
+    const events = await this.scheduleEventRepository.find({
+      where: {
+        date: Between(start_date, end_date),
+        register: In([RegisterEnum.TIME_OFF_REQUEST, RegisterEnum.EXTRA_HOURS]),
+        schedule: { employee_number: In(employeeNumbers) },
+      },
+      relations: ['schedule'],
+    });
+
+    const eventsByEmployee: Record<string, {
+      timeOffHours: number; extraHours: number;
+      timeOffCount: number; extraHoursCount: number;
+      timeOffDetails: Array<{ date: string; start: string; end: string; total_hours: number }>;
+      extraHoursDetails: Array<{ date: string; start: string; end: string; total_hours: number }>;
+    }> = {};
+
+    for (const ev of events) {
+      const n = ev.schedule.employee_number;
+      if (!eventsByEmployee[n]) {
+        eventsByEmployee[n] = {
+          timeOffHours: 0, extraHours: 0,
+          timeOffCount: 0, extraHoursCount: 0,
+          timeOffDetails: [], extraHoursDetails: [],
+        };
+      }
+      if (!ev.start || !ev.end) continue;
+      const h = this.calculateHours(ev.start, ev.end);
+      const fStart = this.formatToChicago(ev.date, ev.start);
+      const fEnd   = this.formatToChicago(ev.date, ev.end);
+      if (ev.register === RegisterEnum.TIME_OFF_REQUEST) {
+        const applied = Math.min(h, 8);
+        eventsByEmployee[n].timeOffHours += applied;
+        eventsByEmployee[n].timeOffCount += 1;
+        eventsByEmployee[n].timeOffDetails.push({ date: ev.date, start: fStart, end: fEnd, total_hours: Number(applied.toFixed(2)) });
+      } else {
+        const appliedExtra = h > 8 ? h - 1 : h;
+        eventsByEmployee[n].extraHours += appliedExtra;
+        eventsByEmployee[n].extraHoursCount += 1;
+        eventsByEmployee[n].extraHoursDetails.push({ date: ev.date, start: fStart, end: fEnd, total_hours: Number(appliedExtra.toFixed(2)) });
+      }
+    }
+
+    return employees.map((emp) => {
+      const employeeNumber = emp.employee_number;
+      const master = scheduleMap.get(employeeNumber);
+      const metrics = this.calculateMasterMetrics(master, start_date, end_date);
+      const rawRates = ratesMap.get(employeeNumber) || [];
+
+      const totalAuthorizedHoursForPeriod = Number(metrics.total_authorized_hours ?? 0);
+
+      // Seasonal rates del empleado que aplican al período
+      const history = rateHistoryMap.get(employeeNumber) ?? [];
+      const matchingSeasonals = history
+        .filter((r) => r.start_date && r.end_date && r.start_date <= end_date && r.end_date >= start_date)
+        .sort((a, b) => (a.start_date > b.start_date ? 1 : -1));
+
+      const isSeasonDay = (date: string): boolean =>
+        matchingSeasonals.some((s) => date >= s.start_date && date <= (s.end_date ?? date));
+
+      // Build schedule_details con cálculo correcto por día (igual que getPayrollData)
+      const enrichedDetails = this.enrichScheduleDetailsWithRate(
+        metrics.daily_details || [],
+        rawRates,
+      );
+      const detailsWithHolidays = this.markScheduleDetailsAsHoliday(
+        enrichedDetails,
+        holidaysNormalized,
+      );
+
+      // Rate por día según employee_rate_history (seasonal o office)
+      const officeRate = (emp as any).rate_office_staff ?? 0;
+      const getRateForDay = (date: string): number => {
+        const seasonal = matchingSeasonals.find(
+          (s) => date >= s.start_date && date <= (s.end_date ?? date),
+        );
+        return seasonal ? seasonal.rate : officeRate;
+      };
+
+      let scheduleDetails = detailsWithHolidays.map((day) => {
+        const d: any = day;
+        const authorizedHours      = round(d.total_hours ?? 0);
+        const authorizedLunchHours = round(d.lunch_hours ?? 0);
+
+        const internalRate = totalAuthorizedHoursForPeriod > 0
+          ? getRateForDay(d.date) / totalAuthorizedHoursForPeriod
+          : 0;
+
+        const payableHours = authorizedHours;
+
+        return {
+          date: d.date,
+          is_holiday: d.is_holiday ?? false,
+          season: isSeasonDay(d.date),
+          shifts: (d.shifts ?? []) as Array<{ customer: string | null; hours: number }>,
+          payroll_day: {
+            authorized_hours: authorizedHours,
+            authorized_lunch_hours: authorizedLunchHours,
+            payable_hours: payableHours,
+            day_payable_amount: round(payableHours * internalRate),
+          },
+        };
+      });
+
+      const holidayFallback = this.buildHolidayFallbackScheduleDetails({
+        holidays: holidaysNormalized,
+        existingScheduleDetails: scheduleDetails as any,
+        baseScheduleDetailsForRate: metrics.daily_details || [],
+        rates: rawRates,
+      });
+
+      // holidayFallback days también necesitan day_payable_amount
+      const holidayFallbackMapped = (holidayFallback as any[]).map((d) => {
+        const internalRate = totalAuthorizedHoursForPeriod > 0
+          ? getRateForDay(d.date) / totalAuthorizedHoursForPeriod
+          : 0;
+        const authorizedHours = round(d.total_hours ?? 0);
+        return {
+          date: d.date,
+          is_holiday: true,
+          season: isSeasonDay(d.date),
+          shifts: [] as Array<{ customer: string | null; hours: number }>,
+          payroll_day: {
+            authorized_hours: authorizedHours,
+            authorized_lunch_hours: round(d.lunch_hours ?? 0),
+            payable_hours: authorizedHours,
+            day_payable_amount: round(authorizedHours * internalRate),
+          },
+        };
+      });
+
+      scheduleDetails = [...scheduleDetails, ...holidayFallbackMapped].sort(
+        (a, b) => a.date.localeCompare(b.date),
+      );
+
+      // authorized_hours summary
+      let authWork = 0, authLunch = 0;
+      for (const d of scheduleDetails) {
+        authWork  += d.payroll_day.authorized_hours;
+        authLunch += d.payroll_day.authorized_lunch_hours;
+      }
+      authWork  = round(authWork);
+      authLunch = round(authLunch);
+
+      // TCW hours summary
+      let tcwWork = 0, tcwLunch = 0;
+      for (const day of Object.values(tcwDaily.by_employee?.[employeeNumber] ?? {}) as any[]) {
+        tcwWork  += Number(day?.worked_hours ?? 0);
+        tcwLunch += Number(day?.lunch_total_hours ?? 0);
+      }
+      tcwWork  = round(tcwWork);
+      tcwLunch = round(tcwLunch);
+
+      // days_amount correcto: suma de day_payable_amount
+      const daysAmount = round(
+        scheduleDetails.reduce((s, d) => s + d.payroll_day.day_payable_amount, 0),
+      );
+
+      // time_off y extra_hours: calculamos con getRateForDay directamente (no rawRates)
+      const enrichedTimeOff = (eventsByEmployee[employeeNumber]?.timeOffDetails ?? []).map((detail) => {
+        const internalRate = totalAuthorizedHoursForPeriod > 0
+          ? getRateForDay(detail.date) / totalAuthorizedHoursForPeriod
+          : 0;
+        return {
+          ...detail,
+          season: isSeasonDay(detail.date),
+          internal_rate_per_hour: internalRate,
+          calculated_total: round(detail.total_hours * internalRate),
+        };
+      });
+
+      const enrichedExtraHours = (eventsByEmployee[employeeNumber]?.extraHoursDetails ?? []).map((detail) => {
+        const internalRate = totalAuthorizedHoursForPeriod > 0
+          ? getRateForDay(detail.date) / totalAuthorizedHoursForPeriod
+          : 0;
+        return {
+          ...detail,
+          season: isSeasonDay(detail.date),
+          internal_rate_per_hour: internalRate,
+          calculated_total: round(detail.total_hours * internalRate),
+        };
+      });
+
+      const timeOffAmount    = round(-(enrichedTimeOff.reduce((s, d) => s + d.calculated_total, 0)));
+      const extraHoursAmount = round(enrichedExtraHours.reduce((s, d) => s + d.calculated_total, 0));
+      const compensationsInFavor   = this.sumCompensations(compensationMap[employeeNumber]?.in_favor ?? []);
+      const compensationsToDeduct  = round(-this.sumCompensations(compensationMap[employeeNumber]?.to_deduct ?? []));
+      const commissionsAmount      = this.sumCommissions(commissionsMap[employeeNumber] ?? []);
+      const advancedAmount         = round(-(advancedByEmployee[employeeNumber]?.total_advanced ?? 0));
+      const totalPayroll           = round(
+        daysAmount + timeOffAmount + extraHoursAmount +
+        compensationsInFavor + compensationsToDeduct +
+        commissionsAmount + advancedAmount,
+      );
+
+      return {
+        employee_number: emp.employee_number,
+        name: emp.name,
+        last_name: emp.last_name,
+        work_schedule: emp.work_schedule,
+        authorized_hours: metrics.total_authorized_hours,
+        period: { start_date, end_date },
+        days_worked: metrics.days_worked_count,
+        schedule_details: scheduleDetails,
+        time_off: {
+          total_requests: eventsByEmployee[employeeNumber]?.timeOffCount ?? 0,
+          total_hours: round(eventsByEmployee[employeeNumber]?.timeOffHours ?? 0),
+          details: enrichedTimeOff,
+        },
+        extra_hours: {
+          total_requests: eventsByEmployee[employeeNumber]?.extraHoursCount ?? 0,
+          total_hours: round(eventsByEmployee[employeeNumber]?.extraHours ?? 0),
+          details: enrichedExtraHours,
+        },
+        advanced_requests: {
+          total_requests: advancedByEmployee[employeeNumber]?.requests_count ?? 0,
+          total_amount: round(advancedByEmployee[employeeNumber]?.total_advanced ?? 0),
+          details: advancedByEmployee[employeeNumber]?.details ?? [],
+        },
+        holidays_in_range: this.enrichHolidaysWithRate(holidaysNormalized, rawRates, metrics.daily_details || []),
+        compensation_summary: {
+          in_favor: compensationMap[employeeNumber]?.in_favor ?? [],
+          to_deduct: compensationMap[employeeNumber]?.to_deduct ?? [],
+        },
+        commissions_summary: commissionsMap[employeeNumber] ?? [],
+        payroll_totals: (() => {
+          const timeOffHours   = round(eventsByEmployee[employeeNumber]?.timeOffHours ?? 0);
+          const extraHoursHrs  = round(eventsByEmployee[employeeNumber]?.extraHours ?? 0);
+          const adjustedHours  = round(authWork - timeOffHours + extraHoursHrs);
+          const payableHours   = tcwWork > 0 && tcwWork < adjustedHours ? tcwWork : adjustedHours;
+          const payableSource  = tcwWork > 0 && tcwWork < adjustedHours ? 'tcw' : 'authorized_hours_with_adjustments';
+          return {
+            authorized_hours: {
+              work_hours: authWork,
+              lunch_hours: authLunch,
+              total_hours: round(authWork + authLunch),
+            },
+            time_clock_wizard_hours: tcwWork,
+            time_off_hours: timeOffHours,
+            extra_hours_hours: extraHoursHrs,
+            authorized_hours_with_adjustments: adjustedHours,
+            payable_hours: payableHours,
+            payable_hours_source: payableSource,
+            authorized_work_shift_amount: daysAmount,
+            time_off_amount: timeOffAmount,
+            extra_hours_amount: extraHoursAmount,
+            compensations_in_favor_amount: compensationsInFavor,
+            compensations_to_deduct_amount: compensationsToDeduct,
+            commissions_amount: commissionsAmount,
+            advanced_amount: advancedAmount,
+            total_payroll_amount: totalPayroll,
+          };
+        })(),
+        rate: {
+          type_of_income: emp.type_of_income,
+          pay_frequency: emp.pay_frequency,
+          type_of_schedule: emp.type_of_schedule,
+          payment_method: emp.payment_method,
+          assignment_rate: emp.assignment_rate,
+          btw_rate: emp.btw_rate,
+          class_c_rate: emp.class_c_rate,
+          cr_rate: emp.cr_rate,
+          ss_rate: emp.ss_rate,
+          corporate_rate: emp.corporate_rate,
+          mechanics_rate: emp.mechanics_rate,
+          office_maintenance: emp.office_maintenance,
+          valid_rate: {
+            seasonal_rates: matchingSeasonals.map((r) => ({
+              amount: r.rate,
+              start_date: r.start_date,
+              end_date: r.end_date,
+              season: r.season,
+            })),
+            office_rate: {
+              amount: (emp as any).rate_office_staff ?? 0,
+            },
+          },
+        },
+      };
+    });
   }
 
   private async fetchAdvancedRequests(
@@ -3991,7 +4480,7 @@ export class PayrollService {
     start_date: string,
     end_date: string,
   ) {
-    const rows = await this.timesheetRecordRepository  // <-- también necesitas inyectar TimesheetRecord repository
+    const rows = await this.timesheetRecordRepository
       .createQueryBuilder('t')
       .where('t.day_date >= :start_date', { start_date })
       .andWhere('t.day_date <= :end_date', { end_date })
@@ -4087,10 +4576,10 @@ export class PayrollService {
     end_date: string,
     employees?: string[],
   ) {
-    const tcwRows = await this.timesheetRecordRepository
+    const tcwRows = await this.timesheetRepository
       .createQueryBuilder('t')
-      .where('t.day_date >= :start_date', { start_date })
-      .andWhere('t.day_date <= :end_date', { end_date })
+      .where('t.day_date >= :start_date::date', { start_date })
+      .andWhere('t.day_date <= :end_date::date', { end_date })
       .orderBy('t.day_date', 'ASC')
       .addOrderBy('t.employee', 'ASC')
       .getMany();

@@ -12,6 +12,7 @@ import { memoryStorage } from 'multer';
 import { Timesheet } from './entities/timesheet.entity';
 import { Holiday } from 'src/holidays/entities/holiday.entity';
 import { TimesheetRecord } from 'src/timesheet-records/entities/timesheet-record.entity';
+import { EmployeeRateHistory } from 'src/employees/entities/employee-rate-history.entity';
 
 @Module({
   controllers: [PayrollController],
@@ -23,7 +24,8 @@ import { TimesheetRecord } from 'src/timesheet-records/entities/timesheet-record
     Employee,
     Timesheet,
     Holiday,
-    TimesheetRecord
+    TimesheetRecord,
+    EmployeeRateHistory,
   ]),
     EmployeesModule,
   MulterModule.register({

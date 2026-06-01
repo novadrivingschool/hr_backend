@@ -121,6 +121,68 @@ export class PayrollController {
     };
   }
 
+  @Post('records/summary')
+  async getPayrollSummary(
+    @Query('work_schedule') work_schedule: string,
+    @Query('start_date') start_date: string,
+    @Query('end_date') end_date: string,
+    @Body() body: { employees?: string[] },
+  ) {
+    if (!work_schedule || !start_date || !end_date) {
+      throw new BadRequestException('work_schedule, start_date y end_date son requeridos');
+    }
+
+    if (!Object.values(WorkSchedule).includes(work_schedule.toLowerCase() as WorkSchedule)) {
+      throw new BadRequestException('work_schedule debe ser "fixed" o "variable"');
+    }
+
+    const hasData = await this.payrollService.hasTimesheetDataForRange(start_date, end_date);
+    if (!hasData) {
+      throw new BadRequestException(
+        `No hay datos de timesheet registrados para el rango ${start_date} — ${end_date}. ` +
+        `Por favor, sube primero el archivo CSV mediante el endpoint correspondiente.`,
+      );
+    }
+
+    const data = await this.payrollService.getPayrollSummary(
+      work_schedule.toLowerCase() as WorkSchedule,
+      start_date,
+      end_date,
+      body?.employees,
+    );
+
+    return {
+      ok: true,
+      total: data.length,
+      data,
+    };
+  }
+
+  @Post('records/summary/pdf')
+  async getPayrollSummaryPdf(
+    @Body() body: { start_date: string; end_date: string; employees: string[] },
+    @Res() res: Response,
+  ) {
+    const { start_date, end_date, employees } = body;
+
+    if (!start_date || !end_date || !employees?.length) {
+      throw new BadRequestException('start_date, end_date y employees son requeridos');
+    }
+
+    const buffer = await this.payrollService.generatePayrollSummaryPdf(
+      start_date,
+      end_date,
+      employees,
+    );
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="PayrollSummary_${employees[0]}_${start_date}_${end_date}.pdf"`,
+    );
+    return res.send(buffer);
+  }
+
   @Post('timesheets/parse')
   @UseInterceptors(FileInterceptor('file'))
   async parseTimesheet(
