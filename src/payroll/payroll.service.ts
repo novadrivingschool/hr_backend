@@ -2361,7 +2361,7 @@ export class PayrollService {
     start_date: string,
     end_date: string,
     employees: string[],
-  ): Promise<Buffer> {
+  ): Promise<{ buffer: Buffer; filename: string }> {
     // Determinamos el work_schedule del primer empleado encontrado
     const empRecord = await this.employeeRepository.findOne({
       where: { employee_number: employees[0] },
@@ -2401,7 +2401,12 @@ export class PayrollService {
         timeout: 0,
       });
 
-      return Buffer.from(pdfBuffer);
+      const safeStr = (v: string) =>
+        String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9-_]/g, '_');
+      const name = safeStr(`${emp.last_name ?? ''}_${emp.name ?? ''}`);
+      const filename = `PayrollSummary_${name}_${start_date}_${end_date}.pdf`;
+
+      return { buffer: Buffer.from(pdfBuffer), filename };
     } finally {
       await browser.close();
     }
@@ -2484,7 +2489,6 @@ export class PayrollService {
 
     const [
       advancedByEmployee,
-      activityDaily,
       tcwDaily,
       holidaysInRange,
       compensationMap,
@@ -2492,7 +2496,6 @@ export class PayrollService {
       commissionsMap,
     ] = await Promise.all([
       this.fetchAdvancedRequests(start_date, end_date),
-      this.fetchActivityReportDailyData(empList, start_date, end_date),
       this.fetchTcwDailyData(empList, start_date, end_date),
       this.fetchHolidaysInRange(start_date, end_date),
       this.fetchCompensations(employeeNumbers, start_date, end_date),

@@ -1,7 +1,8 @@
 // src/facilities/facilities.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, Like, In, Between } from 'typeorm'
+import axios from 'axios'
 import { Facility, FacilityStatus } from './entities/facility.entity'
 import { CreateFacilityDto } from './dto/create-facility.dto'
 import { UpdateFacilityDto } from './dto/update-facility.dto'
@@ -10,6 +11,8 @@ import { QueryFacilityDto } from './dto/query-facility.dto'
 
 @Injectable()
 export class FacilitiesService {
+  private readonly logger = new Logger(FacilitiesService.name)
+
   constructor(
     @InjectRepository(Facility)
     private readonly repo: Repository<Facility>,
@@ -20,7 +23,15 @@ export class FacilitiesService {
       ...createFacilityDto,
       status: createFacilityDto.status || FacilityStatus.PENDING,
     })
-    return await this.repo.save(entity)
+    const saved = await this.repo.save(entity)
+
+    setImmediate(() => {
+      this.triggerEmail('created', saved.id).catch(err =>
+        this.logger.error(`❌ Email trigger failed (created) for ${saved.id}: ${err?.message}`)
+      )
+    })
+
+    return saved
   }
 
   async findAll(query: QueryFacilityDto) {
@@ -119,7 +130,7 @@ export class FacilitiesService {
 
   async updateStatus(id: string, updateStatusDto: UpdateStatusDto) {
     const item = await this.findOne(id)
-    
+
     Object.assign(item, {
       status: updateStatusDto.status,
       admin_comments: updateStatusDto.admin_comments || null,
@@ -127,8 +138,19 @@ export class FacilitiesService {
       admin_fullName: updateStatusDto.admin_fullName,
       updatedAt: new Date(),
     })
-    
-    return await this.repo.save(item)
+
+    const saved = await this.repo.save(item)
+
+    // Only notify staff when admin makes a decision (not pending)
+    if (updateStatusDto.status !== FacilityStatus.PENDING) {
+      setImmediate(() => {
+        this.triggerEmail('status-updated', id).catch(err =>
+          this.logger.error(`❌ Email trigger failed (status-updated) for ${id}: ${err?.message}`)
+        )
+      })
+    }
+
+    return saved
   }
 
   async addAttachment(id: string, filePath: string) {
@@ -160,6 +182,21 @@ export class FacilitiesService {
     await this.repo.save(item)
     
     return { id, deleted: true }
+  }
+
+  private async triggerEmail(event: 'created' | 'status-updated', id: string): Promise<void> {
+    const base = process.env.EMAIL_SERVICE_BASE
+    if (!base) {
+      this.logger.warn('EMAIL_SERVICE_BASE not configured — skipping facilities email')
+      return
+    }
+    const url = `${base.replace(/\/+$/, '')}/facilities-email/${event}/${encodeURIComponent(id)}`
+    this.logger.log(`📧 POST ${url}`)
+    const response = await axios.post(url, {}, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 15_000,
+    })
+    this.logger.log(`✅ Email service responded ${response.status} for ${event} — facility ${id}`)
   }
 
   async getStats() {

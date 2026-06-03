@@ -169,17 +169,14 @@ export class PayrollController {
       throw new BadRequestException('start_date, end_date y employees son requeridos');
     }
 
-    const buffer = await this.payrollService.generatePayrollSummaryPdf(
+    const { buffer, filename } = await this.payrollService.generatePayrollSummaryPdf(
       start_date,
       end_date,
       employees,
     );
 
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename="PayrollSummary_${employees[0]}_${start_date}_${end_date}.pdf"`,
-    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     return res.send(buffer);
   }
 

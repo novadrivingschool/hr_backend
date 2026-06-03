@@ -35,6 +35,7 @@ import { InstructorVehiclePickupDropoffModule } from './instructor_vehicle_picku
 import { HappyFormModule } from './happy_form/happy_form.module';
 import { TimesheetRecordsModule } from './timesheet-records/timesheet-records.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { BankDepositsModule } from './bank-deposits/bank-deposits.module';
 
 
 dotenv.config();
@@ -97,6 +98,7 @@ dotenv.config();
         __dirname + '/happy_form/entities/*.entity.{ts,js}', // <-- Solo las entidades de HappyForm
         __dirname + '/timesheet-records/entities/*.entity.{ts,js}', // <-- Solo las entidades de TimesheetRecords
         __dirname + '/inventory/entities/*.entity.{ts,js}',
+        __dirname + '/bank-deposits/entities/*.entity.{ts,js}',
       ],
     }),
     TimeOffRequestModule,
@@ -131,7 +133,8 @@ dotenv.config();
     InstructorVehiclePickupDropoffModule,
     HappyFormModule,
     TimesheetRecordsModule,
-    InventoryModule
+    InventoryModule,
+    BankDepositsModule,
   ],
 })
 export class AppModule { }
