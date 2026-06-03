@@ -1882,6 +1882,7 @@ export class EmployeeScheduleService {
     const allowedPairs = new Set([
       [RegisterEnum.WORK_SHIFT, RegisterEnum.LUNCH].sort().join('|'),
       [RegisterEnum.WORK_SHIFT, RegisterEnum.OUTAGE].sort().join('|'),
+      [RegisterEnum.LUNCH, RegisterEnum.OUTAGE].sort().join('|'),
     ]);
 
     return allowedPairs.has([left, right].sort().join('|'));
