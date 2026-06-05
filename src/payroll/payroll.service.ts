@@ -732,8 +732,18 @@ export class PayrollService {
       }
       // ───────────────────────
 
-      const sumHours = parseFloat(intervals.reduce((s, iv) => s + iv.hours, 0).toFixed(2));
-      const sumPaid = parseFloat(intervals.reduce((s, iv) => s + iv.paid_break, 0).toFixed(2));
+      // Sumar minutos exactos (igual que TCW) y redondear solo al final
+      // Esto evita el error de 0.01 que ocurre al sumar horas ya redondeadas del CSV
+      const totalExactMinutes = intervals.reduce((s, iv) => {
+        if (iv.time_in_mins !== null && iv.time_out_mins !== null) {
+          let mins = iv.time_out_mins - iv.time_in_mins;
+          if (mins < 0) mins += 24 * 60; // cruce de medianoche
+          return s + mins;
+        }
+        return s + iv.hours * 60; // fallback si no hay tiempo exacto
+      }, 0);
+      const sumHours = parseFloat((totalExactMinutes / 60).toFixed(4)); // 4 decimales para evitar error de redondeo en el total del período
+      const sumPaid = parseFloat(intervals.reduce((s, iv) => s + iv.paid_break, 0).toFixed(4));
       const sumUnpaid = parseFloat(intervals.reduce((s, iv) => s + iv.unpaid_break, 0).toFixed(2));
       const last = intervals[intervals.length - 1];
 
@@ -750,10 +760,10 @@ export class PayrollService {
         paid_break: sumPaid,
         unpaid_break: sumUnpaid,
         day_wise_total_hours: sumHours,
-        total_hours: last.total_hours,
-        total_paid_break: last.total_paid_break,
-        total_unpaid_break: last.total_unpaid_break,
-        total_day_wise_total_hours: last.total_day_wise_total_hours,
+        total_hours: sumHours,
+        total_paid_break: sumPaid,
+        total_unpaid_break: sumUnpaid,
+        total_day_wise_total_hours: sumHours,
       });
     }
 
@@ -4779,7 +4789,7 @@ export class PayrollService {
         const interval = intervals[i];
         const tcwIn = toHHMMSS(interval.time_in);
         const tcwOut = toHHMMSS(interval.time_out);
-        const tcwWorked = this.round2(Number(interval.hours ?? 0));
+        const tcwWorked = Number(interval.hours ?? 0); // precisión completa desde la BD
 
         let actInEvent: string | null = null;
         let actOutEvent: string | null = null;

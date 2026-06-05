@@ -29,7 +29,7 @@ export interface PaginatedResult<T> {
  *   POST /mailer-send/i-care/:id/:event  →  body: { recipients: string[] }
  *
  * Matriz de destinatarios por evento:
- *   created   → role 'hr'
+ *   created   → role 'hr' + role 'management' + responsible[]
  *   justified → staff_name + responsible[] + role 'management'
  *   committed → role 'hr' + responsible[] + role 'management'
  *   resolved  → staff_name + responsible[] + role 'management'
@@ -163,13 +163,27 @@ export class ICareService {
 
   /**
    * Trigger para el evento 'created'.
-   * Destinatarios: todos los empleados activos con role 'hr'.
+   * Destinatarios: role 'hr' + role 'management' + responsible[].
    *
-   * @param id - UUID del iCare recién creado
+   * @param id     - UUID del iCare recién creado
+   * @param record - Registro completo del iCare (para extraer responsibles)
    */
-  private async triggerCreatedEmail(id: string): Promise<void> {
-    const hrEmails = await this.getEmailsByRole('hr');
-    await this.triggerEmail(id, 'created', hrEmails);
+  private async triggerCreatedEmail(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+    ]);
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+
+    const recipients = [
+      ...new Set([
+        ...hrEmails,
+        ...managementEmails,
+        ...coordinatorEmails,
+      ]),
+    ];
+
+    await this.triggerEmail(id, 'created', recipients);
   }
 
   /**
@@ -260,8 +274,8 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    // Solo HR recibe notificación al momento de la creación
-    this.triggerCreatedEmail(saved.id).catch((err) =>
+    // HR + Management + Responsibles reciben notificación al momento de la creación
+    this.triggerCreatedEmail(saved.id, saved).catch((err) =>
       this.logger.error(
         `❌ Failed to trigger 'created' email for id=${saved.id}`,
         err?.message || err,
