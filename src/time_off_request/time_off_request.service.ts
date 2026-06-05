@@ -124,8 +124,9 @@ export class TimeOffRequestService {
         return String(updateDto[field]) !== String((request as any)[field] ?? '');
       });
 
-      // ── 4. Guardar cambios ────────────────────────────────────────────────
-      const updated = Object.assign(request, updateDto);
+      // ── 4. Guardar cambios (status nunca se sobreescribe desde edit) ──────
+      const { status: _strippedStatus, ...safeUpdateDto } = updateDto as any;
+      const updated = Object.assign(request, safeUpdateDto);
       const saved = await this.timeOffRequestRepo.save(updated);
 
       // ── 5. Verificar si existen eventos para este TOR en el schedule ──────
@@ -378,6 +379,9 @@ export class TimeOffRequestService {
     approved: boolean,
     by: string,
     hr_comments: string,
+    is_paid?: boolean,
+    recovery_required?: boolean,
+    recovery_schedule?: Array<{ date: string; startTime: string; endTime: string }> | null,
   ): Promise<TimeOffRequest> {
     try {
 
@@ -406,6 +410,19 @@ export class TimeOffRequestService {
       request.hr_comments = hr_comments;
 
       request.status = approved ? StatusEnum.Approved : StatusEnum.NotApproved;
+
+      // ── HR puede sobreescribir payment & recovery al aprobar ────────────────
+      if (approved) {
+        if (is_paid !== undefined) request.is_paid = is_paid;
+        if (recovery_required !== undefined) request.recovery_required = recovery_required;
+        // Si HR marca recovery_required=false → limpiar el schedule propuesto
+        if (recovery_required === false) {
+          request.recovery_schedule = null;
+        } else if (recovery_required === true && Array.isArray(recovery_schedule)) {
+          // HR aprueba solo los slots que seleccionó
+          request.recovery_schedule = recovery_schedule.length > 0 ? recovery_schedule : null;
+        }
+      }
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
 
@@ -1030,6 +1047,21 @@ export class TimeOffRequestService {
     const total = pendingCoordinator + pendingHR + approved + notApproved + cancelled;
 
     return { pendingCoordinator, pendingHR, approved, notApproved, cancelled, total };
+  }
+
+  async resendStaffEmail(id: string): Promise<{ message: string }> {
+    try {
+      const request = await this.findOne(id);
+      await this.apiClient.sendStaffTemplate({
+        templateName: 'time_off_staff_notification',
+        formData: { ...request } as any,
+        actor: 'System',
+      });
+      return { message: `Staff email resent for TOR ${id}` };
+    } catch (error) {
+      this.logger.error(`[resendStaffEmail] Failed for TOR ${id}`, error.stack);
+      throw new InternalServerErrorException('Error resending staff email');
+    }
   }
 
   private async _createScheduleEventsFromTimeOff(request: TimeOffRequest): Promise<void> {

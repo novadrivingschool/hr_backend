@@ -146,10 +146,18 @@ export class TimeOffRequestController {
     @Param('id') id: string,
     @Body('approved') approved: boolean,
     @Body('by') by: string,
-    @Body('hr_comments') hr_comments: string
+    @Body('hr_comments') hr_comments: string,
+    @Body('is_paid') is_paid?: boolean,
+    @Body('recovery_required') recovery_required?: boolean,
+    @Body('recovery_schedule') recovery_schedule?: Array<{ date: string; startTime: string; endTime: string }> | null,
   ) {
-    console.log(`HR approval for request ${id}: approved=${approved}, by=${by}`);
-    return this.timeOffRequestService.approveByHR(id, approved, by, hr_comments);
+    console.log(`HR approval for request ${id}: approved=${approved}, by=${by}, is_paid=${is_paid}, recovery_required=${recovery_required}`);
+    return this.timeOffRequestService.approveByHR(id, approved, by, hr_comments, is_paid, recovery_required, recovery_schedule);
+  }
+
+  @Patch(':id/resend-staff-email')
+  resendStaffEmail(@Param('id') id: string) {
+    return this.timeOffRequestService.resendStaffEmail(id);
   }
 
   @Patch(':id')
