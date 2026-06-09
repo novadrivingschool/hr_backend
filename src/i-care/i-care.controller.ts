@@ -22,6 +22,9 @@ import { UpdateICareDto } from './dto/update-i-care.dto';
 import { CommitICareDto } from './dto/commit-i-care.dto';
 import { JustifyICareDto } from './dto/justify-i-care.dto';
 import { ResolveICareDto } from './dto/resolve-i-care.dto';
+import { ApproveCommitICareDto } from './dto/approve-commit-i-care.dto';
+import { AddSeguimientoICareDto } from './dto/add-seguimiento-i-care.dto';
+import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
 import { ICareStatus, ICareUrgency } from './entities/i-care.entity';
 
 @Controller('i-care')
@@ -313,6 +316,75 @@ export class ICareController {
       return await this.iCareService.commit(id, commitDto);
     } catch (error) {
       console.error('Error committing ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/approve-commit ───────────────────────────────────────
+  // Coordinator (Low/Med) o HR/Management aprueba el commit del staff.
+  // Asigna el primer seguimiento y avanza a FOLLOWING_UP.
+
+  @Patch(':id/approve-commit')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async approveCommit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ApproveCommitICareDto,
+  ) {
+    try {
+      return await this.iCareService.approveCommit(id, dto);
+    } catch (error) {
+      console.error('Error approving commit for ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/seguimiento ───────────────────────────────────────────
+  // Agrega un seguimiento adicional (o registra el actual_date del último).
+  // El status permanece en FOLLOWING_UP.
+
+  @Patch(':id/seguimiento')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async addSeguimiento(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AddSeguimientoICareDto,
+  ) {
+    try {
+      return await this.iCareService.addSeguimiento(id, dto);
+    } catch (error) {
+      console.error('Error adding seguimiento to ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/fulfill-commit ────────────────────────────────────────
+  // Coordinator o HR marca que todos los seguimientos están cumplidos.
+  // Avanza a COMMIT_FULFILLED, notifica a HR para que pueda cerrar (SOLVED).
+
+  @Patch(':id/fulfill-commit')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async fulfillCommit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FulfillCommitICareDto,
+  ) {
+    try {
+      return await this.iCareService.fulfillCommit(id, dto);
+    } catch (error) {
+      console.error('Error fulfilling commit for ICare record:', id, error);
       throw error;
     }
   }

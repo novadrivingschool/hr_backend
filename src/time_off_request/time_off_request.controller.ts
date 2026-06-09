@@ -98,7 +98,7 @@ export class TimeOffRequestController {
   cancelRequest(
     @Param('id') id: string,
     @Body('cancelled_by') cancelled_by: string,
-    @Body('role') role: 'staff' | 'hr' | 'coordinator',
+    @Body('role') role: 'staff' | 'hr' | 'coordinator' | 'management',
     @Body('reason') reason?: string,
   ) {
     return this.timeOffRequestService.cancelRequest(id, cancelled_by, role, reason);
@@ -149,10 +149,9 @@ export class TimeOffRequestController {
     @Body('hr_comments') hr_comments: string,
     @Body('is_paid') is_paid?: boolean,
     @Body('recovery_required') recovery_required?: boolean,
-    @Body('recovery_schedule') recovery_schedule?: Array<{ date: string; startTime: string; endTime: string }> | null,
   ) {
     console.log(`HR approval for request ${id}: approved=${approved}, by=${by}, is_paid=${is_paid}, recovery_required=${recovery_required}`);
-    return this.timeOffRequestService.approveByHR(id, approved, by, hr_comments, is_paid, recovery_required, recovery_schedule);
+    return this.timeOffRequestService.approveByHR(id, approved, by, hr_comments, is_paid, recovery_required);
   }
 
   @Patch(':id/resend-staff-email')

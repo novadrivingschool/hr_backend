@@ -81,7 +81,7 @@ export interface SendTimeOffTemplateDto {
     subject?: string;
     formData: CreateTimeOffRequestSavedDto;
     /** ← NUEVO */
-    actor?: 'HR' | 'Coordinator' | 'System' | 'Staff';
+    actor?: 'HR' | 'Coordinator' | 'System' | 'Staff' | 'Management';
 }
 
 export interface SendTimeOffTemplateObjDto {

@@ -381,7 +381,6 @@ export class TimeOffRequestService {
     hr_comments: string,
     is_paid?: boolean,
     recovery_required?: boolean,
-    recovery_schedule?: Array<{ date: string; startTime: string; endTime: string }> | null,
   ): Promise<TimeOffRequest> {
     try {
 
@@ -411,17 +410,10 @@ export class TimeOffRequestService {
 
       request.status = approved ? StatusEnum.Approved : StatusEnum.NotApproved;
 
-      // ── HR puede sobreescribir payment & recovery al aprobar ────────────────
+      // ── HR/Management setea autorización al aprobar ─────────────────────────
       if (approved) {
         if (is_paid !== undefined) request.is_paid = is_paid;
         if (recovery_required !== undefined) request.recovery_required = recovery_required;
-        // Si HR marca recovery_required=false → limpiar el schedule propuesto
-        if (recovery_required === false) {
-          request.recovery_schedule = null;
-        } else if (recovery_required === true && Array.isArray(recovery_schedule)) {
-          // HR aprueba solo los slots que seleccionó
-          request.recovery_schedule = recovery_schedule.length > 0 ? recovery_schedule : null;
-        }
       }
 
       const updatedRequest = await this.timeOffRequestRepo.save(request);
@@ -829,7 +821,7 @@ export class TimeOffRequestService {
   async cancelRequest(
     id: string,
     cancelled_by: string,
-    role: 'staff' | 'hr' | 'coordinator',
+    role: 'staff' | 'hr' | 'coordinator' | 'management',
     reason?: string,
   ): Promise<{ message: string; data: TimeOffRequest }> {
     try {
@@ -920,9 +912,11 @@ export class TimeOffRequestService {
           actor:
             role === 'hr'
               ? 'HR'
-              : role === 'coordinator'
-                ? 'Coordinator'
-                : 'System',
+              : role === 'management'
+                ? 'Management'
+                : role === 'coordinator'
+                  ? 'Coordinator'
+                  : 'System',
         });
       } catch (err) {
         this.logger.warn(

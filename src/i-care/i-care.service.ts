@@ -10,6 +10,9 @@ import { UpdateICareDto } from './dto/update-i-care.dto';
 import { CommitICareDto } from './dto/commit-i-care.dto';
 import { JustifyICareDto } from './dto/justify-i-care.dto';
 import { ResolveICareDto } from './dto/resolve-i-care.dto';
+import { ApproveCommitICareDto } from './dto/approve-commit-i-care.dto';
+import { AddSeguimientoICareDto } from './dto/add-seguimiento-i-care.dto';
+import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
 
@@ -29,12 +32,17 @@ export interface PaginatedResult<T> {
  *   POST /mailer-send/i-care/:id/:event  →  body: { recipients: string[] }
  *
  * Matriz de destinatarios por evento:
- *   created   → role 'hr' + role 'management' + responsible[]
- *   justified → staff_name + responsible[] + role 'management'
- *   committed → role 'hr' + responsible[] + role 'management'
- *   resolved  → staff_name + responsible[] + role 'management'
+ *   created_staff       → staff_name (quien creó el registro)
+ *   created_coordinator → responsible[] (coordinadores asignados, sin identidad del staff)
+ *   created_hr          → role 'hr' (con identidad completa)
+ *   created_management  → role 'management' (con identidad completa)
+ *   justified           → staff_name + responsible[] + role 'management'
+ *   committed           → role 'hr' + responsible[] + role 'management'
+ *   seguimiento_added   → staff_name + role 'hr' + role 'management'
+ *   commit_fulfilled    → staff_name + role 'hr' + role 'management'
+ *   resolved            → staff_name + responsible[] + role 'management'
  */
-type ICareEmailEvent = 'created' | 'justified' | 'committed' | 'resolved';
+type ICareEmailEvent = 'created_staff' | 'created_coordinator' | 'created_hr' | 'created_management' | 'justified' | 'committed' | 'seguimiento_added' | 'commit_fulfilled' | 'resolved';
 
 // ── Service ────────────────────────────────────────────────────────────────────
 
@@ -162,28 +170,37 @@ export class ICareService {
   }
 
   /**
-   * Trigger para el evento 'created'.
-   * Destinatarios: role 'hr' + role 'management' + responsible[].
-   *
-   * @param id     - UUID del iCare recién creado
-   * @param record - Registro completo del iCare (para extraer responsibles)
+   * Dispara los 4 emails de creación en paralelo:
+   *   created_staff       → quien creó el registro
+   *   created_coordinator → responsibles asignados (sin identidad del staff)
+   *   created_hr          → role 'hr' (con identidad completa)
+   *   created_management  → role 'management' (con identidad completa)
    */
-  private async triggerCreatedEmail(id: string, record: ICare): Promise<void> {
+  private async triggerCreatedEmails(id: string, record: ICare): Promise<void> {
     const [hrEmails, managementEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
     ]);
+
+    const staffEmail = record.submitter?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
 
-    const recipients = [
-      ...new Set([
-        ...hrEmails,
-        ...managementEmails,
-        ...coordinatorEmails,
-      ]),
-    ];
+    const sends: Promise<void>[] = [];
 
-    await this.triggerEmail(id, 'created', recipients);
+    if (staffEmail) {
+      sends.push(this.triggerEmail(id, 'created_staff', [staffEmail]));
+    }
+    if (coordinatorEmails.length > 0) {
+      sends.push(this.triggerEmail(id, 'created_coordinator', coordinatorEmails));
+    }
+    if (hrEmails.length > 0) {
+      sends.push(this.triggerEmail(id, 'created_hr', hrEmails));
+    }
+    if (managementEmails.length > 0) {
+      sends.push(this.triggerEmail(id, 'created_management', managementEmails));
+    }
+
+    await Promise.all(sends);
   }
 
   /**
@@ -260,6 +277,52 @@ export class ICareService {
     await this.triggerEmail(id, 'resolved', recipients);
   }
 
+  /**
+   * Trigger para el evento 'seguimiento_added'.
+   * Destinatarios: staff_name + role 'hr' + role 'management'.
+   * Se dispara cada vez que se agrega un seguimiento al registro.
+   */
+  private async triggerSeguimientoAddedEmail(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+    ]);
+    const staffEmail = record.staff_name?.nova_email ?? null;
+
+    const recipients = [
+      ...new Set([
+        ...(staffEmail ? [staffEmail] : []),
+        ...hrEmails,
+        ...managementEmails,
+      ]),
+    ];
+
+    await this.triggerEmail(id, 'seguimiento_added', recipients);
+  }
+
+  /**
+   * Trigger para el evento 'commit_fulfilled'.
+   * Destinatarios: staff_name + role 'hr' + role 'management'.
+   * Se dispara tanto en fulfill directo como después de seguimientos.
+   */
+  private async triggerCommitFulfilledEmail(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+    ]);
+    const staffEmail = record.staff_name?.nova_email ?? null;
+
+    const recipients = [
+      ...new Set([
+        ...(staffEmail ? [staffEmail] : []),
+        ...hrEmails,
+        ...managementEmails,
+      ]),
+    ];
+
+    await this.triggerEmail(id, 'commit_fulfilled', recipients);
+  }
+
   // ── Create ─────────────────────────────────────────────────────────────────
 
   /**
@@ -274,10 +337,10 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    // HR + Management + Responsibles reciben notificación al momento de la creación
-    this.triggerCreatedEmail(saved.id, saved).catch((err) =>
+    // 4 envíos separados: staff, coordinators, HR, Management
+    this.triggerCreatedEmails(saved.id, saved).catch((err) =>
       this.logger.error(
-        `❌ Failed to trigger 'created' email for id=${saved.id}`,
+        `❌ Failed to trigger created emails for id=${saved.id}`,
         err?.message || err,
       ),
     );
@@ -750,6 +813,13 @@ export class ICareService {
       ];
     }
 
+    if (dto.attachments?.length) {
+      record.justified_attachments = [
+        ...(record.justified_attachments ?? []),
+        ...dto.attachments,
+      ];
+    }
+
     // ✅ Antes solo avanzaba si justified=true, ahora también retrocede si es false
     if (dto.justified) {
       record.status = ICareStatus.IN_PROGRESS;
@@ -844,12 +914,158 @@ export class ICareService {
     record.resolved_time = now.format('HH:mm');
     record.resolved_notes = dto.resolved_notes ?? null;
 
+    if (dto.attachments?.length) {
+      record.resolved_attachments = [
+        ...(record.resolved_attachments ?? []),
+        ...dto.attachments,
+      ];
+    }
+
     const saved = await this.iCareRepository.save(record);
 
     // Notificar a Staff + Coordinator (responsible) + Management al resolver
     this.triggerResolvedEmail(saved.id, saved).catch((err) =>
       this.logger.error(
         `❌ Failed to trigger 'resolved' email for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+
+    return this.transformDates([saved])[0];
+  }
+
+  // ── ApproveCommit ──────────────────────────────────────────────────────────
+
+  /**
+   * Coordinator o HR aprueba el commit del staff y asigna el primer seguimiento.
+   * Coordinator solo puede actuar en Low y Medium urgency.
+   * HR y Management pueden actuar en cualquier urgencia.
+   * Cambia status a FOLLOWING_UP y notifica a: staff + responsible[] + management.
+   *
+   * @param id  - UUID del iCare
+   * @param dto - { approved_by, scheduled_date, notes? }
+   * @returns   - Registro actualizado
+   */
+  async approveCommit(id: string, dto: ApproveCommitICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    const now = moment().tz('America/Chicago');
+
+    record.commit_approved = true;
+    record.commit_approved_by = dto.approved_by;
+    record.commit_approved_date = now.format('YYYY-MM-DD');
+    record.commit_approved_time = now.format('HH:mm');
+    record.status = ICareStatus.FOLLOWING_UP;
+
+    // Primer seguimiento
+    const firstSeguimiento = {
+      id: `seg_${Date.now()}`,
+      scheduled_date: dto.scheduled_date,
+      actual_date: null,
+      notes: dto.notes ?? null,
+      added_by: dto.approved_by,
+      created_at: now.format('YYYY-MM-DD HH:mm'),
+    };
+
+    record.seguimientos = [firstSeguimiento];
+
+    const saved = await this.iCareRepository.save(record);
+
+    // En la ruta "con seguimiento", el primer seguimiento dispara el email.
+    // En "fulfill directo" (is_fulfill_direct=true) el email lo dispara fulfillCommit.
+    if (!dto.is_fulfill_direct) {
+      this.triggerSeguimientoAddedEmail(saved.id, saved).catch((err) =>
+        this.logger.error(
+          `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
+          err?.message || err,
+        ),
+      );
+    }
+
+    return this.transformDates([saved])[0];
+  }
+
+  // ── AddSeguimiento ─────────────────────────────────────────────────────────
+
+  /**
+   * Agrega un seguimiento adicional al array de seguimientos.
+   * Opcionalmente registra la fecha real del seguimiento anterior (actual_date).
+   * El status permanece en FOLLOWING_UP.
+   *
+   * @param id  - UUID del iCare
+   * @param dto - { added_by, scheduled_date, actual_date?, notes? }
+   * @returns   - Registro actualizado
+   */
+  async addSeguimiento(id: string, dto: AddSeguimientoICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    const now = moment().tz('America/Chicago');
+
+    const newSeguimiento = {
+      id: `seg_${Date.now()}`,
+      scheduled_date: dto.scheduled_date,
+      actual_date: dto.actual_date ?? null,
+      notes: dto.notes ?? null,
+      added_by: dto.added_by,
+      created_at: now.format('YYYY-MM-DD HH:mm'),
+      attachments: dto.attachments ?? [],
+    };
+
+    record.seguimientos = [...(record.seguimientos ?? []), newSeguimiento];
+
+    const saved = await this.iCareRepository.save(record);
+
+    this.triggerSeguimientoAddedEmail(saved.id, saved).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+
+    return this.transformDates([saved])[0];
+  }
+
+  // ── FulfillCommit ──────────────────────────────────────────────────────────
+
+  /**
+   * Coordinator o HR marca que todos los seguimientos se han completado.
+   * Cambia status a COMMIT_FULFILLED.
+   * Notifica a HR + responsible[] + management para que HR proceda a resolver.
+   *
+   * @param id  - UUID del iCare
+   * @param dto - { fulfilled_by, actual_date?, notes? }
+   * @returns   - Registro actualizado
+   */
+  async fulfillCommit(id: string, dto: FulfillCommitICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    const now = moment().tz('America/Chicago');
+
+    record.commit_fulfilled = true;
+    record.commit_fulfilled_by = dto.fulfilled_by;
+    record.commit_fulfilled_date = now.format('YYYY-MM-DD');
+    record.commit_fulfilled_time = now.format('HH:mm');
+    record.commit_fulfilled_notes = dto.notes ?? null;
+    record.status = ICareStatus.COMMIT_FULFILLED;
+
+    // Si se provee actual_date para el último seguimiento, actualizarlo
+    if (dto.actual_date && record.seguimientos?.length) {
+      const updated = [...record.seguimientos];
+      updated[updated.length - 1] = {
+        ...updated[updated.length - 1],
+        actual_date: dto.actual_date,
+      };
+      record.seguimientos = updated;
+    }
+
+    const saved = await this.iCareRepository.save(record);
+
+    this.triggerCommitFulfilledEmail(saved.id, saved).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'commit_fulfilled' email for id=${saved.id}`,
         err?.message || err,
       ),
     );

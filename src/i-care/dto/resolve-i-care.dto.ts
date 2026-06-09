@@ -1,6 +1,6 @@
 // dto/resolve-i-care.dto.ts
 import { Type } from 'class-transformer';
-import { IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
+import { IsArray, IsObject, IsOptional, IsString, ValidateNested } from 'class-validator';
 
 class EmployeeRefDto {
   @IsString() name: string;
@@ -18,4 +18,9 @@ export class ResolveICareDto {
   @IsOptional()
   @IsString()
   resolved_notes?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  attachments?: string[];
 }

@@ -10,6 +10,8 @@ export enum ICareStatus {
   PENDING = 'pending',
   IN_PROGRESS = 'in_progress',
   REJECTED = 'rejected',
+  FOLLOWING_UP = 'following_up',
+  COMMIT_FULFILLED = 'commit_fulfilled',
   SOLVED = 'solved',
 }
 
@@ -115,6 +117,9 @@ export class ICare {
   @Column('jsonb', { nullable: true, default: () => "'[]'" })
   justified_comments: string[];
 
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  justified_attachments: string[];
+
   // ─── Commitment fields ─────────────────────────────────────────────────────
   @Column({ type: 'boolean', default: false })
   committed: boolean;
@@ -130,6 +135,66 @@ export class ICare {
 
   @Column('jsonb', { nullable: true, default: () => "'[]'" })
   committed_attachments: string[];
+
+  // ─── Commit Approval fields ────────────────────────────────────────────────
+  /** Coordinator/HR que aprobó el commit del staff y asignó el primer seguimiento */
+  @Column({ type: 'boolean', default: false })
+  commit_approved: boolean;
+
+  @Column('jsonb', { nullable: true })
+  commit_approved_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  commit_approved_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  commit_approved_time: string | null;
+
+  // ─── Seguimientos (Follow-ups) ─────────────────────────────────────────────
+  /**
+   * Array de seguimientos asignados por el coordinator/HR.
+   * Cada entrada: { id, scheduled_date, actual_date, notes, added_by, created_at }
+   */
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  seguimientos: Array<{
+    id: string;
+    scheduled_date: string;
+    actual_date: string | null;
+    notes: string | null;
+    added_by: {
+      name: string;
+      last_name: string;
+      employee_number: string;
+      nova_email: string;
+    };
+    created_at: string;
+  }>;
+
+  // ─── Commit Fulfilled fields ───────────────────────────────────────────────
+  @Column({ type: 'boolean', default: false })
+  commit_fulfilled: boolean;
+
+  @Column('jsonb', { nullable: true })
+  commit_fulfilled_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  commit_fulfilled_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  commit_fulfilled_time: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  commit_fulfilled_notes: string | null;
 
   // ─── Resolution fields ─────────────────────────────────────────────────────
   /** HR que resolvió el caso */
@@ -149,6 +214,9 @@ export class ICare {
 
   @Column({ type: 'text', nullable: true })
   resolved_notes: string | null;
+
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  resolved_attachments: string[];
 
   // ─── Timestamps ────────────────────────────────────────────────────────────
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })

@@ -1,7 +1,7 @@
 // dto/justify-i-care.dto.ts
 import { Type } from 'class-transformer';
 import {
-  IsBoolean, IsObject, IsOptional,
+  IsArray, IsBoolean, IsObject, IsOptional,
   IsString, ValidateNested,
 } from 'class-validator';
 
@@ -24,4 +24,9 @@ export class JustifyICareDto {
   @IsOptional()
   @IsString()
   comment?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  attachments?: string[];
 }
