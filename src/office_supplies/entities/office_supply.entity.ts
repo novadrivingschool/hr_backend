@@ -82,4 +82,7 @@ export class OfficeSupply {
   @Column({ type: 'text', nullable: true })
   employee_number: string | null
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  requesterNovaEmail: string | null
+
 }

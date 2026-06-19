@@ -25,6 +25,9 @@ import { ResolveICareDto } from './dto/resolve-i-care.dto';
 import { ApproveCommitICareDto } from './dto/approve-commit-i-care.dto';
 import { AddSeguimientoICareDto } from './dto/add-seguimiento-i-care.dto';
 import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
+import { CoordinatorRejectICareDto } from './dto/coordinator-reject-i-care.dto';
+import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
+import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
 import { ICareStatus, ICareUrgency } from './entities/i-care.entity';
 
 @Controller('i-care')
@@ -385,6 +388,76 @@ export class ICareController {
       return await this.iCareService.fulfillCommit(id, dto);
     } catch (error) {
       console.error('Error fulfilling commit for ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/coordinator-reject ───────────────────────────────────
+  // Coordinator rechaza un iCare en estado pending.
+  // Status → rejection_under_review. Notifica a HR + Management.
+
+  @Patch(':id/coordinator-reject')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async coordinatorReject(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CoordinatorRejectICareDto,
+  ) {
+    try {
+      return await this.iCareService.coordinatorReject(id, dto);
+    } catch (error) {
+      console.error('Error rejecting ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/hr-reject ────────────────────────────────────────────
+  // HR / Management rechaza definitivamente un iCare en estado pending.
+  // Status → REJECTED directo (sin pasar por rejection_under_review).
+  // Notifica a Coordinator + Staff.
+
+  @Patch(':id/hr-reject')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async hrDirectReject(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: HrRejectICareDto,
+  ) {
+    try {
+      return await this.iCareService.hrDirectReject(id, dto);
+    } catch (error) {
+      console.error('Error in HR direct reject for ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/review-rejection ─────────────────────────────────────
+  // HR / Management revisa el rejected del coordinator.
+  // accept=true → REJECTED final. accept=false → override, vuelve a PENDING.
+
+  @Patch(':id/review-rejection')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async reviewRejection(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReviewRejectionICareDto,
+  ) {
+    try {
+      return await this.iCareService.reviewRejection(id, dto);
+    } catch (error) {
+      console.error('Error reviewing rejection for ICare record:', id, error);
       throw error;
     }
   }

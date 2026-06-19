@@ -1896,7 +1896,8 @@ export class PayrollService {
     const baseUrl = process.env.ACCOUNTING_API;
 
     if (!baseUrl) {
-      throw new InternalServerErrorException('ACCOUNTING_API is not defined');
+      console.warn('⚠️ fetchRatesByDateRange: ACCOUNTING_API no está definida, retornando mapa vacío');
+      return new Map();
     }
 
     try {
@@ -1941,9 +1942,8 @@ export class PayrollService {
 
       return ratesMap;
     } catch (error: any) {
-      throw new InternalServerErrorException(
-        `Error fetching rate seasons from ACCOUNTING_API: ${error.message}`,
-      );
+      console.error('⚠️ fetchRatesByDateRange falló:', error.message);
+      return new Map();
     }
   }
 
@@ -2504,6 +2504,8 @@ export class PayrollService {
       compensationMap,
       ratesMap,
       commissionsMap,
+      arDaily,
+      voutScheduleDaily,
     ] = await Promise.all([
       this.fetchAdvancedRequests(start_date, end_date),
       this.fetchTcwDailyData(empList, start_date, end_date),
@@ -2511,6 +2513,10 @@ export class PayrollService {
       this.fetchCompensations(employeeNumbers, start_date, end_date),
       this.fetchRatesByDateRange(start_date, end_date),
       this.fetchCommissions(employeeNumbers, start_date, end_date),
+      this.fetchActivityReportDailyData(empList, start_date, end_date).catch(() => ({
+        merged_by_employee: {}, one_by_employee: {}, vout_by_employee: {}, totals_one: {}, totals_vout: {},
+      })),
+      this.fetchVoutScheduleDailyData(empList, start_date, end_date).catch(() => ({ by_employee: {} })),
     ]);
 
     const holidaysNormalized = holidaysInRange.map((h) => ({
@@ -2539,7 +2545,7 @@ export class PayrollService {
     const eventsByEmployee: Record<string, {
       timeOffHours: number; extraHours: number;
       timeOffCount: number; extraHoursCount: number;
-      timeOffDetails: Array<{ date: string; start: string; end: string; total_hours: number }>;
+      timeOffDetails: Array<{ date: string; start: string; end: string; total_hours: number; will_make_up_hours: boolean; deducted_hours: number }>;
       extraHoursDetails: Array<{ date: string; start: string; end: string; total_hours: number }>;
     }> = {};
 
@@ -2557,10 +2563,17 @@ export class PayrollService {
       const fStart = this.formatToChicago(ev.date, ev.start);
       const fEnd   = this.formatToChicago(ev.date, ev.end);
       if (ev.register === RegisterEnum.TIME_OFF_REQUEST) {
-        const applied = Math.min(h, 8);
-        eventsByEmployee[n].timeOffHours += applied;
+        const willMakeUp = ev.will_make_up_hours === true;
+        const rawHours = Math.min(h, 8);
+        const applied = willMakeUp ? 0 : rawHours;
         eventsByEmployee[n].timeOffCount += 1;
-        eventsByEmployee[n].timeOffDetails.push({ date: ev.date, start: fStart, end: fEnd, total_hours: Number(applied.toFixed(2)) });
+        if (!willMakeUp) eventsByEmployee[n].timeOffHours += applied;
+        eventsByEmployee[n].timeOffDetails.push({
+          date: ev.date, start: fStart, end: fEnd,
+          total_hours: Number(rawHours.toFixed(2)),
+          will_make_up_hours: willMakeUp,
+          deducted_hours: Number(applied.toFixed(2)),
+        });
       } else {
         const appliedExtra = h > 8 ? h - 1 : h;
         eventsByEmployee[n].extraHours += appliedExtra;
@@ -2616,11 +2629,28 @@ export class PayrollService {
 
         const payableHours = authorizedHours;
 
+        const allShifts = (d.shifts ?? []) as Array<{ customer: string | null; hours: number }>;
+        const novaShifts = allShifts.filter(s => !String(s.customer || '').toLowerCase().includes('vout'));
+
+        // VOUT shifts come from the VOUT API schedule (not the NOVA master schedule)
+        const voutScheduleDayData = (voutScheduleDaily.by_employee as any)?.[employeeNumber]?.[d.date];
+        const voutDayHours = round(Number(voutScheduleDayData?.shift_hours ?? 0));
+        const voutShifts: Array<{ customer: string | null; hours: number }> =
+          voutDayHours > 0 ? [{ customer: 'vout', hours: voutDayHours }] : [];
+
+        const tcwDayData = (tcwDaily.by_employee as any)?.[employeeNumber]?.[d.date];
+        const arNovaDayData = (arDaily.one_by_employee as any)?.[employeeNumber]?.[d.date];
+        const arVoutDayData = (arDaily.vout_by_employee as any)?.[employeeNumber]?.[d.date];
+
         return {
           date: d.date,
           is_holiday: d.is_holiday ?? false,
           season: isSeasonDay(d.date),
-          shifts: (d.shifts ?? []) as Array<{ customer: string | null; hours: number }>,
+          nova_shifts: novaShifts,
+          vout_shifts: voutShifts,
+          tcw_hours: round(Number(tcwDayData?.worked_hours ?? 0)),
+          ar_nova_hours: round(Number(arNovaDayData?.worked_hours ?? 0)),
+          ar_vout_hours: round(Number(arVoutDayData?.worked_hours ?? 0)),
           payroll_day: {
             authorized_hours: authorizedHours,
             authorized_lunch_hours: authorizedLunchHours,
@@ -2647,7 +2677,11 @@ export class PayrollService {
           date: d.date,
           is_holiday: true,
           season: isSeasonDay(d.date),
-          shifts: [] as Array<{ customer: string | null; hours: number }>,
+          nova_shifts: [] as Array<{ customer: string | null; hours: number }>,
+          vout_shifts: [] as Array<{ customer: string | null; hours: number }>,
+          tcw_hours: 0,
+          ar_nova_hours: 0,
+          ar_vout_hours: 0,
           payroll_day: {
             authorized_hours: authorizedHours,
             authorized_lunch_hours: round(d.lunch_hours ?? 0),
@@ -2670,14 +2704,14 @@ export class PayrollService {
       authWork  = round(authWork);
       authLunch = round(authLunch);
 
-      // TCW hours summary
-      let tcwWork = 0, tcwLunch = 0;
-      for (const day of Object.values(tcwDaily.by_employee?.[employeeNumber] ?? {}) as any[]) {
-        tcwWork  += Number(day?.worked_hours ?? 0);
-        tcwLunch += Number(day?.lunch_total_hours ?? 0);
-      }
-      tcwWork  = round(tcwWork);
-      tcwLunch = round(tcwLunch);
+      // TCW hours summary — usar el total pre-computado (raw, sin redondeo por día)
+      // para que coincida con el frontend que también acumula sin redondear cada día
+      let tcwWork = round(tcwDaily.totals?.[employeeNumber]?.total_hours ?? 0);
+      let tcwLunch = round(
+        Object.values(tcwDaily.by_employee?.[employeeNumber] ?? {}).reduce(
+          (s: number, day: any) => s + Number(day?.lunch_total_hours ?? 0), 0,
+        ),
+      );
 
       // days_amount correcto: suma de day_payable_amount
       const daysAmount = round(
@@ -2689,11 +2723,12 @@ export class PayrollService {
         const internalRate = totalAuthorizedHoursForPeriod > 0
           ? getRateForDay(detail.date) / totalAuthorizedHoursForPeriod
           : 0;
+        const deductedHours = detail.deducted_hours ?? detail.total_hours;
         return {
           ...detail,
           season: isSeasonDay(detail.date),
           internal_rate_per_hour: internalRate,
-          calculated_total: round(detail.total_hours * internalRate),
+          calculated_total: round(deductedHours * internalRate),
         };
       });
 
@@ -3043,12 +3078,146 @@ export class PayrollService {
     return bestScore >= 0.75 ? bestEmployeeNumber : null;
   }
 
+  private async fetchVoutScheduleDailyData(
+    employees: Array<{ employee_number: string; name: string; last_name: string }>,
+    start_date: string,
+    end_date: string,
+  ): Promise<{ by_employee: Record<string, Record<string, { shift_hours: number }>> }> {
+    const voutApi = process.env.VOUT_API || '';
+    const internalKey = process.env.INTERNAL_API_KEY || 'nova-hr-internal-2026';
+
+    if (!voutApi) {
+      console.warn('[fetchVoutScheduleDailyData] VOUT_API not configured');
+      return { by_employee: {} };
+    }
+
+    try {
+      const resp = await axios.post(
+        `${voutApi}/internal/employee-schedule/panel/filter`,
+        { start_date, end_date },
+        { headers: { 'x-internal-key': internalKey }, timeout: 15_000 },
+      );
+
+      const { employees: voutEmployees = [], events = [], fixed = [] } = resp.data ?? {};
+
+      // Map VOUT employee_number → NOVA employee_number via name matching
+      const voutToNova: Record<string, string> = {};
+      for (const ve of voutEmployees) {
+        const novaNum = this.findBestEmployeeNumberFromName(employees, ve.name);
+        if (novaNum) voutToNova[ve.employee_number] = novaNum;
+      }
+
+      const byEmployee: Record<string, Record<string, { shift_hours: number }>> = {};
+      const addHours = (novaNum: string, date: string, hours: number) => {
+        if (!byEmployee[novaNum]) byEmployee[novaNum] = {};
+        if (!byEmployee[novaNum][date]) byEmployee[novaNum][date] = { shift_hours: 0 };
+        byEmployee[novaNum][date].shift_hours = Number(
+          (byEmployee[novaNum][date].shift_hours + hours).toFixed(2),
+        );
+      };
+
+      // ── Variable events ──────────────────────────────────────────────────
+      // Group Work Shift events by (employeeNumber, date)
+      const workEventsByKey: Record<string, any[]> = {};
+      const lunchEventsByKey: Record<string, any[]> = {};
+      for (const ev of events) {
+        const key = `${ev.employeeNumber}|${ev.date}`;
+        if (ev.register === 'Work Shift') {
+          if (!workEventsByKey[key]) workEventsByKey[key] = [];
+          workEventsByKey[key].push(ev);
+        } else if (ev.register === 'Lunch') {
+          if (!lunchEventsByKey[key]) lunchEventsByKey[key] = [];
+          lunchEventsByKey[key].push(ev);
+        }
+      }
+
+      const empNumsWithEventsByDate: Record<string, Set<string>> = {};
+      for (const ev of events) {
+        if (ev.register !== 'Work Shift') continue;
+        if (!empNumsWithEventsByDate[ev.employeeNumber])
+          empNumsWithEventsByDate[ev.employeeNumber] = new Set();
+        empNumsWithEventsByDate[ev.employeeNumber].add(ev.date);
+      }
+
+      for (const [key, workEvs] of Object.entries(workEventsByKey)) {
+        const [voutEmpNum, date] = key.split('|');
+        const novaNum = voutToNova[voutEmpNum];
+        if (!novaNum) continue;
+
+        const lunchEvs = lunchEventsByKey[key] ?? [];
+        const totalRaw = workEvs.reduce(
+          (sum, e) => sum + this.calculateHours(e.start, e.end), 0,
+        );
+        const lunchDeducted = lunchEvs.reduce(
+          (sum, e) => sum + this.calculateHours(e.start, e.end), 0,
+        );
+        const hours = Math.max(0, totalRaw - lunchDeducted);
+        if (hours > 0) addHours(novaNum, date, hours);
+      }
+
+      // ── Fixed schedules: iterate every date in range ─────────────────────
+      const startDt = new Date(`${start_date}T00:00:00`);
+      const endDt = new Date(`${end_date}T00:00:00`);
+
+      for (const d = new Date(startDt); d <= endDt; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split('T')[0];
+        // ISO weekday: 1=Mon..7=Sun (JS getDay(): 0=Sun..6=Sat)
+        const isoWeekday = d.getDay() === 0 ? 7 : d.getDay();
+
+        for (const voutEmpNum of Object.keys(voutToNova)) {
+          const novaNum = voutToNova[voutEmpNum];
+
+          // Skip if there are variable events for this employee on this date
+          if (empNumsWithEventsByDate[voutEmpNum]?.has(dateStr)) continue;
+
+          const empFixed = fixed.filter((f: any) => f.employeeNumber === voutEmpNum);
+
+          const workShifts = empFixed.filter(
+            (f: any) =>
+              f.register === 'Work Shift' &&
+              Array.isArray(f.weekdays) &&
+              f.weekdays.includes(isoWeekday) &&
+              f.startDate <= dateStr &&
+              (f.endDate == null || f.endDate >= dateStr),
+          );
+          if (!workShifts.length) continue;
+
+          const lunchFixed = empFixed.find(
+            (f: any) =>
+              f.register === 'Lunch' &&
+              Array.isArray(f.weekdays) &&
+              f.weekdays.includes(isoWeekday) &&
+              f.startDate <= dateStr &&
+              (f.endDate == null || f.endDate >= dateStr),
+          );
+
+          const totalRaw = workShifts.reduce(
+            (sum: number, f: any) => sum + this.calculateTimeDiff(f.start, f.end), 0,
+          );
+          const lunchDeducted = lunchFixed
+            ? this.calculateTimeDiff(lunchFixed.start, lunchFixed.end)
+            : 0;
+
+          const hours = Math.max(0, totalRaw - lunchDeducted);
+          if (hours > 0) addHours(novaNum, dateStr, hours);
+        }
+      }
+
+      return { by_employee: byEmployee };
+    } catch (err: any) {
+      console.error('[fetchVoutScheduleDailyData] Error:', err?.message);
+      return { by_employee: {} };
+    }
+  }
+
   private async fetchActivityReportDailyData(
     employees: Array<{ employee_number: string; name: string; last_name: string }>,
     start_date: string,
     end_date: string,
   ): Promise<{
     merged_by_employee: Record<string, Record<string, any>>;
+    one_by_employee: Record<string, Record<string, any>>;
+    vout_by_employee: Record<string, Record<string, any>>;
     totals_one: Record<string, { total_hours: number; total_minutes: number }>;
     totals_vout: Record<string, { total_hours: number; total_minutes: number }>;
   }> {
@@ -3342,12 +3511,64 @@ export class PayrollService {
 
     return {
       merged_by_employee: mergedByEmployee,
+      one_by_employee: oneByEmployee,
+      vout_by_employee: voutByEmployee,
       totals_one: buildTotals(oneByEmployee),
       totals_vout: buildTotals(voutByEmployee),
     };
   }
 
-  private async fetchTcwDailyData(
+  /**
+   * Returns flat daily TCW rows keyed by raw employee name (no matching needed).
+   * Used by external services (e.g. vout-api) that do their own name matching.
+   */
+  async getTcwDailyRows(
+    start_date: string,
+    end_date: string,
+  ): Promise<Array<{ employee_name: string; date: string; worked_hours: number }>> {
+    try {
+      const rows = await this.timesheetRepository
+        .createQueryBuilder('t')
+        .where('t.day_date >= :start_date::date', { start_date })
+        .andWhere('t.day_date <= :end_date::date', { end_date })
+        .orderBy('t.day_date', 'ASC')
+        .addOrderBy('t.employee', 'ASC')
+        .getMany();
+
+      const toNumber = (v: any) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+      const normalizeDate = (v: any): string | null => {
+        if (!v) return null;
+        if (typeof v === 'string') return v.slice(0, 10);
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return null;
+        return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      };
+
+      // Group by employee+date, accumulate hours (same logic as fetchTcwDailyData)
+      const map: Record<string, Record<string, number>> = {};
+      for (const row of rows) {
+        const name = String(row.employee || '').trim();
+        const date = normalizeDate(row.day_date);
+        if (!name || !date) continue;
+        const hours = this.round2(Math.max(toNumber(row.hours), toNumber(row.day_wise_total_hours)));
+        if (!map[name]) map[name] = {};
+        map[name][date] = this.round2(Math.max(map[name][date] ?? 0, hours));
+      }
+
+      const result: Array<{ employee_name: string; date: string; worked_hours: number }> = [];
+      for (const [employee_name, dayMap] of Object.entries(map)) {
+        for (const [date, worked_hours] of Object.entries(dayMap)) {
+          result.push({ employee_name, date, worked_hours });
+        }
+      }
+      return result;
+    } catch (err: any) {
+      console.error('[getTcwDailyRows] error:', err?.message);
+      return [];
+    }
+  }
+
+  async fetchTcwDailyData(
     employees: Array<{ employee_number: string; name: string; last_name: string }>,
     start_date: string,
     end_date: string,
@@ -3367,6 +3588,9 @@ export class PayrollService {
 
       const byEmployee: Record<string, Record<string, any>> = {};
       const totals: Record<string, { total_hours: number }> = {};
+      // Acumulador raw por empleado: suma r.hours sin redondear por registro,
+      // igual que lo hace el frontend en HrsAutorizadas (fuente de verdad).
+      const rawHoursSumByEmployee: Record<string, number> = {};
 
       const toNumber = (value: any): number => {
         const n = Number(value);
@@ -3423,6 +3647,10 @@ export class PayrollService {
 
         const date = normalizeDate(row.day_date);
         if (!date) continue;
+
+        // Acumular r.hours igual que el frontend: sin max ni redondeo por registro
+        rawHoursSumByEmployee[employeeNumber] =
+          (rawHoursSumByEmployee[employeeNumber] ?? 0) + toNumber(row.hours);
 
         if (!byEmployee[employeeNumber]) {
           byEmployee[employeeNumber] = {};
@@ -3514,14 +3742,11 @@ export class PayrollService {
         byEmployee[employeeNumber][date] = current;
       }
 
-      Object.entries(byEmployee).forEach(([employeeNumber, days]) => {
+      Object.entries(byEmployee).forEach(([employeeNumber]) => {
+        // Total usando r.hours raw (misma fuente y lógica que HrsAutorizadas):
+        // sum de todos los registros sin redondeo intermedio, redondeo una sola vez al final.
         totals[employeeNumber] = {
-          total_hours: this.round2(
-            Object.values(days).reduce(
-              (sum: number, row: any) => sum + Number(row?.worked_hours ?? 0),
-              0,
-            ),
-          ),
+          total_hours: this.round2(rawHoursSumByEmployee[employeeNumber] ?? 0),
         };
       });
 

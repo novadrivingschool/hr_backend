@@ -10,6 +10,7 @@ class EmployeeRefDto {
   @IsString() last_name: string;
   @IsString() employee_number: string;
   @IsString() nova_email: string;
+  @IsOptional() @IsArray() @IsString({ each: true }) roles?: string[];
 }
 
 export class JustifyICareDto {

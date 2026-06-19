@@ -14,6 +14,9 @@ export class ICareReason {
     @Column({ type: 'text', nullable: true })
     description: string;
 
+    @Column({ type: 'text', array: true, default: '{All}' })
+    applies_to: string[];
+
     @CreateDateColumn()
     createdAt: Date;
 

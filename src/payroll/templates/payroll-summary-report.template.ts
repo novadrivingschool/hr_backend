@@ -158,6 +158,10 @@ export function buildSummaryEmployeeHtml(emp: any): string {
         .hours-chip--payable .hours-chip__value { color: #15803d; }
         .hours-chip--total { background: #eef2ff; border-color: #c7d2fe; }
         .hours-chip--total .hours-chip__value { color: #4338ca; }
+        .hours-chip--timeoff { background: #fdecec; border-color: #f1b0b0; }
+        .hours-chip--timeoff .hours-chip__value { color: #c0392b; }
+        .hours-chip--extra { background: #f3e9fb; border-color: #d3aee8; }
+        .hours-chip--extra .hours-chip__value { color: #6a1b9a; }
         .source-badge {
           display: inline-block; padding: 3px 8px; border-radius: 6px;
           font-size: 10px; font-weight: 700;
@@ -247,13 +251,13 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                 <span class="hours-chip__label">TCW Hrs</span>
                 <span class="hours-chip__value">${num(totals?.time_clock_wizard_hours).toFixed(2)}</span>
               </div>
-              <div class="hours-chip">
+              <div class="hours-chip hours-chip--timeoff">
                 <span class="hours-chip__label">Time Off Hrs</span>
-                <span class="hours-chip__value">${num(totals?.time_off_hours).toFixed(2)}</span>
+                <span class="hours-chip__value">&minus;${num(totals?.time_off_hours).toFixed(2)}</span>
               </div>
-              <div class="hours-chip">
+              <div class="hours-chip hours-chip--extra">
                 <span class="hours-chip__label">Extra Hrs</span>
-                <span class="hours-chip__value">${num(totals?.extra_hours_hours).toFixed(2)}</span>
+                <span class="hours-chip__value">+${num(totals?.extra_hours_hours).toFixed(2)}</span>
               </div>
               <div class="hours-chip hours-chip--total">
                 <span class="hours-chip__label">Auth. + Adjust.</span>
@@ -317,32 +321,65 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                 <thead>
                   <tr>
                     <th>Date</th>
-                    <th>Holiday</th>
-                    <th>Season</th>
-                    <th>Shifts (Nova / Vout)</th>
-                    <th class="text-right">Auth. Hrs</th>
-                    <th class="text-right">Payable Hrs</th>
+                    <th>Type</th>
+                    <th class="text-right">Nova Sched.</th>
+                    <th class="text-right">Vout Sched.</th>
+                    <th class="text-right">AR Nova</th>
+                    <th class="text-right">AR Vout</th>
+                    <th class="text-right">TCW</th>
                     <th class="text-right">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${scheduleDetails.map((day: any) => {
-                    const shifts = Array.isArray(day?.shifts) ? day.shifts : [];
-                    const shiftsText = shifts.length
-                      ? shifts.map((s: any) => `${esc(s?.customer || '—')}: ${num(s?.hours).toFixed(2)}h`).join(' | ')
-                      : '—';
-                    return `
-                      <tr class="${day?.is_holiday ? 'holiday-row' : day?.season ? 'season-row' : ''}">
-                        <td class="nowrap">${esc(day?.date)}</td>
-                        <td>${day?.is_holiday ? `<span class="tag tag-holiday">${esc(day?.holiday_name || 'Holiday')}</span>` : '—'}</td>
-                        <td>${day?.season ? '<span class="tag tag-season">Seasonal</span>' : '<span class="tag tag-office">Office</span>'}</td>
-                        <td>${esc(shiftsText)}</td>
-                        <td class="text-right nowrap">${fmtHoursMaybe(day?.payroll_day?.authorized_hours)}</td>
-                        <td class="text-right nowrap">${fmtHoursMaybe(day?.payroll_day?.payable_hours)}</td>
-                        <td class="text-right nowrap">${fmtMoneyMaybe(day?.payroll_day?.day_payable_amount)}</td>
+                  ${(() => {
+                    let totalNovaSchedH = 0, totalVoutSchedH = 0;
+                    let totalArNova = 0, totalArVout = 0, totalTcwH = 0, totalAmount = 0;
+                    const rows = scheduleDetails.map((day: any) => {
+                      const novaShifts = Array.isArray(day?.nova_shifts) ? day.nova_shifts : [];
+                      const voutShifts = Array.isArray(day?.vout_shifts) ? day.vout_shifts : [];
+                      const novaSchedH = novaShifts.reduce((s: number, sh: any) => s + num(sh?.hours), 0);
+                      const voutSchedH = voutShifts.reduce((s: number, sh: any) => s + num(sh?.hours), 0);
+                      const arNova    = num(day?.ar_nova_hours);
+                      const arVout    = num(day?.ar_vout_hours);
+                      const tcwH      = num(day?.tcw_hours);
+                      const amount    = num(day?.payroll_day?.day_payable_amount);
+                      totalNovaSchedH += novaSchedH;
+                      totalVoutSchedH += voutSchedH;
+                      totalArNova     += arNova;
+                      totalArVout     += arVout;
+                      totalTcwH       += tcwH;
+                      totalAmount     += amount;
+                      const typeTag = day?.is_holiday
+                        ? '<span class="tag tag-holiday">' + esc(day?.holiday_name || 'Holiday') + '</span>'
+                        : day?.season
+                          ? '<span class="tag tag-season">Seasonal</span>'
+                          : '<span class="tag tag-office">Office</span>';
+                      return `
+                        <tr class="${day?.is_holiday ? 'holiday-row' : day?.season ? 'season-row' : ''}">
+                          <td class="nowrap">${esc(day?.date)}</td>
+                          <td>${typeTag}</td>
+                          <td class="text-right nowrap">${novaSchedH > 0 ? fmtHours(novaSchedH) : '—'}</td>
+                          <td class="text-right nowrap">${voutSchedH > 0 ? fmtHours(voutSchedH) : '—'}</td>
+                          <td class="text-right nowrap">${arNova > 0 ? fmtHours(arNova) : '—'}</td>
+                          <td class="text-right nowrap">${arVout > 0 ? fmtHours(arVout) : '—'}</td>
+                          <td class="text-right nowrap">${tcwH > 0 ? fmtHours(tcwH) : '—'}</td>
+                          <td class="text-right nowrap">${amount > 0 ? fmtMoney(amount) : '—'}</td>
+                        </tr>
+                      `;
+                    });
+                    const totalsRow = `
+                      <tr style="background:#f1f5f9;font-weight:700;border-top:2px solid #cbd5e1;">
+                        <td class="nowrap" colspan="2" style="font-size:10px;color:#334155;text-transform:uppercase;letter-spacing:0.5px;">TOTAL</td>
+                        <td class="text-right nowrap">${totalNovaSchedH > 0 ? fmtHours(totalNovaSchedH) : '—'}</td>
+                        <td class="text-right nowrap">${totalVoutSchedH > 0 ? fmtHours(totalVoutSchedH) : '—'}</td>
+                        <td class="text-right nowrap">${totalArNova > 0 ? fmtHours(totalArNova) : '—'}</td>
+                        <td class="text-right nowrap">${totalArVout > 0 ? fmtHours(totalArVout) : '—'}</td>
+                        <td class="text-right nowrap">${num(totals?.time_clock_wizard_hours) > 0 ? fmtHours(num(totals?.time_clock_wizard_hours)) : '—'}</td>
+                        <td class="text-right nowrap">${totalAmount > 0 ? fmtMoney(totalAmount) : '—'}</td>
                       </tr>
                     `;
-                  }).join('')}
+                    return rows.join('') + totalsRow;
+                  })()}
                 </tbody>
               </table>
             ` : emptyInline('No daily log in this payroll period.')}
@@ -355,14 +392,15 @@ export function buildSummaryEmployeeHtml(emp: any): string {
               <div class="box-subtitle">${esc(emp?.time_off?.total_requests ?? 0)} requests · ${fmtHours(emp?.time_off?.total_hours)}</div>
               ${timeOffDetails.length ? `
                 <table>
-                  <thead><tr><th>Date</th><th>Season</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
+                  <thead><tr><th>Date</th><th>Season</th><th>Status</th><th class="text-right">Hrs</th><th class="text-right">Deducted</th></tr></thead>
                   <tbody>
                     ${timeOffDetails.map((d: any) => `
                       <tr>
                         <td class="nowrap">${esc(d?.date)}</td>
                         <td>${d?.season ? '<span class="tag tag-season">Seasonal</span>' : '<span class="tag tag-office">Office</span>'}</td>
+                        <td>${d?.will_make_up_hours ? '<span class="tag" style="background:#f0fdf4;color:#166534;border-color:#bbf7d0">Recovery</span>' : '<span class="tag" style="background:#fff7f7;color:#b91c1c;border-color:#fecaca">Deducted</span>'}</td>
                         <td class="text-right">${fmtHours(d?.total_hours)}</td>
-                        <td class="text-right ${moneyClass(d?.calculated_total, 'red')}">${fmtMoney(d?.calculated_total)}</td>
+                        <td class="text-right ${d?.will_make_up_hours ? '' : moneyClass(d?.calculated_total, 'red')}">${d?.will_make_up_hours ? '—' : fmtMoney(d?.calculated_total)}</td>
                       </tr>
                     `).join('')}
                   </tbody>

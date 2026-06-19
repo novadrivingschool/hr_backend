@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsArray } from 'class-validator';
 
 export class CreateICareReasonDto {
     @IsString()
@@ -12,4 +12,9 @@ export class CreateICareReasonDto {
     @IsString()
     @IsOptional()
     description?: string;
+
+    @IsArray()
+    @IsString({ each: true })
+    @IsOptional()
+    applies_to?: string[];
 }

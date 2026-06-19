@@ -382,7 +382,6 @@ export class Employee {
     @Column({ type: 'boolean', default: false, nullable: true }) has_assigned_equipment: boolean;
     @Column({ type: 'boolean', default: false, nullable: true }) had_assigned_equipment: boolean;
 
-
     @OneToOne(() => EmployeeAccounting, (employeeAccounting) => employeeAccounting.employee)
     employeeAccounting: EmployeeAccounting;
 }

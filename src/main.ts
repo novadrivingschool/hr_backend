@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common'
+import { json, urlencoded } from 'express'
 
 console.log('Environment Variables:', JSON.stringify(process.env, null, 2)); // Depurar variables de entorno
 
@@ -8,7 +9,11 @@ async function bootstrap() {
   console.log('🕒 Backend timezone check:', new Date().toString());
   console.log('🕒 ISO:', new Date().toISOString());
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
+
+  // Body parser con límite alto (el Excel de Horas Autorizadas envía la matriz completa)
+  app.use(json({ limit: '25mb' }));
+  app.use(urlencoded({ extended: true, limit: '25mb' }));
 
   // Middleware personalizado para configurar CORS manualmente
   app.use((req, res, next) => {

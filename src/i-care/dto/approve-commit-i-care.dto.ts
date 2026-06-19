@@ -1,7 +1,7 @@
 // dto/approve-commit-i-care.dto.ts
 import { Type } from 'class-transformer';
 import {
-  IsBoolean, IsObject, IsOptional, IsString,
+  IsArray, IsBoolean, IsObject, IsOptional, IsString,
   Matches, MaxLength, ValidateNested,
 } from 'class-validator';
 
@@ -39,6 +39,11 @@ export class ApproveCommitICareDto {
    * El servicio omitirá el email 'commit_approved' y dejará que
    * el llamado posterior a fulfillCommit dispare 'commit_fulfilled'.
    */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  attachments?: string[];
+
   @IsOptional()
   @IsBoolean()
   is_fulfill_direct?: boolean;

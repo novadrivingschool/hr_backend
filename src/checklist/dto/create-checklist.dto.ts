@@ -3,6 +3,7 @@ import {
   IsNotEmpty,
   IsDateString,
   IsObject,
+  IsOptional,
   ValidateNested,
   IsInt,
   Min,
@@ -46,4 +47,8 @@ export class CreateChecklistDto {
   @ValidateNested()
   @Type(() => MetaDto)
   _meta: MetaDto
+
+  @IsOptional()
+  @IsString()
+  submitterNovaEmail?: string | null
 }

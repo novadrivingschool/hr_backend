@@ -262,6 +262,22 @@ export class PayrollController {
     };
   }
 
+  /**
+   * Lightweight endpoint: daily TCW data direct from Timesheet entity.
+   * No external API calls — safe to call from other services.
+   */
+  @Post('timesheets/tcw-daily')
+  async getTcwDaily(
+    @Body() body: { start_date: string; end_date: string },
+  ) {
+    const { start_date, end_date } = body;
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+    const rows = await this.payrollService.getTcwDailyRows(start_date, end_date);
+    return { ok: true, rows };
+  }
+
   @Post('timesheets/clock-comparison/detail')
   async getClockComparisonDetail(
     @Body() body: {

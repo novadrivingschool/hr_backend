@@ -40,6 +40,10 @@ export class Checklist {
     @UpdateDateColumn({ type: 'timestamp with time zone' })
     updatedAt: Date
 
+    // nova_email del responsable (para notificaciones)
+    @Column({ type: 'varchar', length: 255, nullable: true })
+    submitterNovaEmail: string | null
+
     // Borrado lógico opcional (no expuesto por ahora)
     @Column({ type: 'boolean', default: false })
     deleted: boolean

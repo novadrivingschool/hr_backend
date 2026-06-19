@@ -1,4 +1,4 @@
-// dto/fulfill-commit-i-care.dto.ts
+// dto/hr-reject-i-care.dto.ts
 import { Type } from 'class-transformer';
 import {
   IsArray, IsObject, IsOptional, IsString,
@@ -13,20 +13,15 @@ class EmployeeRefDto {
 }
 
 /**
- * DTO para marcar el commit como cumplido (commit_fulfilled).
- * Coordinator/HR decide que no se necesitan más seguimientos.
- * Después de esto, HR puede marcar el iCare como SOLVED.
+ * DTO para que HR/Management rechace definitivamente un iCare en estado pending.
+ * El record pasa directamente a REJECTED (sin pasar por rejection_under_review).
+ * Se notifica a Coordinator y Staff.
  */
-export class FulfillCommitICareDto {
+export class HrRejectICareDto {
   @IsObject()
   @ValidateNested()
   @Type(() => EmployeeRefDto)
-  fulfilled_by: EmployeeRefDto;
-
-  /** Fecha real en que se realizó el último seguimiento (YYYY-MM-DD) */
-  @IsOptional()
-  @IsString()
-  actual_date?: string;
+  rejected_by: EmployeeRefDto;
 
   @IsOptional()
   @IsString()

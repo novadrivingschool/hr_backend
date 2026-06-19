@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as moment from 'moment-timezone';
@@ -13,10 +13,13 @@ import { ResolveICareDto } from './dto/resolve-i-care.dto';
 import { ApproveCommitICareDto } from './dto/approve-commit-i-care.dto';
 import { AddSeguimientoICareDto } from './dto/add-seguimiento-i-care.dto';
 import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
+import { CoordinatorRejectICareDto } from './dto/coordinator-reject-i-care.dto';
+import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
+import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// -- Types ----------------------------------------------------------------------
 
 export interface PaginatedResult<T> {
   data: T[];
@@ -33,18 +36,44 @@ export interface PaginatedResult<T> {
  *
  * Matriz de destinatarios por evento:
  *   created_staff       → staff_name (quien creó el registro)
- *   created_coordinator → responsible[] (coordinadores asignados, sin identidad del staff)
+ *   created_coordinator → coordinator(s) (assigned coordinators, no submitter identity)
  *   created_hr          → role 'hr' (con identidad completa)
  *   created_management  → role 'management' (con identidad completa)
- *   justified           → staff_name + responsible[] + role 'management'
- *   committed           → role 'hr' + responsible[] + role 'management'
- *   seguimiento_added   → staff_name + role 'hr' + role 'management'
- *   commit_fulfilled    → staff_name + role 'hr' + role 'management'
- *   resolved            → staff_name + responsible[] + role 'management'
+ *   justified_staff       → staff_name (el staff al que pertenece el iCare)
+ *   justified_coordinator → coordinator(s) asignados
+ *   justified_hr          → role 'hr'
+ *   justified_management  → role 'management'
+ *   committed_staff       → staff_name (confirmación de su commit)
+ *   committed_coordinator → coordinator(s)
+ *   committed_hr          → role 'hr'
+ *   committed_management  → role 'management'
+ *   seguimiento_added     → staff_name + coordinator(s) + role 'hr' + role 'management'
+ *   seguimiento_added_staff       → staff_name
+ *   seguimiento_added_coordinator → coordinator(s)
+ *   seguimiento_added_hr          → role 'hr'
+ *   seguimiento_added_management  → role 'management'
+ *   commit_fulfilled_staff        → staff_name
+ *   commit_fulfilled_coordinator  → coordinator(s)
+ *   commit_fulfilled_hr           → role 'hr'
+ *   commit_fulfilled_management   → role 'management'
+ *   resolved_staff                → staff_name
+ *   resolved_coordinator          → coordinator(s)
+ *   resolved_hr                   → role 'hr'
+ *   resolved_management           → role 'management'
  */
-type ICareEmailEvent = 'created_staff' | 'created_coordinator' | 'created_hr' | 'created_management' | 'justified' | 'committed' | 'seguimiento_added' | 'commit_fulfilled' | 'resolved';
+type ICareEmailEvent =
+  | 'created_staff' | 'created_coordinator' | 'created_hr' | 'created_management'
+  | 'justified_staff' | 'justified_coordinator' | 'justified_hr' | 'justified_management'
+  | 'committed_staff' | 'committed_coordinator' | 'committed_hr' | 'committed_management'
+  | 'seguimiento_added_staff' | 'seguimiento_added_coordinator' | 'seguimiento_added_hr' | 'seguimiento_added_management'
+  | 'commit_fulfilled_staff' | 'commit_fulfilled_coordinator' | 'commit_fulfilled_hr' | 'commit_fulfilled_management'
+  | 'resolved_staff' | 'resolved_coordinator' | 'resolved_hr' | 'resolved_management'
+  | 'coordinator_rejected_coordinator' | 'coordinator_rejected_hr' | 'coordinator_rejected_management'
+  | 'rejection_review_accepted_coordinator' | 'rejection_review_accepted_hr' | 'rejection_review_accepted_management'
+  | 'rejection_review_overridden_coordinator' | 'rejection_review_overridden_hr' | 'rejection_review_overridden_management'
+  | 'hr_rejected_hr' | 'hr_rejected_management';
 
-// ── Service ────────────────────────────────────────────────────────────────────
+// -- Service --------------------------------------------------------------------
 
 @Injectable()
 export class ICareService {
@@ -58,7 +87,7 @@ export class ICareService {
     private readonly employeeRepository: Repository<Employee>,
   ) { }
 
-  // ── Email helpers ──────────────────────────────────────────────────────────
+  // -- Email helpers ----------------------------------------------------------
 
   /**
    * Obtiene los nova_email de todos los empleados activos con un rol dado.
@@ -137,7 +166,7 @@ export class ICareService {
       return;
     }
 
-    const url = `${base}/mailer-send/i-care/${id}/${event}`;
+    const url = `${base}/i-care-email/${id}/${event}`;
     const payload = { recipients };
 
     // 2. Log justo antes de disparar la petición HTTP
@@ -172,7 +201,7 @@ export class ICareService {
   /**
    * Dispara los 4 emails de creación en paralelo:
    *   created_staff       → quien creó el registro
-   *   created_coordinator → responsibles asignados (sin identidad del staff)
+   *   created_coordinator → assigned coordinators (no submitter identity)
    *   created_hr          → role 'hr' (con identidad completa)
    *   created_management  → role 'management' (con identidad completa)
    */
@@ -204,126 +233,147 @@ export class ICareService {
   }
 
   /**
-   * Trigger para el evento 'justified'.
-   * Destinatarios: staff_name + responsible[] + role 'management'.
-   * Solo se llama cuando justified=true.
-   *
-   * @param id     - UUID del iCare
-   * @param record - Registro completo del iCare (para extraer staff y coordinators)
+   * Triggers para el evento 'justified' — 4 envíos separados por rol.
+   * justified_staff       → staff_name (el staff del iCare)
+   * justified_coordinator → coordinator(s)
+   * justified_hr          → role 'hr'
+   * justified_management  → role 'management'
    */
-  private async triggerJustifiedEmail(id: string, record: ICare): Promise<void> {
-    const managementEmails = await this.getEmailsByRole('management');
+  private async triggerJustifiedEmails(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+    ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
 
-    const recipients = [
-      ...new Set([
-        ...(staffEmail ? [staffEmail] : []),
-        ...coordinatorEmails,
-        ...managementEmails,
-      ]),
-    ];
-
-    await this.triggerEmail(id, 'justified', recipients);
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'justified_staff', [staffEmail]));
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_coordinator', coordinatorEmails));
+    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_hr', hrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_management', managementEmails));
+    await Promise.all(sends);
   }
 
   /**
    * Trigger para el evento 'committed'.
-   * Destinatarios: role 'hr' + responsible[] + role 'management'.
+   * Destinatarios: staff_name + coordinator(s) + role 'hr' + role 'management'.
    * Solo se llama cuando committed=true.
-   *
-   * @param id     - UUID del iCare
-   * @param record - Registro completo del iCare (para extraer coordinators)
+   * 4 envíos separados por rol:
+   *   committed_staff       → staff_name (confirmación)
+   *   committed_coordinator → coordinator(s)
+   *   committed_hr          → role 'hr'
+   *   committed_management  → role 'management'
    */
-  private async triggerCommittedEmail(id: string, record: ICare): Promise<void> {
+  private async triggerCommittedEmails(id: string, record: ICare): Promise<void> {
     const [hrEmails, managementEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
     ]);
-    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
-
-    const recipients = [
-      ...new Set([
-        ...hrEmails,
-        ...coordinatorEmails,
-        ...managementEmails,
-      ]),
-    ];
-
-    await this.triggerEmail(id, 'committed', recipients);
-  }
-
-  /**
-   * Trigger para el evento 'resolved'.
-   * Destinatarios: staff_name + responsible[] + role 'management'.
-   * Siempre se llama al resolver (no es opcional).
-   *
-   * @param id     - UUID del iCare
-   * @param record - Registro completo del iCare (para extraer staff y coordinators)
-   */
-  private async triggerResolvedEmail(id: string, record: ICare): Promise<void> {
-    const managementEmails = await this.getEmailsByRole('management');
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
 
-    const recipients = [
-      ...new Set([
-        ...(staffEmail ? [staffEmail] : []),
-        ...coordinatorEmails,
-        ...managementEmails,
-      ]),
-    ];
-
-    await this.triggerEmail(id, 'resolved', recipients);
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'committed_staff', [staffEmail]));
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_coordinator', coordinatorEmails));
+    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_hr', hrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_management', managementEmails));
+    await Promise.all(sends);
   }
 
-  /**
-   * Trigger para el evento 'seguimiento_added'.
-   * Destinatarios: staff_name + role 'hr' + role 'management'.
-   * Se dispara cada vez que se agrega un seguimiento al registro.
-   */
-  private async triggerSeguimientoAddedEmail(id: string, record: ICare): Promise<void> {
+  private async triggerResolvedEmails(id: string, record: ICare): Promise<void> {
     const [hrEmails, managementEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
     ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
-
-    const recipients = [
-      ...new Set([
-        ...(staffEmail ? [staffEmail] : []),
-        ...hrEmails,
-        ...managementEmails,
-      ]),
-    ];
-
-    await this.triggerEmail(id, 'seguimiento_added', recipients);
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'resolved_staff', [staffEmail]));
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_coordinator', coordinatorEmails));
+    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_hr', hrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_management', managementEmails));
+    await Promise.all(sends);
   }
 
-  /**
-   * Trigger para el evento 'commit_fulfilled'.
-   * Destinatarios: staff_name + role 'hr' + role 'management'.
-   * Se dispara tanto en fulfill directo como después de seguimientos.
-   */
-  private async triggerCommitFulfilledEmail(id: string, record: ICare): Promise<void> {
+  private async triggerSeguimientoAddedEmails(id: string, record: ICare): Promise<void> {
     const [hrEmails, managementEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
     ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
-
-    const recipients = [
-      ...new Set([
-        ...(staffEmail ? [staffEmail] : []),
-        ...hrEmails,
-        ...managementEmails,
-      ]),
-    ];
-
-    await this.triggerEmail(id, 'commit_fulfilled', recipients);
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'seguimiento_added_staff', [staffEmail]));
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_coordinator', coordinatorEmails));
+    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_hr', hrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_management', managementEmails));
+    await Promise.all(sends);
   }
 
-  // ── Create ─────────────────────────────────────────────────────────────────
+  private async triggerCommitFulfilledEmails(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+    ]);
+    const staffEmail = record.staff_name?.nova_email ?? null;
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'commit_fulfilled_staff', [staffEmail]));
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_coordinator', coordinatorEmails));
+    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_hr', hrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  private async triggerCoordinatorRejectedEmails(id: string, record: ICare): Promise<void> {
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const [hrEmails, managementEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+    ]);
+    const sends: Promise<void>[] = [];
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_coordinator', coordinatorEmails));
+    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_hr', hrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  private async triggerRejectionReviewedEmails(id: string, record: ICare, accepted: boolean): Promise<void> {
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const sends: Promise<void>[] = [];
+    if (accepted) {
+      const [hrEmails, managementEmails] = await Promise.all([
+        this.getEmailsByRole('hr'),
+        this.getEmailsByRole('management'),
+      ]);
+      if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_coordinator', coordinatorEmails));
+      if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_hr', hrEmails));
+      if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_management', managementEmails));
+    } else {
+      const [hrEmails, managementEmails] = await Promise.all([
+        this.getEmailsByRole('hr'),
+        this.getEmailsByRole('management'),
+      ]);
+      if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_coordinator', coordinatorEmails));
+      if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_hr', hrEmails));
+      if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_management', managementEmails));
+    }
+    await Promise.all(sends);
+  }
+
+  private async triggerHrRejectedEmails(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+    ]);
+    const sends: Promise<void>[] = [];
+    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_hr', hrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  // -- Create -----------------------------------------------------------------
 
   /**
    * Crea un nuevo registro iCare y notifica únicamente a HR.
@@ -348,7 +398,7 @@ export class ICareService {
     return saved;
   }
 
-  // ── FindAll ────────────────────────────────────────────────────────────────
+  // -- FindAll ----------------------------------------------------------------
 
   /**
    * Retorna todos los registros iCare paginados, ordenados por fecha de creación DESC.
@@ -380,7 +430,7 @@ export class ICareService {
     }
   }
 
-  // ── FindOne ────────────────────────────────────────────────────────────────
+  // -- FindOne ----------------------------------------------------------------
 
   /**
    * Busca un único registro iCare por su UUID.
@@ -400,7 +450,7 @@ export class ICareService {
     }
   }
 
-  // ── Update ─────────────────────────────────────────────────────────────────
+  // -- Update -----------------------------------------------------------------
 
   /**
    * Actualiza campos generales de un iCare existente.
@@ -414,17 +464,16 @@ export class ICareService {
     const existingRecord = await this.iCareRepository.findOne({ where: { id } });
     if (!existingRecord) throw new NotFoundException(`ICare record with ID ${id} not found`);
 
-    const updatedRecord = {
-      ...existingRecord,
-      ...updateICareDto,
-      date: updateICareDto.date ?? existingRecord.date,
-      updatedAt: new Date(),
-    };
+    // Merge directly into the entity instance so TypeORM tracks the change correctly.
+    // Spreading into a plain object loses entity metadata and can cause JSONB columns
+    // (like `attachments`) to be skipped in the UPDATE query.
+    Object.assign(existingRecord, updateICareDto);
+    existingRecord.updatedAt = new Date();
 
-    return await this.iCareRepository.save(updatedRecord);
+    return await this.iCareRepository.save(existingRecord);
   }
 
-  // ── Remove ─────────────────────────────────────────────────────────────────
+  // -- Remove -----------------------------------------------------------------
 
   /**
    * Elimina un registro iCare por su UUID.
@@ -442,7 +491,7 @@ export class ICareService {
     }
   }
 
-  // ── FindByFilters ──────────────────────────────────────────────────────────
+  // -- FindByFilters ----------------------------------------------------------
 
   /**
    * Busca registros iCare aplicando múltiples filtros opcionales con paginación.
@@ -542,7 +591,7 @@ export class ICareService {
     }
   }
 
-  // ── FindByCurrentSubmitter ─────────────────────────────────────────────────
+  // -- FindByCurrentSubmitter -------------------------------------------------
 
   /**
    * Retorna todos los iCare levantados por un empleado específico (submitter),
@@ -582,7 +631,7 @@ export class ICareService {
     }
   }
 
-  // ── FindByStaff ────────────────────────────────────────────────────────────
+  // -- FindByStaff ------------------------------------------------------------
 
   /**
    * Retorna todos los iCare asignados a un empleado de staff específico,
@@ -604,7 +653,7 @@ export class ICareService {
     }
   }
 
-  // ── GetStats ───────────────────────────────────────────────────────────────
+  // -- GetStats ---------------------------------------------------------------
 
   /**
    * Calcula estadísticas agregadas del módulo iCare con filtros opcionales.
@@ -626,7 +675,7 @@ export class ICareService {
     try {
       this.logger.log(`Fetching ICare statistics with filters: ${JSON.stringify(filters)}`);
 
-      // ── Helper: aplica filtro de departamento a cualquier QueryBuilder ────────
+      // -- Helper: aplica filtro de departamento a cualquier QueryBuilder --------
       const applyDeptFilter = (qb: any) => {
         if (!filters.department) return qb;
         const depts = filters.department.split(',').map(d => d.trim()).filter(Boolean);
@@ -641,7 +690,7 @@ export class ICareService {
         return qb;
       };
 
-      // ── Helper: aplica filtros base comunes a cualquier QueryBuilder ──────────
+      // -- Helper: aplica filtros base comunes a cualquier QueryBuilder ----------
       const applyBaseFilters = (qb: any) => {
         if (filters.dateFrom && filters.dateTo) {
           qb.andWhere('icare.date BETWEEN :dateFrom AND :dateTo', {
@@ -669,12 +718,12 @@ export class ICareService {
         return qb;
       };
 
-      // ── totalRecords ──────────────────────────────────────────────────────────
+      // -- totalRecords ----------------------------------------------------------
       const baseQuery = this.iCareRepository.createQueryBuilder('icare');
       applyBaseFilters(baseQuery);
       const totalRecords = await baseQuery.getCount();
 
-      // ── urgencyDistribution ───────────────────────────────────────────────────
+      // -- urgencyDistribution ---------------------------------------------------
       const urgencyQb = this.iCareRepository
         .createQueryBuilder('icare')
         .select('icare.urgency', 'urgency')
@@ -691,7 +740,7 @@ export class ICareService {
       const highCount = urgencyMap[ICareUrgency.HIGH] || 0;
       const criticalCount = urgencyMap[ICareUrgency.CRITICAL] || 0;
 
-      // ── statusDistribution ────────────────────────────────────────────────────
+      // -- statusDistribution ----------------------------------------------------
       const statusQb = this.iCareRepository
         .createQueryBuilder('icare')
         .select('icare.status', 'status')
@@ -708,7 +757,7 @@ export class ICareService {
       const rejectedStatusCount = statusMap[ICareStatus.REJECTED] || 0; // ← nuevo
       const solvedStatusCount = statusMap[ICareStatus.SOLVED] || 0;
 
-      // ── monthlyTrend (últimos 6 meses) ────────────────────────────────────────
+      // -- monthlyTrend (últimos 6 meses) ----------------------------------------
       const sixMonthsAgo = new Date();
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
@@ -722,7 +771,7 @@ export class ICareService {
       applyDeptFilter(trendQb);
       const monthlyTrend = await trendQb.getRawMany();
 
-      // ── committedCount / pendingCount ─────────────────────────────────────────
+      // -- committedCount / pendingCount -----------------------------------------
       const committedQb = this.iCareRepository
         .createQueryBuilder('icare')
         .where('icare.committed = :c', { c: true });
@@ -735,7 +784,7 @@ export class ICareService {
       applyBaseFilters(pendingCommitQb);
       const pendingCount = await pendingCommitQb.getCount();
 
-      // ── criticalActiveCount: High o Critical, excluyendo SOLVED y REJECTED ────
+      // -- criticalActiveCount: High o Critical, excluyendo SOLVED y REJECTED ----
       const criticalActiveQb = this.iCareRepository
         .createQueryBuilder('icare')
         .where('icare.urgency IN (:...urgencies)', {
@@ -780,7 +829,7 @@ export class ICareService {
     }
   }
 
-  // ── Justify ────────────────────────────────────────────────────────────────
+  // -- Justify ----------------------------------------------------------------
 
   /**
    * HR marca un iCare como justificado (o no justificado).
@@ -788,8 +837,8 @@ export class ICareService {
    *   - Avanza el status a IN_PROGRESS
    *   - Registra quién aprobó, fecha y hora (America/Chicago)
    *   - Agrega el comment al array justified_comments (si viene)
-   *   - Dispara email a: staff_name + responsible[] + role 'management'
-   * Si justified=false: solo guarda el rechazo sin cambiar status ni enviar emails.
+   *   - Dispara email a: staff_name + coordinator(s) + role 'management'
+   * Si justified=false: status → REJECTION_UNDER_REVIEW para que HR/Management hagan el review.
    *
    * @param id  - UUID del iCare
    * @param dto - { justified, approved_by, comment? }
@@ -820,19 +869,27 @@ export class ICareService {
       ];
     }
 
-    // ✅ Antes solo avanzaba si justified=true, ahora también retrocede si es false
     if (dto.justified) {
       record.status = ICareStatus.IN_PROGRESS;
     } else {
-      record.status = ICareStatus.REJECTED; // ← nuevo
+      // justified=false → entra a review de HR/Management antes de quedar REJECTED
+      record.status = ICareStatus.REJECTION_UNDER_REVIEW;
     }
 
     const saved = await this.iCareRepository.save(record);
 
     if (dto.justified) {
-      this.triggerJustifiedEmail(saved.id, saved).catch((err) =>
+      this.triggerJustifiedEmails(saved.id, saved).catch((err) =>
         this.logger.error(
-          `❌ Failed to trigger 'justified' email for id=${saved.id}`,
+          `❌ Failed to trigger 'justified' emails for id=${saved.id}`,
+          err?.message || err,
+        ),
+      );
+    } else {
+      // justified=false → notifica a HR + Management para que hagan el review
+      this.triggerCoordinatorRejectedEmails(saved.id, saved).catch((err) =>
+        this.logger.error(
+          `❌ Failed to trigger 'not_justified' emails for id=${saved.id}`,
           err?.message || err,
         ),
       );
@@ -841,13 +898,13 @@ export class ICareService {
     return this.transformDates([saved])[0];
   }
 
-  // ── Commit ─────────────────────────────────────────────────────────────────
+  // -- Commit -----------------------------------------------------------------
 
   /**
    * El Staff registra su compromiso (commit) sobre el iCare.
    * Si committed=true:
    *   - Guarda fecha, hora (America/Chicago si no se proveen) y notas del commit
-   *   - Dispara email a: role 'hr' + responsible[] + role 'management'
+   *   - Dispara email a: role 'hr' + coordinator(s) + role 'management'
    * Si committed=false: limpia todos los campos de commit sin enviar emails.
    *
    * @param id  - UUID del iCare
@@ -878,11 +935,11 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    // Notificar a HR + Coordinator (responsible) + Management cuando el Staff hace commit
+    // Notificar a HR + Coordinator + Management cuando el Staff hace commit
     if (dto.committed) {
-      this.triggerCommittedEmail(saved.id, saved).catch((err) =>
+      this.triggerCommittedEmails(saved.id, saved).catch((err) =>
         this.logger.error(
-          `❌ Failed to trigger 'committed' email for id=${saved.id}`,
+          `❌ Failed to trigger 'committed' emails for id=${saved.id}`,
           err?.message || err,
         ),
       );
@@ -891,12 +948,12 @@ export class ICareService {
     return this.transformDates([saved])[0];
   }
 
-  // ── Resolve ────────────────────────────────────────────────────────────────
+  // -- Resolve ----------------------------------------------------------------
 
   /**
    * HR marca el iCare como resuelto (SOLVED).
    * Registra quién lo resolvió, fecha, hora (America/Chicago) y notas opcionales.
-   * Siempre dispara email a: staff_name + responsible[] + role 'management'.
+   * Siempre dispara email a: staff_name + coordinator(s) + role 'management'.
    *
    * @param id  - UUID del iCare
    * @param dto - { resolved_by, resolved_notes? }
@@ -923,8 +980,8 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    // Notificar a Staff + Coordinator (responsible) + Management al resolver
-    this.triggerResolvedEmail(saved.id, saved).catch((err) =>
+    // Notificar a Staff + Coordinator + Management al resolver
+    this.triggerResolvedEmails(saved.id, saved).catch((err) =>
       this.logger.error(
         `❌ Failed to trigger 'resolved' email for id=${saved.id}`,
         err?.message || err,
@@ -934,13 +991,13 @@ export class ICareService {
     return this.transformDates([saved])[0];
   }
 
-  // ── ApproveCommit ──────────────────────────────────────────────────────────
+  // -- ApproveCommit ----------------------------------------------------------
 
   /**
    * Coordinator o HR aprueba el commit del staff y asigna el primer seguimiento.
    * Coordinator solo puede actuar en Low y Medium urgency.
    * HR y Management pueden actuar en cualquier urgencia.
-   * Cambia status a FOLLOWING_UP y notifica a: staff + responsible[] + management.
+   * Cambia status a FOLLOWING_UP y notifica a: staff + coordinator(s) + management.
    *
    * @param id  - UUID del iCare
    * @param dto - { approved_by, scheduled_date, notes? }
@@ -966,6 +1023,7 @@ export class ICareService {
       notes: dto.notes ?? null,
       added_by: dto.approved_by,
       created_at: now.format('YYYY-MM-DD HH:mm'),
+      attachments: dto.attachments ?? [],
     };
 
     record.seguimientos = [firstSeguimiento];
@@ -975,7 +1033,7 @@ export class ICareService {
     // En la ruta "con seguimiento", el primer seguimiento dispara el email.
     // En "fulfill directo" (is_fulfill_direct=true) el email lo dispara fulfillCommit.
     if (!dto.is_fulfill_direct) {
-      this.triggerSeguimientoAddedEmail(saved.id, saved).catch((err) =>
+      this.triggerSeguimientoAddedEmails(saved.id, saved).catch((err) =>
         this.logger.error(
           `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
           err?.message || err,
@@ -986,7 +1044,7 @@ export class ICareService {
     return this.transformDates([saved])[0];
   }
 
-  // ── AddSeguimiento ─────────────────────────────────────────────────────────
+  // -- AddSeguimiento ---------------------------------------------------------
 
   /**
    * Agrega un seguimiento adicional al array de seguimientos.
@@ -1017,7 +1075,7 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    this.triggerSeguimientoAddedEmail(saved.id, saved).catch((err) =>
+    this.triggerSeguimientoAddedEmails(saved.id, saved).catch((err) =>
       this.logger.error(
         `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
         err?.message || err,
@@ -1027,12 +1085,12 @@ export class ICareService {
     return this.transformDates([saved])[0];
   }
 
-  // ── FulfillCommit ──────────────────────────────────────────────────────────
+  // -- FulfillCommit ----------------------------------------------------------
 
   /**
    * Coordinator o HR marca que todos los seguimientos se han completado.
    * Cambia status a COMMIT_FULFILLED.
-   * Notifica a HR + responsible[] + management para que HR proceda a resolver.
+   * Notifica a HR + coordinator(s) + management para que HR proceda a resolver.
    *
    * @param id  - UUID del iCare
    * @param dto - { fulfilled_by, actual_date?, notes? }
@@ -1049,21 +1107,19 @@ export class ICareService {
     record.commit_fulfilled_date = now.format('YYYY-MM-DD');
     record.commit_fulfilled_time = now.format('HH:mm');
     record.commit_fulfilled_notes = dto.notes ?? null;
+    record.commit_fulfilled_attachments = dto.attachments ?? [];
     record.status = ICareStatus.COMMIT_FULFILLED;
 
     // Si se provee actual_date para el último seguimiento, actualizarlo
     if (dto.actual_date && record.seguimientos?.length) {
       const updated = [...record.seguimientos];
-      updated[updated.length - 1] = {
-        ...updated[updated.length - 1],
-        actual_date: dto.actual_date,
-      };
+      updated[updated.length - 1] = { ...updated[updated.length - 1], actual_date: dto.actual_date };
       record.seguimientos = updated;
     }
 
     const saved = await this.iCareRepository.save(record);
 
-    this.triggerCommitFulfilledEmail(saved.id, saved).catch((err) =>
+    this.triggerCommitFulfilledEmails(saved.id, saved).catch((err) =>
       this.logger.error(
         `❌ Failed to trigger 'commit_fulfilled' email for id=${saved.id}`,
         err?.message || err,
@@ -1073,7 +1129,126 @@ export class ICareService {
     return this.transformDates([saved])[0];
   }
 
-  // ── Search ─────────────────────────────────────────────────────────────────
+  // -- Coordinator Rejection --------------------------------------------------
+
+  /**
+   * El coordinator rechaza un iCare en estado pending.
+   * Status → rejection_under_review. Se notifica a HR + Management.
+   */
+  async coordinatorReject(id: string, dto: CoordinatorRejectICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (record.status !== ICareStatus.PENDING) {
+      throw new BadRequestException('Only pending records can be rejected by the coordinator');
+    }
+
+    if (record.rejection_override) {
+      throw new BadRequestException('This record cannot be rejected again — override is in effect');
+    }
+
+    const now = moment().tz('America/Chicago');
+
+    record.coordinator_rejected = true;
+    record.coordinator_rejected_by = dto.rejected_by;
+    record.coordinator_rejected_date = now.format('YYYY-MM-DD');
+    record.coordinator_rejected_time = now.format('HH:mm');
+    record.coordinator_rejected_notes = dto.notes ?? null;
+    record.coordinator_rejected_attachments = dto.attachments ?? [];
+    record.status = ICareStatus.REJECTION_UNDER_REVIEW;
+
+    const saved = await this.iCareRepository.save(record);
+
+    this.triggerCoordinatorRejectedEmails(saved.id, saved).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'coordinator_rejected' email for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+
+    return this.transformDates([saved])[0];
+  }
+
+  /**
+   * HR / Management rechaza definitivamente un iCare en estado PENDING.
+   * El record pasa directamente a REJECTED (sin pasar por rejection_under_review).
+   * Notifica a Coordinator y Staff.
+   */
+  async hrDirectReject(id: string, dto: HrRejectICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (record.status !== ICareStatus.PENDING) {
+      throw new BadRequestException('Only pending records can be directly rejected by HR/Management');
+    }
+
+    const now = moment().tz('America/Chicago');
+
+    record.coordinator_rejected = true;
+    record.coordinator_rejected_by = dto.rejected_by;
+    record.coordinator_rejected_date = now.format('YYYY-MM-DD');
+    record.coordinator_rejected_time = now.format('HH:mm');
+    record.coordinator_rejected_notes = dto.notes ?? null;
+    record.coordinator_rejected_attachments = dto.attachments ?? [];
+    record.status = ICareStatus.REJECTED;
+
+    const saved = await this.iCareRepository.save(record);
+
+    this.triggerHrRejectedEmails(saved.id, saved).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'hr_rejected' emails for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+
+    return this.transformDates([saved])[0];
+  }
+
+  /**
+   * HR / Management revisa el rejected del coordinator.
+   * accept=true  → status REJECTED (final).
+   * accept=false → override: status va a IN_PROGRESS, rejection_override=true.
+   */
+  async reviewRejection(id: string, dto: ReviewRejectionICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (record.status !== ICareStatus.REJECTION_UNDER_REVIEW) {
+      throw new BadRequestException('Record is not pending rejection review');
+    }
+
+    const now = moment().tz('America/Chicago');
+
+    record.rejection_reviewed = true;
+    record.rejection_review_accepted = dto.accept;
+    record.rejection_reviewed_by = dto.reviewed_by;
+    record.rejection_review_date = now.format('YYYY-MM-DD');
+    record.rejection_review_time = now.format('HH:mm');
+    record.rejection_review_notes = dto.notes ?? null;
+    record.rejection_review_attachments = dto.attachments ?? [];
+
+    if (dto.accept) {
+      // Aceptar el rejected → queda rechazado de forma definitiva
+      record.status = ICareStatus.REJECTED;
+    } else {
+      // Override → va directo a IN_PROGRESS, coordinator no puede rechazar de nuevo
+      record.status = ICareStatus.IN_PROGRESS;
+      record.rejection_override = true;
+    }
+
+    const saved = await this.iCareRepository.save(record);
+
+    this.triggerRejectionReviewedEmails(saved.id, saved, dto.accept).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'rejection_reviewed' email for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+
+    return this.transformDates([saved])[0];
+  }
+
+  // -- Search -----------------------------------------------------------------
 
   /**
    * Búsqueda full-text sobre múltiples campos del iCare:
@@ -1124,7 +1299,7 @@ export class ICareService {
     }
   }
 
-  // ── Batch operations ───────────────────────────────────────────────────────
+  // -- Batch operations --
 
   /**
    * Actualiza en bulk múltiples registros iCare por sus UUIDs.
@@ -1170,7 +1345,7 @@ export class ICareService {
     }
   }
 
-  // ── Private helpers ────────────────────────────────────────────────────────
+  // -- Private helpers --
 
   /**
    * Transforma las fechas createdAt y updatedAt de los registros

@@ -60,4 +60,7 @@ export class CreateOfficeSupplyDto {
   @IsOptional() @IsString()
   employee_number?: string | null
 
+  @IsOptional() @IsString()
+  requesterNovaEmail?: string | null
+
 }

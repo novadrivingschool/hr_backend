@@ -9,6 +9,7 @@ import {
 export enum ICareStatus {
   PENDING = 'pending',
   IN_PROGRESS = 'in_progress',
+  REJECTION_UNDER_REVIEW = 'rejection_under_review',
   REJECTED = 'rejected',
   FOLLOWING_UP = 'following_up',
   COMMIT_FULFILLED = 'commit_fulfilled',
@@ -106,6 +107,7 @@ export class ICare {
     last_name: string;
     employee_number: string;
     nova_email: string;
+    roles?: string[];
   } | null;
 
   @Column({ nullable: true, type: 'varchar', length: 20 })
@@ -173,6 +175,7 @@ export class ICare {
       nova_email: string;
     };
     created_at: string;
+    attachments?: string[];
   }>;
 
   // ─── Commit Fulfilled fields ───────────────────────────────────────────────
@@ -196,6 +199,9 @@ export class ICare {
   @Column({ type: 'text', nullable: true })
   commit_fulfilled_notes: string | null;
 
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  commit_fulfilled_attachments: string[];
+
   // ─── Resolution fields ─────────────────────────────────────────────────────
   /** HR que resolvió el caso */
   @Column('jsonb', { nullable: true })
@@ -217,6 +223,64 @@ export class ICare {
 
   @Column('jsonb', { nullable: true, default: () => "'[]'" })
   resolved_attachments: string[];
+
+  // ─── Coordinator Rejection fields ─────────────────────────────────────────
+  /** Coordinator rechazó el iCare → status pasa a rejection_under_review */
+  @Column({ type: 'boolean', default: false })
+  coordinator_rejected: boolean;
+
+  @Column('jsonb', { nullable: true })
+  coordinator_rejected_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  coordinator_rejected_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  coordinator_rejected_time: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  coordinator_rejected_notes: string | null;
+
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  coordinator_rejected_attachments: string[];
+
+  // ─── Rejection Review fields (HR / Management) ─────────────────────────────
+  /** true = HR/Mgmt ya revisó el rejected del coordinator */
+  @Column({ type: 'boolean', default: false })
+  rejection_reviewed: boolean;
+
+  /** true = aceptaron el rejected (status → rejected final) | false = override (status → pending) */
+  @Column({ type: 'boolean', nullable: true })
+  rejection_review_accepted: boolean | null;
+
+  /** Si override=true el coordinator no puede volver a rechazar */
+  @Column({ type: 'boolean', default: false })
+  rejection_override: boolean;
+
+  @Column('jsonb', { nullable: true })
+  rejection_reviewed_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  rejection_review_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  rejection_review_time: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  rejection_review_notes: string | null;
+
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  rejection_review_attachments: string[];
 
   // ─── Timestamps ────────────────────────────────────────────────────────────
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })

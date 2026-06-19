@@ -36,6 +36,12 @@ import { InvWarehouse } from 'src/inventory/entities/inv_warehouse.entity';
 import { InvItem } from 'src/inventory/entities/inv_item.entity';
 import { InvTransfer } from 'src/inventory/entities/inv_transfer.entity';
 import { InvDispatch } from 'src/inventory/entities/inv_dispatch.entity';
+import { BankDeposit } from 'src/bank-deposits/entities/bank-deposit.entity';
+import { InstructorPayroll } from 'src/instructor-payroll/entities/instructor-payroll.entity';
+import { TeacherPayroll } from 'src/teacher-payroll/entities/teacher-payroll.entity';
+import { AssignmentPayroll } from 'src/assignment-payroll/entities/assignment-payroll.entity';
+import { NoShowPayroll } from 'src/no-show-payroll/entities/no-show-payroll.entity';
+import { AssignmentRateType } from 'src/assignment-rate-types/entities/assignment-rate-type.entity';
 
 dotenv.config();
 
@@ -48,6 +54,7 @@ console.log({
 });
 
 console.log('Migrations Path:', path.join(__dirname, '/migrations/*.{ts,js}'));
+
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -92,6 +99,12 @@ export const AppDataSource = new DataSource({
     InvItem,
     InvTransfer,
     InvDispatch,
+    BankDeposit,
+    InstructorPayroll,
+    TeacherPayroll,
+    AssignmentPayroll,
+    NoShowPayroll,
+    AssignmentRateType,
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

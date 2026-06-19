@@ -36,6 +36,13 @@ import { HappyFormModule } from './happy_form/happy_form.module';
 import { TimesheetRecordsModule } from './timesheet-records/timesheet-records.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { BankDepositsModule } from './bank-deposits/bank-deposits.module';
+import { InstructorPayrollModule } from './instructor-payroll/instructor-payroll.module';
+import { TeacherPayrollModule } from './teacher-payroll/teacher-payroll.module';
+import { AssignmentPayrollModule } from './assignment-payroll/assignment-payroll.module';
+import { NoShowPayrollModule } from './no-show-payroll/no-show-payroll.module';
+import { AssignmentRateTypesModule } from './assignment-rate-types/assignment-rate-types.module';
+import { IpSummaryModule } from './ip-summary/ip-summary.module';
+import { HrsAutorizadasModule } from './hrs-autorizadas/hrs-autorizadas.module';
 
 
 dotenv.config();
@@ -99,6 +106,7 @@ dotenv.config();
         __dirname + '/timesheet-records/entities/*.entity.{ts,js}', // <-- Solo las entidades de TimesheetRecords
         __dirname + '/inventory/entities/*.entity.{ts,js}',
         __dirname + '/bank-deposits/entities/*.entity.{ts,js}',
+        __dirname + '/instructor-payroll/entities/*.entity.{ts,js}',
       ],
     }),
     TimeOffRequestModule,
@@ -131,10 +139,17 @@ dotenv.config();
     InstructorServicesModule,
     InstructorRestrictionsModule,
     InstructorVehiclePickupDropoffModule,
-    HappyFormModule,
-    TimesheetRecordsModule,
+    HappyFormModule,    
     InventoryModule,
     BankDepositsModule,
+    InstructorPayrollModule,
+    TeacherPayrollModule,
+    AssignmentPayrollModule,
+    NoShowPayrollModule,
+    AssignmentRateTypesModule,
+    IpSummaryModule,
+    HrsAutorizadasModule,
   ],
 })
 export class AppModule { }
+/* TimesheetRecordsModule, */

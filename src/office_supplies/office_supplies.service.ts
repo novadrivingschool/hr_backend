@@ -158,6 +158,7 @@ export class OfficeSuppliesService {
       requestDate, // <-- día en Chicago
       requester: dto.requester,
       employee_number: getEmployeeNumber(dto),
+      requesterNovaEmail: (dto as any).requesterNovaEmail?.trim() || null,
       location: dto.location,
       ...cleaned,
       otherKitchenItems: dto.otherKitchenItems ?? null,

@@ -92,7 +92,10 @@ export class ChecklistService {
     console.log('🧾 create checklist');
 
     // ✅ create devuelve UNA entidad
-    const entity = this.repo.create(dto);
+    const entity = this.repo.create({
+      ...dto,
+      submitterNovaEmail: (dto as any).submitterNovaEmail?.trim() || null,
+    });
 
     // ✅ save(entity) devuelve UN Checklist (NO array)
     const saved = await this.repo.save(entity);
@@ -119,7 +122,7 @@ export class ChecklistService {
       throw new Error('EMAIL_SERVICE_BASE is not defined');
     }
 
-    const url = `${base.replace(/\/+$/, '')}/mailer-send/checklist/${encodeURIComponent(id)}`;
+    const url = `${base.replace(/\/+$/, '')}/checklist-email/created/${encodeURIComponent(id)}`;
     console.log('➡️ POST', url);
 
     try {
