@@ -88,10 +88,23 @@ export class ICareController {
     @Query('urgency') urgencyRaw?: string,
     @Query('status') statusRaw?: string,
     @Query('department') department?: string,
+    @Query('excludeUrgencies') excludeUrgenciesRaw?: string,
+    @Query('staffPositions') staffPositionsRaw?: string,
+    @Query('orScope') orScopeRaw?: string,
+    @Query('excludeStaffEmployeeNumber') excludeStaffEmployeeNumber?: string,
   ) {
     try {
       const urgency = this.parseUrgency(urgencyRaw);
       const status = this.parseStatus(statusRaw);
+      const excludeUrgencies = excludeUrgenciesRaw
+        ? excludeUrgenciesRaw
+            .split(',')
+            .map(u => u.trim())
+            .filter(u => Object.values(ICareUrgency).includes(u as ICareUrgency)) as ICareUrgency[]
+        : undefined;
+      const staffPositions = staffPositionsRaw
+        ? staffPositionsRaw.split(',').map(p => p.trim()).filter(Boolean)
+        : undefined;
 
       return await this.iCareService.getStats({
         dateFrom,
@@ -101,6 +114,10 @@ export class ICareController {
         urgency,
         status,
         department,
+        excludeUrgencies,
+        staffPositions,
+        orScope: orScopeRaw === 'true',
+        excludeStaffEmployeeNumber,
       });
     } catch (error) {
       console.error('Error fetching ICare statistics:', error);
@@ -126,6 +143,10 @@ export class ICareController {
     @Query('committed') committed?: string,
     @Query('department') department?: string,
     @Query('status') statusRaw?: string,
+    @Query('excludeUrgencies') excludeUrgenciesRaw?: string,
+    @Query('staffPositions') staffPositionsRaw?: string,
+    @Query('orScope') orScopeRaw?: string,
+    @Query('excludeStaffEmployeeNumber') excludeStaffEmployeeNumber?: string,
   ) {
     try {
       const urgency = this.parseUrgency(urgencyRaw);
@@ -134,6 +155,18 @@ export class ICareController {
         committed === 'true' ? true :
           committed === 'false' ? false :
             undefined;
+
+      const excludeUrgencies = excludeUrgenciesRaw
+        ? excludeUrgenciesRaw
+            .split(',')
+            .map(u => u.trim())
+            .filter(u => Object.values(ICareUrgency).includes(u as ICareUrgency))
+            .map(u => u as ICareUrgency)
+        : undefined;
+
+      const staffPositions = staffPositionsRaw
+        ? staffPositionsRaw.split(',').map(p => p.trim()).filter(Boolean)
+        : undefined;
 
       return await this.iCareService.findByFilters(
         {
@@ -146,6 +179,10 @@ export class ICareController {
           committed: committedBool,
           department,
           status,
+          excludeUrgencies,
+          staffPositions,
+          orScope: orScopeRaw === 'true',
+          excludeStaffEmployeeNumber,
         },
         page,
         limit,
@@ -547,33 +584,21 @@ export class ICareController {
     }
   }
 
-  // ── Private helpers ─────────────────────────────────────────────────────────
+  // -- Private helpers --
 
-  /**
-   * Parsea y valida el query param de urgency.
-   * Lanza BadRequestException si el valor no es un ICareUrgency válido.
-   */
-  private parseUrgency(value?: string): ICareUrgency | undefined {
-    if (!value) return undefined;
-    if (Object.values(ICareUrgency).includes(value as ICareUrgency)) {
-      return value as ICareUrgency;
-    }
-    throw new BadRequestException(
-      `Invalid urgency value "${value}". Allowed: ${Object.values(ICareUrgency).join(', ')}`,
-    );
+  private parseUrgency(raw?: string): ICareUrgency | undefined {
+    if (!raw) return undefined;
+    const val = raw.trim();
+    return Object.values(ICareUrgency).includes(val as ICareUrgency)
+      ? (val as ICareUrgency)
+      : undefined;
   }
 
-  /**
-   * Parsea y valida el query param de status.
-   * Lanza BadRequestException si el valor no es un ICareStatus válido.
-   */
-  private parseStatus(value?: string): ICareStatus | undefined {
-    if (!value) return undefined;
-    if (Object.values(ICareStatus).includes(value as ICareStatus)) {
-      return value as ICareStatus;
-    }
-    throw new BadRequestException(
-      `Invalid status value "${value}". Allowed: ${Object.values(ICareStatus).join(', ')}`,
-    );
+  private parseStatus(raw?: string): ICareStatus | undefined {
+    if (!raw) return undefined;
+    const val = raw.trim();
+    return Object.values(ICareStatus).includes(val as ICareStatus)
+      ? (val as ICareStatus)
+      : undefined;
   }
 }

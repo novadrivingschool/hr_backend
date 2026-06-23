@@ -56,6 +56,9 @@ export class ICare {
     last_name: string;
     employee_number: string;
     nova_email: string;
+    /** Embebido en creación si el staff tiene rol coordinator/coordinator-assistant/super-coordinator.
+     *  No requiere migración — está dentro del JSONB existente. */
+    is_coordinator?: boolean;
   } | null;
 
   /** Responsables asignados para atender el caso */

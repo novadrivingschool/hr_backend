@@ -1,0 +1,285 @@
+<svg viewBox="0 0 900 1300" xmlns="http://www.w3.org/2000/svg" font-family="system-ui,-apple-system,sans-serif">
+<defs>
+  <marker id="a"  markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#475569"/></marker>
+  <marker id="ag" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#059669"/></marker>
+  <marker id="ar" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#dc2626"/></marker>
+  <marker id="ao" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#f97316"/></marker>
+  <marker id="av" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0,8 3,0 6" fill="#7c3aed"/></marker>
+</defs>
+<rect width="900" height="1300" fill="#f8fafc"/>
+
+<!-- TITLE -->
+<text x="430" y="28" text-anchor="middle" font-size="16" font-weight="700" fill="#0f172a">iCare — HR &amp; Management Workflow</text>
+<rect x="290" y="36" width="280" height="20" rx="4" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
+<text x="430" y="50" text-anchor="middle" font-size="9" font-weight="700" fill="#b91c1c">🔴 HIGH / CRITICAL urgency only</text>
+<rect x="150" y="60" width="560" height="18" rx="3" fill="#dbeafe" stroke="#3b82f6" stroke-width="1"/>
+<text x="430" y="73" text-anchor="middle" font-size="8.5" font-weight="600" fill="#1e40af">Roles: HR · HR Assistant · Management · Staff (own commit only)</text>
+
+<!-- START -->
+<rect x="320" y="90" width="220" height="30" rx="15" fill="#0ea5e9"/>
+<text x="430" y="110" text-anchor="middle" font-size="11" font-weight="700" fill="white">START</text>
+<line x1="430" y1="120" x2="430" y2="138" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- PENDING -->
+<rect x="300" y="140" width="260" height="46" rx="8" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
+<text x="430" y="160" text-anchor="middle" font-size="12" font-weight="700" fill="#92400e">PENDING</text>
+<text x="430" y="176" text-anchor="middle" font-size="9" fill="#b45309">Record created — HR &amp; Management notified</text>
+
+<!-- email: created -->
+<rect x="5" y="140" width="262" height="56" rx="5" fill="#fefce8" stroke="#ca8a04" stroke-width="1"/>
+<text x="136" y="157" text-anchor="middle" font-size="8.5" font-weight="700" fill="#78350f">📧 created</text>
+<line x1="5" y1="163" x2="267" y2="163" stroke="#fde68a" stroke-width=".8"/>
+<text x="136" y="175" text-anchor="middle" font-size="8" fill="#92400e">→ Submitter (confirmation)</text>
+<text x="136" y="187" text-anchor="middle" font-size="8" fill="#92400e">→ HR · Management</text>
+<line x1="267" y1="168" x2="300" y2="168" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,2"/>
+
+<line x1="430" y1="186" x2="430" y2="208" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- JUSTIFIED? diamond  center=(430,248)  hw=128 hh=46 -->
+<polygon points="430,202 558,248 430,294 302,248" fill="white" stroke="#334155" stroke-width="2"/>
+<text x="430" y="241" text-anchor="middle" font-size="10.5" font-weight="700" fill="#334155">Justified?</text>
+<text x="430" y="256" text-anchor="middle" font-size="8.5" fill="#475569">HR · HR Asst · Management decide</text>
+<text x="430" y="269" text-anchor="middle" font-size="8" fill="#94a3b8">Justify  or  Reject</text>
+
+<!-- NO → REJECTED directly (right exit) -->
+<line x1="558" y1="248" x2="574" y2="248" stroke="#dc2626" stroke-width="2" marker-end="url(#ar)"/>
+<rect x="560" y="220" width="56" height="20" rx="3" fill="white"/>
+<text x="588" y="234" text-anchor="middle" font-size="9" font-weight="700" fill="#b91c1c">No →</text>
+
+<!-- REJECTED  x=576–836  y=226–270 -->
+<rect x="576" y="226" width="260" height="44" rx="8" fill="#fef2f2" stroke="#ef4444" stroke-width="2.5"/>
+<text x="706" y="246" text-anchor="middle" font-size="12" font-weight="700" fill="#b91c1c">REJECTED</text>
+<text x="706" y="261" text-anchor="middle" font-size="8.5" fill="#ef4444">Direct decision — no intermediate steps</text>
+
+<!-- email: rejected -->
+<line x1="706" y1="270" x2="706" y2="286" stroke="#dc2626" stroke-width="1.5"/>
+<rect x="630" y="276" width="152" height="34" rx="4" fill="#fefce8" stroke="#ca8a04" stroke-width="1"/>
+<text x="706" y="291" text-anchor="middle" font-size="8" font-weight="700" fill="#78350f">📧 rejected</text>
+<line x1="630" y1="298" x2="782" y2="298" stroke="#fde68a" stroke-width=".8"/>
+<text x="706" y="307" text-anchor="middle" font-size="8" fill="#92400e">→ Submitter · HR · Management</text>
+
+<!-- REJECTED END terminal -->
+<line x1="706" y1="310" x2="706" y2="326" stroke="#dc2626" stroke-width="1.5"/>
+<rect x="676" y="326" width="60" height="22" rx="11" fill="#dc2626"/>
+<text x="706" y="342" text-anchor="middle" font-size="10" font-weight="700" fill="white">END</text>
+
+<!-- YES → IN_PROGRESS -->
+<line x1="430" y1="294" x2="430" y2="318" stroke="#059669" stroke-width="1.5" marker-end="url(#ag)"/>
+<rect x="363" y="296" width="64" height="14" rx="2" fill="white"/>
+<text x="395" y="307" text-anchor="middle" font-size="9" font-weight="700" fill="#16a34a">Yes ↓</text>
+
+<!-- IN_PROGRESS -->
+<rect x="300" y="320" width="260" height="46" rx="8" fill="#eff6ff" stroke="#3b82f6" stroke-width="2"/>
+<text x="430" y="340" text-anchor="middle" font-size="12" font-weight="700" fill="#1d4ed8">IN_PROGRESS</text>
+<text x="430" y="356" text-anchor="middle" font-size="9" fill="#3b82f6">Justified — staff must submit a commit</text>
+
+<!-- email: justified -->
+<rect x="5" y="320" width="262" height="46" rx="5" fill="#fefce8" stroke="#ca8a04" stroke-width="1"/>
+<text x="136" y="337" text-anchor="middle" font-size="8.5" font-weight="700" fill="#78350f">📧 justified</text>
+<line x1="5" y1="343" x2="267" y2="343" stroke="#fde68a" stroke-width=".8"/>
+<text x="136" y="354" text-anchor="middle" font-size="8" fill="#92400e">→ Submitter · HR · Management</text>
+<line x1="267" y1="343" x2="300" y2="343" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,2"/>
+
+<line x1="430" y1="366" x2="430" y2="388" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- Staff commit -->
+<rect x="300" y="390" width="260" height="40" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="430" y="407" text-anchor="middle" font-size="9.5" font-weight="600" fill="#334155">Staff submits commit (MyICare)</text>
+<text x="430" y="421" text-anchor="middle" font-size="8.5" fill="#64748b">Action plan + optional evidence</text>
+
+<!-- email: committed -->
+<rect x="5" y="390" width="262" height="40" rx="5" fill="#fefce8" stroke="#ca8a04" stroke-width="1"/>
+<text x="136" y="406" text-anchor="middle" font-size="8.5" font-weight="700" fill="#78350f">📧 committed</text>
+<line x1="5" y1="413" x2="267" y2="413" stroke="#fde68a" stroke-width=".8"/>
+<text x="136" y="423" text-anchor="middle" font-size="8" fill="#92400e">→ Submitter · HR · Management</text>
+<line x1="267" y1="410" x2="300" y2="410" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,2"/>
+
+<line x1="430" y1="430" x2="430" y2="452" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- Approve commit -->
+<rect x="300" y="454" width="260" height="40" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="430" y="471" text-anchor="middle" font-size="9.5" font-weight="600" fill="#334155">Approve commit</text>
+<text x="430" y="485" text-anchor="middle" font-size="8.5" fill="#475569">HR · HR Assistant · Management</text>
+
+<line x1="430" y1="494" x2="430" y2="516" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- With follow-up? diamond  center=(430,556) -->
+<polygon points="430,514 548,556 430,598 312,556" fill="white" stroke="#64748b" stroke-width="1.5"/>
+<text x="430" y="549" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">With follow-up</text>
+<text x="430" y="563" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">or direct fulfill?</text>
+
+<!-- With follow-up (down) -->
+<line x1="430" y1="598" x2="430" y2="622" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+<rect x="326" y="600" width="148" height="14" rx="2" fill="white"/>
+<text x="400" y="611" text-anchor="middle" font-size="8.5" font-weight="600" fill="#334155">With follow-up ↓</text>
+
+<!-- Direct bypass (purple dashed, right) -->
+<line x1="548" y1="556" x2="620" y2="556" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,3"/>
+<line x1="620" y1="556" x2="620" y2="808" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,3"/>
+<line x1="620" y1="808" x2="562" y2="808" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#av)"/>
+<rect x="548" y="543" width="104" height="16" rx="3" fill="#f5f3ff" stroke="#a78bfa" stroke-width="1"/>
+<text x="600" y="555" text-anchor="middle" font-size="8.5" font-weight="600" fill="#6d28d9">Direct →</text>
+
+<!-- FOLLOWING_UP -->
+<rect x="300" y="624" width="260" height="46" rx="8" fill="#fff7ed" stroke="#f97316" stroke-width="2"/>
+<text x="430" y="644" text-anchor="middle" font-size="12" font-weight="700" fill="#c2410c">FOLLOWING_UP</text>
+<text x="430" y="660" text-anchor="middle" font-size="9" fill="#ea580c">HR/Mgmt add follow-ups — N cycles possible</text>
+
+<!-- Loop arrow -->
+<line x1="302" y1="636" x2="268" y2="636" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,2"/>
+<line x1="268" y1="636" x2="268" y2="662" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,2"/>
+<line x1="268" y1="662" x2="300" y2="662" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#ao)"/>
+
+<!-- email: follow-up -->
+<rect x="5" y="624" width="262" height="46" rx="5" fill="#fefce8" stroke="#ca8a04" stroke-width="1"/>
+<text x="136" y="641" text-anchor="middle" font-size="8.5" font-weight="700" fill="#78350f">📧 follow_up_added  ↺</text>
+<line x1="5" y1="648" x2="267" y2="648" stroke="#fde68a" stroke-width=".8"/>
+<text x="136" y="659" text-anchor="middle" font-size="8" fill="#92400e">→ Submitter · HR · Management</text>
+<line x1="267" y1="648" x2="300" y2="648" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,2"/>
+
+<line x1="430" y1="670" x2="430" y2="694" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- Mark fulfilled -->
+<rect x="300" y="696" width="260" height="38" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="430" y="713" text-anchor="middle" font-size="9.5" font-weight="600" fill="#334155">Mark as fulfilled</text>
+<text x="430" y="727" text-anchor="middle" font-size="8.5" fill="#64748b">HR · HR Assistant · Management</text>
+
+<line x1="430" y1="734" x2="430" y2="758" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- COMMIT_FULFILLED -->
+<rect x="300" y="760" width="260" height="46" rx="8" fill="#f0fdf4" stroke="#22c55e" stroke-width="2"/>
+<text x="430" y="780" text-anchor="middle" font-size="11" font-weight="700" fill="#166534">COMMIT_FULFILLED</text>
+<text x="430" y="796" text-anchor="middle" font-size="9" fill="#16a34a">Follow-ups complete — awaiting HR close</text>
+
+<!-- email: commit_fulfilled -->
+<rect x="5" y="760" width="262" height="46" rx="5" fill="#fefce8" stroke="#ca8a04" stroke-width="1"/>
+<text x="136" y="777" text-anchor="middle" font-size="8.5" font-weight="700" fill="#78350f">📧 commit_fulfilled</text>
+<line x1="5" y1="783" x2="267" y2="783" stroke="#fde68a" stroke-width=".8"/>
+<text x="136" y="795" text-anchor="middle" font-size="8" fill="#92400e">→ Submitter · HR · Management</text>
+<line x1="267" y1="783" x2="300" y2="783" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,2"/>
+
+<line x1="430" y1="806" x2="430" y2="830" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- HR closes -->
+<rect x="300" y="832" width="260" height="38" rx="4" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+<text x="430" y="849" text-anchor="middle" font-size="9.5" font-weight="600" fill="#334155">HR closes (Mark as Solved)</text>
+<text x="430" y="863" text-anchor="middle" font-size="8.5" fill="#64748b">HR only · optional evidence</text>
+
+<line x1="430" y1="870" x2="430" y2="894" stroke="#475569" stroke-width="1.5" marker-end="url(#a)"/>
+
+<!-- SOLVED -->
+<rect x="300" y="896" width="260" height="46" rx="8" fill="#ecfdf5" stroke="#10b981" stroke-width="2.5"/>
+<text x="430" y="916" text-anchor="middle" font-size="12" font-weight="700" fill="#065f46">SOLVED ✓</text>
+<text x="430" y="932" text-anchor="middle" font-size="9" fill="#059669">Case permanently closed</text>
+
+<!-- email: resolved -->
+<rect x="5" y="896" width="262" height="46" rx="5" fill="#fefce8" stroke="#ca8a04" stroke-width="1"/>
+<text x="136" y="913" text-anchor="middle" font-size="8.5" font-weight="700" fill="#78350f">📧 resolved</text>
+<line x1="5" y1="919" x2="267" y2="919" stroke="#fde68a" stroke-width=".8"/>
+<text x="136" y="931" text-anchor="middle" font-size="8" fill="#92400e">→ Submitter · HR · Management</text>
+<line x1="267" y1="919" x2="300" y2="919" stroke="#ca8a04" stroke-width="1" stroke-dasharray="3,2"/>
+
+<line x1="430" y1="942" x2="430" y2="966" stroke="#059669" stroke-width="1.5" marker-end="url(#ag)"/>
+
+<!-- END -->
+<rect x="320" y="968" width="220" height="30" rx="15" fill="#059669"/>
+<text x="430" y="988" text-anchor="middle" font-size="11" font-weight="700" fill="white">END</text>
+
+<!-- PERMISSIONS TABLE -->
+<line x1="5" y1="1014" x2="870" y2="1014" stroke="#e2e8f0" stroke-width="1"/>
+<text x="400" y="1032" text-anchor="middle" font-size="11" font-weight="600" fill="#475569">PERMISSIONS — HR &amp; MANAGEMENT (High / Critical)</text>
+
+<rect x="5"   y="1038" width="240" height="22" fill="#e2e8f0" stroke="#cbd5e1" stroke-width=".5"/>
+<rect x="245" y="1038" width="130" height="22" fill="#e2e8f0" stroke="#cbd5e1" stroke-width=".5"/>
+<rect x="375" y="1038" width="140" height="22" fill="#e2e8f0" stroke="#cbd5e1" stroke-width=".5"/>
+<rect x="515" y="1038" width="130" height="22" fill="#e2e8f0" stroke="#cbd5e1" stroke-width=".5"/>
+<rect x="645" y="1038" width="120" height="22" fill="#e2e8f0" stroke="#cbd5e1" stroke-width=".5"/>
+<text x="125" y="1053" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">ACTION</text>
+<text x="310" y="1053" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">HR</text>
+<text x="445" y="1053" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">HR Assistant</text>
+<text x="580" y="1053" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">Management</text>
+<text x="705" y="1053" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">Staff</text>
+
+<rect x="5"   y="1060" width="240" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="245" y="1060" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="375" y="1060" width="140" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="515" y="1060" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="645" y="1060" width="120" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<text x="125" y="1075" text-anchor="middle" font-size="8.5" fill="#475569">View High/Critical records</text>
+<text x="310" y="1075" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="445" y="1075" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="580" y="1075" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="705" y="1075" text-anchor="middle" font-size="9"  fill="#94a3b8">own only</text>
+
+<rect x="5"   y="1081" width="240" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="245" y="1081" width="130" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="375" y="1081" width="140" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="515" y="1081" width="130" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="645" y="1081" width="120" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<text x="125" y="1096" text-anchor="middle" font-size="8.5" fill="#475569">Justify record</text>
+<text x="310" y="1096" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="445" y="1096" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="580" y="1096" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="705" y="1096" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+
+<rect x="5"   y="1102" width="240" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="245" y="1102" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="375" y="1102" width="140" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="515" y="1102" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="645" y="1102" width="120" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<text x="125" y="1117" text-anchor="middle" font-size="8.5" fill="#475569">Reject directly → REJECTED</text>
+<text x="310" y="1117" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="445" y="1117" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="580" y="1117" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="705" y="1117" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+
+<rect x="5"   y="1123" width="240" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="245" y="1123" width="130" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="375" y="1123" width="140" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="515" y="1123" width="130" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="645" y="1123" width="120" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<text x="125" y="1138" text-anchor="middle" font-size="8.5" fill="#475569">Approve commit</text>
+<text x="310" y="1138" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="445" y="1138" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="580" y="1138" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="705" y="1138" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+
+<rect x="5"   y="1144" width="240" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="245" y="1144" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="375" y="1144" width="140" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="515" y="1144" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="645" y="1144" width="120" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<text x="125" y="1159" text-anchor="middle" font-size="8.5" fill="#475569">Add follow-up</text>
+<text x="310" y="1159" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="445" y="1159" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="580" y="1159" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="705" y="1159" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+
+<rect x="5"   y="1165" width="240" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="245" y="1165" width="130" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="375" y="1165" width="140" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="515" y="1165" width="130" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="645" y="1165" width="120" height="21" fill="#f8fafc" stroke="#e2e8f0" stroke-width=".5"/>
+<text x="125" y="1180" text-anchor="middle" font-size="8.5" fill="#475569">Submit commit (MyICare)</text>
+<text x="310" y="1180" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+<text x="445" y="1180" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+<text x="580" y="1180" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+<text x="705" y="1180" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+
+<rect x="5"   y="1186" width="240" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="245" y="1186" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="375" y="1186" width="140" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="515" y="1186" width="130" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<rect x="645" y="1186" width="120" height="21" fill="white"   stroke="#e2e8f0" stroke-width=".5"/>
+<text x="125" y="1201" text-anchor="middle" font-size="8.5" fill="#475569">Close case (Mark as Solved)</text>
+<text x="310" y="1201" text-anchor="middle" font-size="11" fill="#16a34a">●</text>
+<text x="445" y="1201" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+<text x="580" y="1201" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+<text x="705" y="1201" text-anchor="middle" font-size="11" fill="#94a3b8">—</text>
+
+<!-- Footer -->
+<text x="400" y="1232" text-anchor="middle" font-size="7.5" fill="#94a3b8">● Allowed · — Not applicable</text>
+<text x="400" y="1245" text-anchor="middle" font-size="7.5" fill="#b91c1c">HR/Mgmt reject DIRECTLY → REJECTED. Highest authority — no review, no intermediate steps.</text>
+<text x="400" y="1258" text-anchor="middle" font-size="7.5" fill="#7c3aed">Direct fulfill: bypasses FOLLOWING_UP → goes straight to COMMIT_FULFILLED.</text>
+<text x="400" y="1271" text-anchor="middle" font-size="7.5" fill="#1e40af">Only HR can close the case (Mark as Solved).</text>
+</svg>

@@ -1,7 +1,7 @@
 // dto/approve-commit-i-care.dto.ts
 import { Type } from 'class-transformer';
 import {
-  IsArray, IsBoolean, IsObject, IsOptional, IsString,
+  IsArray, IsBoolean, IsIn, IsObject, IsOptional, IsString,
   Matches, MaxLength, ValidateNested,
 } from 'class-validator';
 
@@ -45,6 +45,11 @@ export class ApproveCommitICareDto {
   attachments?: string[];
 
   @IsOptional()
+  @IsOptional()
   @IsBoolean()
   is_fulfill_direct?: boolean;
+
+  @IsOptional()
+  @IsString()
+  caller_role?: string;
 }

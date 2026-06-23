@@ -1,7 +1,7 @@
 // dto/add-seguimiento-i-care.dto.ts
 import { Type } from 'class-transformer';
 import {
-  IsArray, IsObject, IsOptional, IsString,
+  IsArray, IsIn, IsObject, IsOptional, IsString,
   Matches, MaxLength, ValidateNested,
 } from 'class-validator';
 
@@ -47,4 +47,9 @@ export class AddSeguimientoICareDto {
   @IsArray()
   @IsString({ each: true })
   attachments?: string[];
+
+  /** Rol del que llama — usado para guardar el check de high/critical */
+  @IsOptional()
+  @IsIn(['coordinator', 'coordinator-assistant', 'hr', 'hr-assistant', 'management', 'super-coordinator'])
+  caller_role?: string;
 }

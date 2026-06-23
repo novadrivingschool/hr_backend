@@ -1,6 +1,6 @@
-import { BadRequestException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Brackets, Repository } from 'typeorm';
 import * as moment from 'moment-timezone';
 import { Logger } from '@nestjs/common';
 import axios from 'axios';
@@ -63,6 +63,7 @@ export interface PaginatedResult<T> {
  */
 type ICareEmailEvent =
   | 'created_staff' | 'created_coordinator' | 'created_hr' | 'created_management'
+  | 'created_operator' | 'created_instructor' | 'created_teacher'
   | 'justified_staff' | 'justified_coordinator' | 'justified_hr' | 'justified_management'
   | 'committed_staff' | 'committed_coordinator' | 'committed_hr' | 'committed_management'
   | 'seguimiento_added_staff' | 'seguimiento_added_coordinator' | 'seguimiento_added_hr' | 'seguimiento_added_management'
@@ -70,7 +71,8 @@ type ICareEmailEvent =
   | 'resolved_staff' | 'resolved_coordinator' | 'resolved_hr' | 'resolved_management'
   | 'coordinator_rejected_coordinator' | 'coordinator_rejected_hr' | 'coordinator_rejected_management'
   | 'rejection_review_accepted_coordinator' | 'rejection_review_accepted_hr' | 'rejection_review_accepted_management'
-  | 'rejection_review_overridden_coordinator' | 'rejection_review_overridden_hr' | 'rejection_review_overridden_management'
+  | 'rejection_review_overridden_staff' | 'rejection_review_overridden_coordinator' | 'rejection_review_overridden_hr' | 'rejection_review_overridden_management'
+  | 'rejection_review_accepted_reviewer' | 'rejection_review_overridden_reviewer'
   | 'hr_rejected_hr' | 'hr_rejected_management';
 
 // -- Service --------------------------------------------------------------------
@@ -97,27 +99,33 @@ export class ICareService {
    * @param role - 'hr' | 'management'
    * @returns    - Array de nova_email (sin nulls ni vacíos)
    */
-  async getEmailsByRole(role: 'hr' | 'management'): Promise<string[]> {
-    console.log(`[getEmailsByRole] 🔍 Iniciando búsqueda de correos para el rol: '${role}'`);
-
+  private async getEmailsByAnyRole(role: string): Promise<string[]> {
     try {
       const rawResults = await this.employeeRepository
         .createQueryBuilder('emp')
-        // Limpiamos los espacios y pasamos a minúsculas para evitar duplicados por formato
         .select('DISTINCT LOWER(TRIM(emp.nova_email))', 'email')
         .where('emp.status = :status', { status: 'Active' })
         .andWhere("NULLIF(TRIM(emp.nova_email), '') IS NOT NULL")
-        // Búsqueda en el array JSONB
+        .andWhere('emp.roles::jsonb @> :roleParam::jsonb', { roleParam: JSON.stringify([role]) })
+        .getRawMany<{ email: string }>();
+      return rawResults.map(r => r.email);
+    } catch (error) {
+      this.logger.error(`[getEmailsByAnyRole] Failed for role '${role}': ${error?.message}`);
+      return [];
+    }
+  }
+
+  async getEmailsByRole(role: 'hr' | 'management'): Promise<string[]> {
+    try {
+      const rawResults = await this.employeeRepository
+        .createQueryBuilder('emp')
+        .select('DISTINCT LOWER(TRIM(emp.nova_email))', 'email')
+        .where('emp.status = :status', { status: 'Active' })
+        .andWhere("NULLIF(TRIM(emp.nova_email), '') IS NOT NULL")
         .andWhere('emp.roles::jsonb @> :roleParam::jsonb', { roleParam: JSON.stringify([role]) })
         .getRawMany<{ email: string }>();
 
       const emails = rawResults.map(r => r.email);
-
-      if (emails.length === 0) {
-        console.log(`[getEmailsByRole] ⚠️ No se encontró ningún correo activo para el rol '${role}'.`);
-      } else {
-        console.log(`[getEmailsByRole] ✅ Se encontraron ${emails.length} correos para '${role}':`, emails);
-      }
 
       return emails;
 
@@ -216,10 +224,14 @@ export class ICareService {
 
     const sends: Promise<void>[] = [];
 
+    const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+
     if (staffEmail) {
       sends.push(this.triggerEmail(id, 'created_staff', [staffEmail]));
     }
-    if (coordinatorEmails.length > 0) {
+    // Coordinator does NOT receive email for High/Critical or coordinator-as-staff cases
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) {
       sends.push(this.triggerEmail(id, 'created_coordinator', coordinatorEmails));
     }
     if (hrEmails.length > 0) {
@@ -227,6 +239,32 @@ export class ICareService {
     }
     if (managementEmails.length > 0) {
       sends.push(this.triggerEmail(id, 'created_management', managementEmails));
+    }
+
+    // Position-based emails: Operator / Instructor / Teacher (skip if High/Critical or coordinator-as-staff)
+    if (!isHighCritical && !isCoordinatorCase && record.submitter?.employee_number) {
+      const positionRoleMap: Record<string, { event: ICareEmailEvent; role: string }> = {
+        'Operator':   { event: 'created_operator',   role: 'i-care-operator' },
+        'Instructor': { event: 'created_instructor', role: 'i-care-instructor' },
+        'Teacher':    { event: 'created_teacher',    role: 'i-care-teacher' },
+      };
+
+      const submitterEmployee = await this.employeeRepository.findOne({
+        where: { employee_number: record.submitter.employee_number },
+        select: ['multi_position'],
+      });
+
+      const positions: string[] = (submitterEmployee as any)?.multi_position ?? [];
+      this.logger.log(`[triggerCreatedEmails] submitter positions: ${JSON.stringify(positions)}`);
+
+      for (const pos of positions) {
+        const mapping = positionRoleMap[pos];
+        if (!mapping) continue;
+        const roleEmails = await this.getEmailsByAnyRole(mapping.role);
+        if (roleEmails.length > 0) {
+          sends.push(this.triggerEmail(id, mapping.event, roleEmails));
+        }
+      }
     }
 
     await Promise.all(sends);
@@ -246,10 +284,12 @@ export class ICareService {
     ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
 
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'justified_staff', [staffEmail]));
-    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_coordinator', coordinatorEmails));
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'justified_coordinator', coordinatorEmails));
     if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_hr', hrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_management', managementEmails));
     await Promise.all(sends);
@@ -272,10 +312,12 @@ export class ICareService {
     ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
 
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'committed_staff', [staffEmail]));
-    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_coordinator', coordinatorEmails));
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'committed_coordinator', coordinatorEmails));
     if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_hr', hrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_management', managementEmails));
     await Promise.all(sends);
@@ -288,9 +330,11 @@ export class ICareService {
     ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'resolved_staff', [staffEmail]));
-    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_coordinator', coordinatorEmails));
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'resolved_coordinator', coordinatorEmails));
     if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_hr', hrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_management', managementEmails));
     await Promise.all(sends);
@@ -303,9 +347,11 @@ export class ICareService {
     ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'seguimiento_added_staff', [staffEmail]));
-    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_coordinator', coordinatorEmails));
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'seguimiento_added_coordinator', coordinatorEmails));
     if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_hr', hrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_management', managementEmails));
     await Promise.all(sends);
@@ -318,16 +364,21 @@ export class ICareService {
     ]);
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'commit_fulfilled_staff', [staffEmail]));
-    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_coordinator', coordinatorEmails));
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'commit_fulfilled_coordinator', coordinatorEmails));
     if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_hr', hrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_management', managementEmails));
     await Promise.all(sends);
   }
 
   private async triggerCoordinatorRejectedEmails(id: string, record: ICare): Promise<void> {
-    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    // Include both the responsible coordinators AND the one who performed the rejection
+    const responsibleEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const rejectorEmail = record.coordinator_rejected_by?.nova_email;
+    const coordinatorEmails = [...new Set([...responsibleEmails, ...(rejectorEmail ? [rejectorEmail] : [])])];
     const [hrEmails, managementEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
@@ -342,11 +393,14 @@ export class ICareService {
   private async triggerRejectionReviewedEmails(id: string, record: ICare, accepted: boolean): Promise<void> {
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const sends: Promise<void>[] = [];
+    const reviewerEmail = record.rejection_reviewed_by?.nova_email;
     if (accepted) {
       const [hrEmails, managementEmails] = await Promise.all([
         this.getEmailsByRole('hr'),
         this.getEmailsByRole('management'),
       ]);
+      // Confirmación personal al reviewer
+      if (reviewerEmail) sends.push(this.triggerEmail(id, 'rejection_review_accepted_reviewer', [reviewerEmail]));
       if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_coordinator', coordinatorEmails));
       if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_hr', hrEmails));
       if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_management', managementEmails));
@@ -355,6 +409,10 @@ export class ICareService {
         this.getEmailsByRole('hr'),
         this.getEmailsByRole('management'),
       ]);
+      const staffEmail = record.staff_name?.nova_email;
+      // Confirmación personal al reviewer
+      if (reviewerEmail) sends.push(this.triggerEmail(id, 'rejection_review_overridden_reviewer', [reviewerEmail]));
+      if (staffEmail) sends.push(this.triggerEmail(id, 'rejection_review_overridden_staff', [staffEmail]));
       if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_coordinator', coordinatorEmails));
       if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_hr', hrEmails));
       if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_management', managementEmails));
@@ -384,6 +442,21 @@ export class ICareService {
    */
   async create(createICareDto: CreateICareDto): Promise<ICare> {
     const record = this.iCareRepository.create(createICareDto);
+
+    // Embed is_coordinator inside the existing staff_name JSONB (no migration needed)
+    if (record.staff_name?.employee_number) {
+      const staffEmployee = await this.employeeRepository.findOne({
+        where: { employee_number: record.staff_name.employee_number },
+        select: ['roles'],
+      });
+      const staffRoles: string[] = (staffEmployee as any)?.roles ?? [];
+      const isCoordinator = staffRoles.some(r =>
+        r === 'coordinator' || r === 'coordinator-assistant' || r === 'super-coordinator',
+      );
+      if (isCoordinator) {
+        record.staff_name = { ...record.staff_name, is_coordinator: true };
+      }
+    }
 
     const saved = await this.iCareRepository.save(record);
 
@@ -514,6 +587,14 @@ export class ICareService {
       status?: ICareStatus;
       committed?: boolean;
       department?: string;
+      /** Urgencies to EXCLUDE from results (e.g. ['high','critical'] for coordinator view) */
+      excludeUrgencies?: ICareUrgency[];
+      /** Filter records where staff multi_position contains ANY of these positions */
+      staffPositions?: string[];
+      /** When true, combine department + staffPositions as OR (for coordinator + i-care-* combined roles) */
+      orScope?: boolean;
+      /** Exclude records where staff_name.employee_number equals this value (coordinators hide their own iCares) */
+      excludeStaffEmployeeNumber?: string;
     },
     page = 1,
     limit = 15,
@@ -554,6 +635,62 @@ export class ICareService {
         query.andWhere('icare.urgency = :urgency', { urgency: filters.urgency });
       }
 
+      if (filters.excludeUrgencies && filters.excludeUrgencies.length > 0) {
+        query.andWhere('icare.urgency NOT IN (:...excludeUrgencies)', {
+          excludeUrgencies: filters.excludeUrgencies,
+        });
+      }
+
+      // Scope filter: department OR staffPositions (when orScope=true), otherwise each as AND
+      const hasDept = !!filters.department;
+      const hasPos = filters.staffPositions && filters.staffPositions.length > 0;
+
+      if (hasDept && hasPos && filters.orScope) {
+        // Coordinator + i-care-* roles: (dept matches) OR (position matches)
+        const deptStr = filters.department!;
+        const positions = filters.staffPositions!;
+        query.andWhere(new Brackets(qb => {
+          const depts = deptStr.split(',').map(d => d.trim()).filter(Boolean);
+          depts.forEach((d, i) => {
+            qb.orWhere(`icare.department ILIKE :scopeDept${i}`, { [`scopeDept${i}`]: `%${d}%` });
+          });
+          positions.forEach((pos, i) => {
+            qb.orWhere(`icare.multi_position::jsonb @> :scopePos${i}::jsonb`, {
+              [`scopePos${i}`]: JSON.stringify([pos]),
+            });
+          });
+        }));
+      } else {
+        if (hasPos) {
+          const positions = filters.staffPositions!;
+          query.andWhere(new Brackets(qb => {
+            positions.forEach((pos, i) => {
+              qb.orWhere(`icare.multi_position::jsonb @> :staffPos${i}::jsonb`, {
+                [`staffPos${i}`]: JSON.stringify([pos]),
+              });
+            });
+          }));
+        }
+        if (hasDept) {
+          const depts = filters.department!.split(',').map(d => d.trim()).filter(Boolean);
+          if (depts.length === 1) {
+            query.andWhere('icare.department ILIKE :dept0', { dept0: `%${depts[0]}%` });
+          } else {
+            const conditions = depts.map((_, i) => `icare.department ILIKE :dept${i}`);
+            const params: Record<string, string> = {};
+            depts.forEach((d, i) => { params[`dept${i}`] = `%${d}%`; });
+            query.andWhere(`(${conditions.join(' OR ')})`, params);
+          }
+        }
+      }
+
+      if (filters.excludeStaffEmployeeNumber) {
+        query.andWhere(
+          `TRIM(icare.staff_name->>'employee_number') != TRIM(:excludeStaffEmpNum)`,
+          { excludeStaffEmpNum: filters.excludeStaffEmployeeNumber },
+        );
+      }
+
       if (filters.status) {
         query.andWhere('icare.status = :status', { status: filters.status });
       }
@@ -562,20 +699,9 @@ export class ICareService {
         query.andWhere('icare.committed = :committed', { committed: filters.committed });
       }
 
-      if (filters.department) {
-        const depts = filters.department.split(',').map(d => d.trim()).filter(Boolean);
-        if (depts.length === 1) {
-          query.andWhere('icare.department ILIKE :dept0', { dept0: `%${depts[0]}%` });
-        } else {
-          const conditions = depts.map((_, i) => `icare.department ILIKE :dept${i}`);
-          const params: Record<string, string> = {};
-          depts.forEach((d, i) => { params[`dept${i}`] = `%${d}%`; });
-          query.andWhere(`(${conditions.join(' OR ')})`, params);
-        }
-      }
-
       query.orderBy('icare.createdAt', 'DESC').skip((page - 1) * limit).take(limit);
 
+      this.logger.debug(`[findByFilters] SQL: ${query.getSql()}`);
       const [records, total] = await query.getManyAndCount();
 
       return {
@@ -671,6 +797,10 @@ export class ICareService {
     urgency?: ICareUrgency;
     status?: ICareStatus;
     department?: string;
+    excludeUrgencies?: ICareUrgency[];
+    staffPositions?: string[];
+    orScope?: boolean;
+    excludeStaffEmployeeNumber?: string;
   } = {}): Promise<any> {
     try {
       this.logger.log(`Fetching ICare statistics with filters: ${JSON.stringify(filters)}`);
@@ -714,13 +844,55 @@ export class ICareService {
         if (filters.status) {
           qb.andWhere('icare.status = :status', { status: filters.status });
         }
-        applyDeptFilter(qb);
+        if (filters.excludeUrgencies?.length) {
+          qb.andWhere('icare.urgency NOT IN (:...excludeUrgenciesStats)', {
+            excludeUrgenciesStats: filters.excludeUrgencies,
+          });
+        }
+        if (filters.excludeStaffEmployeeNumber) {
+          qb.andWhere(
+            `TRIM(icare.staff_name->>'employee_number') != TRIM(:excludeStaffEmpNumStats)`,
+            { excludeStaffEmpNumStats: filters.excludeStaffEmployeeNumber },
+          );
+        }
+        const hasScopePos = (filters.staffPositions?.length ?? 0) > 0;
+        const hasScopeDept = !!filters.department;
+
+        if (hasScopePos && hasScopeDept && filters.orScope) {
+          // Coordinator + i-care-* roles: (dept matches) OR (position matches)
+          const deptStr = filters.department!;
+          const positions = filters.staffPositions!;
+          qb.andWhere(new Brackets(inner => {
+            const depts = deptStr.split(',').map(d => d.trim()).filter(Boolean);
+            depts.forEach((d, i) => {
+              inner.orWhere(`icare.department ILIKE :statsScopeDept${i}`, { [`statsScopeDept${i}`]: `%${d}%` });
+            });
+            positions.forEach((pos, i) => {
+              inner.orWhere(`icare.multi_position::jsonb @> :statsScopePos${i}::jsonb`, {
+                [`statsScopePos${i}`]: JSON.stringify([pos]),
+              });
+            });
+          }));
+        } else {
+          if (hasScopePos) {
+            const positions = filters.staffPositions!;
+            qb.andWhere(new Brackets(inner => {
+              positions.forEach((pos, i) => {
+                inner.orWhere(`icare.multi_position::jsonb @> :statsPos${i}::jsonb`, {
+                  [`statsPos${i}`]: JSON.stringify([pos]),
+                });
+              });
+            }));
+          }
+          applyDeptFilter(qb);
+        }
         return qb;
       };
 
       // -- totalRecords ----------------------------------------------------------
       const baseQuery = this.iCareRepository.createQueryBuilder('icare');
       applyBaseFilters(baseQuery);
+      this.logger.debug(`[getStats] SQL: ${baseQuery.getSql()}`);
       const totalRecords = await baseQuery.getCount();
 
       // -- urgencyDistribution ---------------------------------------------------
@@ -847,6 +1019,13 @@ export class ICareService {
   async justify(id: string, dto: JustifyICareDto): Promise<ICare> {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (
+      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
+      (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
+    ) {
+      throw new ForbiddenException('High and Critical records are handled exclusively by HR and Management');
+    }
 
     const now = moment().tz('America/Chicago');
 
@@ -1007,6 +1186,13 @@ export class ICareService {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
+    if (
+      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
+      (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
+    ) {
+      throw new ForbiddenException('High and Critical records are handled exclusively by HR and Management');
+    }
+
     const now = moment().tz('America/Chicago');
 
     record.commit_approved = true;
@@ -1059,6 +1245,13 @@ export class ICareService {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
+    if (
+      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
+      (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
+    ) {
+      throw new ForbiddenException('This record is handled exclusively by HR and Management');
+    }
+
     const now = moment().tz('America/Chicago');
 
     const newSeguimiento = {
@@ -1100,6 +1293,13 @@ export class ICareService {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
+    if (
+      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
+      (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
+    ) {
+      throw new ForbiddenException('High and Critical records are handled exclusively by HR and Management');
+    }
+
     const now = moment().tz('America/Chicago');
 
     record.commit_fulfilled = true;
@@ -1139,6 +1339,10 @@ export class ICareService {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
+    if (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) {
+      throw new ForbiddenException('This record is handled exclusively by HR and Management');
+    }
+
     if (record.status !== ICareStatus.PENDING) {
       throw new BadRequestException('Only pending records can be rejected by the coordinator');
     }
@@ -1159,9 +1363,10 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    this.triggerCoordinatorRejectedEmails(saved.id, saved).catch((err) =>
+    // Pass `record` (not `saved`) so the already-loaded `responsible` relation is available
+    this.triggerCoordinatorRejectedEmails(record.id, record).catch((err) =>
       this.logger.error(
-        `❌ Failed to trigger 'coordinator_rejected' email for id=${saved.id}`,
+        `Failed to trigger 'coordinator_rejected' email for id=${record.id}`,
         err?.message || err,
       ),
     );
@@ -1196,7 +1401,7 @@ export class ICareService {
 
     this.triggerHrRejectedEmails(saved.id, saved).catch((err) =>
       this.logger.error(
-        `❌ Failed to trigger 'hr_rejected' emails for id=${saved.id}`,
+        `Failed to trigger 'hr_rejected' emails for id=${saved.id}`,
         err?.message || err,
       ),
     );
@@ -1206,8 +1411,8 @@ export class ICareService {
 
   /**
    * HR / Management revisa el rejected del coordinator.
-   * accept=true  → status REJECTED (final).
-   * accept=false → override: status va a IN_PROGRESS, rejection_override=true.
+   * accept=true  -> status REJECTED (final).
+   * accept=false -> override: status va a IN_PROGRESS, rejection_override=true.
    */
   async reviewRejection(id: string, dto: ReviewRejectionICareDto): Promise<ICare> {
     const record = await this.iCareRepository.findOne({ where: { id } });
@@ -1228,19 +1433,24 @@ export class ICareService {
     record.rejection_review_attachments = dto.attachments ?? [];
 
     if (dto.accept) {
-      // Aceptar el rejected → queda rechazado de forma definitiva
+      // Aceptar el rejected -> queda rechazado de forma definitiva
       record.status = ICareStatus.REJECTED;
     } else {
-      // Override → va directo a IN_PROGRESS, coordinator no puede rechazar de nuevo
+      // Override -> va directo a IN_PROGRESS, coordinator no puede rechazar de nuevo
       record.status = ICareStatus.IN_PROGRESS;
       record.rejection_override = true;
+      // Marcar como justified para que el staff lo vea en MyICare y pueda hacer commit
+      record.justified = true;
+      record.justified_date = now.format('YYYY-MM-DD');
+      record.justified_time = now.format('HH:mm');
+      record.justified_approved_by = dto.reviewed_by;
     }
 
     const saved = await this.iCareRepository.save(record);
 
     this.triggerRejectionReviewedEmails(saved.id, saved, dto.accept).catch((err) =>
       this.logger.error(
-        `❌ Failed to trigger 'rejection_reviewed' email for id=${saved.id}`,
+        `Failed to trigger 'rejection_reviewed' email for id=${saved.id}`,
         err?.message || err,
       ),
     );
@@ -1251,13 +1461,7 @@ export class ICareService {
   // -- Search -----------------------------------------------------------------
 
   /**
-   * Búsqueda full-text sobre múltiples campos del iCare:
-   * reason, details, nombre/apellido/employee_number del submitter y del staff.
-   * Requiere mínimo 2 caracteres en el query (validado en el controller).
-   *
-   * @param queryStr - Texto a buscar (mínimo 2 caracteres)
-   * @param filters  - Filtros opcionales de fechas y urgency
-   * @returns        - Lista de registros que coinciden, ordenados por createdAt DESC
+   * Busqueda full-text sobre multiples campos del iCare.
    */
   async search(
     queryStr: string,
@@ -1302,12 +1506,7 @@ export class ICareService {
   // -- Batch operations --
 
   /**
-   * Actualiza en bulk múltiples registros iCare por sus UUIDs.
-   * Aplica los mismos campos a todos los registros del array ids.
-   *
-   * @param ids     - Array de UUIDs a actualizar
-   * @param updates - Campos a actualizar (parcial)
-   * @returns       - { updated: number } con la cantidad de registros afectados
+   * Actualiza en bulk multiples registros iCare por sus UUIDs.
    */
   async batchUpdate(ids: string[], updates: UpdateICareDto): Promise<{ updated: number }> {
     try {
@@ -1325,10 +1524,7 @@ export class ICareService {
   }
 
   /**
-   * Elimina en bulk múltiples registros iCare por sus UUIDs.
-   *
-   * @param ids - Array de UUIDs a eliminar
-   * @returns   - { deleted: number } con la cantidad de registros eliminados
+   * Elimina en bulk multiples registros iCare por sus UUIDs.
    */
   async batchDelete(ids: string[]): Promise<{ deleted: number }> {
     try {
@@ -1350,9 +1546,6 @@ export class ICareService {
   /**
    * Transforma las fechas createdAt y updatedAt de los registros
    * al timezone America/Chicago en formato 'YYYY-MM-DD HH:mm:ss'.
-   *
-   * @param records - Array de registros ICare
-   * @returns       - Mismos registros con fechas transformadas
    */
   private transformDates(records: ICare[]): ICare[] {
     return records.map(record => ({

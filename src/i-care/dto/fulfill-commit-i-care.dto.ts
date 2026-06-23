@@ -1,7 +1,7 @@
 // dto/fulfill-commit-i-care.dto.ts
 import { Type } from 'class-transformer';
 import {
-  IsArray, IsObject, IsOptional, IsString,
+  IsArray, IsIn, IsObject, IsOptional, IsString,
   MaxLength, ValidateNested,
 } from 'class-validator';
 
@@ -37,4 +37,8 @@ export class FulfillCommitICareDto {
   @IsArray()
   @IsString({ each: true })
   attachments?: string[];
+
+  @IsOptional()
+  @IsString()
+  caller_role?: string;
 }
