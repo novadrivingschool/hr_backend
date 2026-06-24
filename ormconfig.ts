@@ -27,6 +27,7 @@ import { ICareReason } from 'src/i_care_reasons/entities/i_care_reason.entity';
 import { EmployeeAccounting } from 'src/employee-accounting/entities/employee-accounting.entity';
 import { Timesheet } from 'src/payroll/entities/timesheet.entity';
 import { Holiday } from 'src/holidays/entities/holiday.entity';
+import { HolidayAuditLog } from 'src/holidays/entities/holiday-audit-log.entity';
 import { InstructorVehiclePickupDropoff } from 'src/instructor_vehicle_pickup_dropoff/entities/instructor_vehicle_pickup_dropoff.entity';
 import { InstructorRestriction } from 'src/instructor_restrictions/entities/instructor_restriction.entity';
 import { InstructorService } from 'src/instructor_services/entities/instructor_service.entity';
@@ -90,6 +91,7 @@ export const AppDataSource = new DataSource({
     EmployeeAccounting,
     Timesheet,
     Holiday,
+    HolidayAuditLog,
     InstructorVehiclePickupDropoff,
     InstructorRestriction,
     InstructorService,

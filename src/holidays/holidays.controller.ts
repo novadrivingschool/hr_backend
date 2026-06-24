@@ -17,6 +17,11 @@ export class HolidaysController {
     return this.holidaysService.findAll();
   }
 
+  @Get('audit-log')
+  findAuditLog() {
+    return this.holidaysService.findAuditLog();
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.holidaysService.findOne(id);
@@ -28,7 +33,7 @@ export class HolidaysController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.holidaysService.remove(id);
+  remove(@Param('id') id: string, @Body() body: { performed_by?: any }) {
+    return this.holidaysService.remove(id, body?.performed_by);
   }
 }

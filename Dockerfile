@@ -38,6 +38,7 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 COPY --from=builder /usr/src/app/package*.json ./
 COPY --from=builder /usr/src/app/dist/src ./dist
+COPY --from=builder /usr/src/app/src/employees/templates ./dist/employees/templates
 
 RUN npm install --production
 

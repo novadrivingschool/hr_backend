@@ -1,4 +1,18 @@
-import { IsBoolean, IsDateString, IsOptional, IsString, Length } from 'class-validator';
+import { IsBoolean, IsDateString, IsObject, IsOptional, IsString, Length } from 'class-validator';
+
+export class PerformedByDto {
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  last_name?: string;
+
+  @IsOptional()
+  @IsString()
+  employee_number?: string;
+}
 
 export class CreateHolidayDto {
   @IsString()
@@ -20,4 +34,8 @@ export class CreateHolidayDto {
   @IsOptional()
   @IsBoolean()
   is_active?: boolean;
+
+  @IsOptional()
+  @IsObject()
+  performed_by?: PerformedByDto;
 }
