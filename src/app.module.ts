@@ -67,9 +67,11 @@ dotenv.config();
       },
       logging: false,
       extra: {
-        max: 5,          // máximo de conexiones en el pool
-        idleTimeoutMillis: 30000,
-        connectionTimeoutMillis: 5000,
+        max: 15,
+        idleTimeoutMillis: 20000,
+        connectionTimeoutMillis: 10000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
       },
       // ✅ Aquí defines solo las entidades que SÍ quieres que entren en las migraciones
       entities: [
@@ -152,4 +154,3 @@ dotenv.config();
   ],
 })
 export class AppModule { }
-/* TimesheetRecordsModule, */

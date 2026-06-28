@@ -16,6 +16,7 @@ import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
 import { CoordinatorRejectICareDto } from './dto/coordinator-reject-i-care.dto';
 import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
 import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
+import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
 
@@ -73,7 +74,11 @@ type ICareEmailEvent =
   | 'rejection_review_accepted_coordinator' | 'rejection_review_accepted_hr' | 'rejection_review_accepted_management'
   | 'rejection_review_overridden_staff' | 'rejection_review_overridden_coordinator' | 'rejection_review_overridden_hr' | 'rejection_review_overridden_management'
   | 'rejection_review_accepted_reviewer' | 'rejection_review_overridden_reviewer'
-  | 'hr_rejected_hr' | 'hr_rejected_management';
+  | 'hr_rejected_hr' | 'hr_rejected_management'
+  | 'pending_hr_review_coordinator' | 'pending_hr_review_hr' | 'pending_hr_review_management'
+  | 'hc_accepted_hr' | 'hc_accepted_management' | 'hc_accepted_staff'
+  | 'justification_downgraded_staff' | 'justification_downgraded_coordinator'
+  | 'justification_downgraded_hr' | 'justification_downgraded_management';
 
 // -- Service --------------------------------------------------------------------
 
@@ -214,10 +219,12 @@ export class ICareService {
    *   created_management  → role 'management' (con identidad completa)
    */
   private async triggerCreatedEmails(id: string, record: ICare): Promise<void> {
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
 
     const staffEmail = record.submitter?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
@@ -234,8 +241,8 @@ export class ICareService {
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) {
       sends.push(this.triggerEmail(id, 'created_coordinator', coordinatorEmails));
     }
-    if (hrEmails.length > 0) {
-      sends.push(this.triggerEmail(id, 'created_hr', hrEmails));
+    if (allHrEmails.length > 0) {
+      sends.push(this.triggerEmail(id, 'created_hr', allHrEmails));
     }
     if (managementEmails.length > 0) {
       sends.push(this.triggerEmail(id, 'created_management', managementEmails));
@@ -278,10 +285,12 @@ export class ICareService {
    * justified_management  → role 'management'
    */
   private async triggerJustifiedEmails(id: string, record: ICare): Promise<void> {
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
@@ -290,7 +299,7 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'justified_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'justified_coordinator', coordinatorEmails));
-    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_hr', hrEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_hr', allHrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_management', managementEmails));
     await Promise.all(sends);
   }
@@ -306,10 +315,12 @@ export class ICareService {
    *   committed_management  → role 'management'
    */
   private async triggerCommittedEmails(id: string, record: ICare): Promise<void> {
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
@@ -318,16 +329,18 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'committed_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'committed_coordinator', coordinatorEmails));
-    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_hr', hrEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_hr', allHrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_management', managementEmails));
     await Promise.all(sends);
   }
 
   private async triggerResolvedEmails(id: string, record: ICare): Promise<void> {
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
@@ -335,16 +348,18 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'resolved_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'resolved_coordinator', coordinatorEmails));
-    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_hr', hrEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_hr', allHrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_management', managementEmails));
     await Promise.all(sends);
   }
 
   private async triggerSeguimientoAddedEmails(id: string, record: ICare): Promise<void> {
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
@@ -352,16 +367,18 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'seguimiento_added_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'seguimiento_added_coordinator', coordinatorEmails));
-    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_hr', hrEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_hr', allHrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_management', managementEmails));
     await Promise.all(sends);
   }
 
   private async triggerCommitFulfilledEmails(id: string, record: ICare): Promise<void> {
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const staffEmail = record.staff_name?.nova_email ?? null;
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
@@ -369,7 +386,7 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'commit_fulfilled_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'commit_fulfilled_coordinator', coordinatorEmails));
-    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_hr', hrEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_hr', allHrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_management', managementEmails));
     await Promise.all(sends);
   }
@@ -379,13 +396,15 @@ export class ICareService {
     const responsibleEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const rejectorEmail = record.coordinator_rejected_by?.nova_email;
     const coordinatorEmails = [...new Set([...responsibleEmails, ...(rejectorEmail ? [rejectorEmail] : [])])];
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const sends: Promise<void>[] = [];
     if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_coordinator', coordinatorEmails));
-    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_hr', hrEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_hr', allHrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_management', managementEmails));
     await Promise.all(sends);
   }
@@ -394,40 +413,89 @@ export class ICareService {
     const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
     const sends: Promise<void>[] = [];
     const reviewerEmail = record.rejection_reviewed_by?.nova_email;
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     if (accepted) {
-      const [hrEmails, managementEmails] = await Promise.all([
-        this.getEmailsByRole('hr'),
-        this.getEmailsByRole('management'),
-      ]);
       // Confirmación personal al reviewer
       if (reviewerEmail) sends.push(this.triggerEmail(id, 'rejection_review_accepted_reviewer', [reviewerEmail]));
       if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_coordinator', coordinatorEmails));
-      if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_hr', hrEmails));
+      if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_hr', allHrEmails));
       if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_management', managementEmails));
     } else {
-      const [hrEmails, managementEmails] = await Promise.all([
-        this.getEmailsByRole('hr'),
-        this.getEmailsByRole('management'),
-      ]);
       const staffEmail = record.staff_name?.nova_email;
       // Confirmación personal al reviewer
       if (reviewerEmail) sends.push(this.triggerEmail(id, 'rejection_review_overridden_reviewer', [reviewerEmail]));
       if (staffEmail) sends.push(this.triggerEmail(id, 'rejection_review_overridden_staff', [staffEmail]));
       if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_coordinator', coordinatorEmails));
-      if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_hr', hrEmails));
+      if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_hr', allHrEmails));
       if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_management', managementEmails));
     }
     await Promise.all(sends);
   }
 
   private async triggerHrRejectedEmails(id: string, record: ICare): Promise<void> {
-    const [hrEmails, managementEmails] = await Promise.all([
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
       this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
     ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const sends: Promise<void>[] = [];
-    if (hrEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_hr', hrEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_hr', allHrEmails));
     if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  private async triggerPendingHrReviewEmails(id: string, record: ICare): Promise<void> {
+    const responsibleEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const submitterEmail = record.justified_approved_by?.nova_email;
+    const coordinatorEmails = [...new Set([...responsibleEmails, ...(submitterEmail ? [submitterEmail] : [])])];
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
+    const sends: Promise<void>[] = [];
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'pending_hr_review_coordinator', coordinatorEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'pending_hr_review_hr', allHrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'pending_hr_review_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  private async triggerHcAcceptedEmails(id: string, record: ICare): Promise<void> {
+    const staffEmail = record.staff_name?.nova_email;
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'hc_accepted_staff', [staffEmail]));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'hc_accepted_hr', allHrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'hc_accepted_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  private async triggerDowngradedEmails(id: string, record: ICare): Promise<void> {
+    const staffEmail = record.staff_name?.nova_email;
+    const responsibleEmails = (record.responsible ?? []).map((r: any) => r.nova_email).filter(Boolean);
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'justification_downgraded_staff', [staffEmail]));
+    if (responsibleEmails.length > 0) sends.push(this.triggerEmail(id, 'justification_downgraded_coordinator', responsibleEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'justification_downgraded_hr', allHrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'justification_downgraded_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -583,8 +651,8 @@ export class ICareService {
       submitterEmployeeNumber?: string;
       staffEmployeeNumber?: string;
       responsibleEmployeeNumber?: string;
-      urgency?: ICareUrgency;
-      status?: ICareStatus;
+      urgencies?: ICareUrgency[];
+      statuses?: ICareStatus[];
       committed?: boolean;
       department?: string;
       /** Urgencies to EXCLUDE from results (e.g. ['high','critical'] for coordinator view) */
@@ -595,6 +663,8 @@ export class ICareService {
       orScope?: boolean;
       /** Exclude records where staff_name.employee_number equals this value (coordinators hide their own iCares) */
       excludeStaffEmployeeNumber?: string;
+      /** When true, only return records with NULL urgency */
+      noUrgency?: boolean;
     },
     page = 1,
     limit = 15,
@@ -631,12 +701,20 @@ export class ICareService {
         });
       }
 
-      if (filters.urgency) {
-        query.andWhere('icare.urgency = :urgency', { urgency: filters.urgency });
+      if (filters.noUrgency && filters.urgencies && filters.urgencies.length > 0) {
+        // Ambos: (urgency IN (...) OR urgency IS NULL)
+        query.andWhere(new Brackets(qb => {
+          qb.where('icare.urgency IN (:...filterUrgencies)', { filterUrgencies: filters.urgencies })
+            .orWhere('icare.urgency IS NULL');
+        }));
+      } else if (filters.noUrgency) {
+        query.andWhere('icare.urgency IS NULL');
+      } else if (filters.urgencies && filters.urgencies.length > 0) {
+        query.andWhere('icare.urgency IN (:...filterUrgencies)', { filterUrgencies: filters.urgencies });
       }
 
       if (filters.excludeUrgencies && filters.excludeUrgencies.length > 0) {
-        query.andWhere('icare.urgency NOT IN (:...excludeUrgencies)', {
+        query.andWhere('(icare.urgency NOT IN (:...excludeUrgencies) OR icare.urgency IS NULL)', {
           excludeUrgencies: filters.excludeUrgencies,
         });
       }
@@ -691,12 +769,20 @@ export class ICareService {
         );
       }
 
-      if (filters.status) {
-        query.andWhere('icare.status = :status', { status: filters.status });
-      }
-
-      if (filters.committed !== undefined) {
-        query.andWhere('icare.committed = :committed', { committed: filters.committed });
+      // Cuando committed=true, los records activos tienen status in_progress/following_up.
+      // Para evitar el conflicto de AND con statuses del usuario (ej. pending, pending_hr_review),
+      // se ignora el filtro de status cuando committed=true — el committed boolean es suficiente.
+      // Cuando committed=false o sin filtro de commitment, el status se aplica normalmente.
+      if (filters.committed === true) {
+        // Solo filtrar por committed, ignorar statuses
+        query.andWhere('icare.committed = :committed', { committed: true });
+      } else {
+        if (filters.statuses && filters.statuses.length > 0) {
+          query.andWhere('icare.status IN (:...filterStatuses)', { filterStatuses: filters.statuses });
+        }
+        if (filters.committed === false) {
+          query.andWhere('icare.committed = :committed', { committed: false });
+        }
       }
 
       query.orderBy('icare.createdAt', 'DESC').skip((page - 1) * limit).take(limit);
@@ -794,13 +880,14 @@ export class ICareService {
     dateTo?: string;
     submitterEmployeeNumber?: string;
     staffEmployeeNumber?: string;
-    urgency?: ICareUrgency;
-    status?: ICareStatus;
+    urgencies?: ICareUrgency[];
+    statuses?: ICareStatus[];
     department?: string;
     excludeUrgencies?: ICareUrgency[];
     staffPositions?: string[];
     orScope?: boolean;
     excludeStaffEmployeeNumber?: string;
+    noUrgency?: boolean;
   } = {}): Promise<any> {
     try {
       this.logger.log(`Fetching ICare statistics with filters: ${JSON.stringify(filters)}`);
@@ -838,14 +925,16 @@ export class ICareService {
             staffEmpNum: filters.staffEmployeeNumber,
           });
         }
-        if (filters.urgency) {
-          qb.andWhere('icare.urgency = :urgency', { urgency: filters.urgency });
+        if (filters.noUrgency) {
+          qb.andWhere('icare.urgency IS NULL');
+        } else if (filters.urgencies?.length) {
+          qb.andWhere('icare.urgency IN (:...filterUrgencies)', { filterUrgencies: filters.urgencies });
         }
-        if (filters.status) {
-          qb.andWhere('icare.status = :status', { status: filters.status });
+        if (filters.statuses?.length) {
+          qb.andWhere('icare.status IN (:...filterStatuses)', { filterStatuses: filters.statuses });
         }
         if (filters.excludeUrgencies?.length) {
-          qb.andWhere('icare.urgency NOT IN (:...excludeUrgenciesStats)', {
+          qb.andWhere('(icare.urgency NOT IN (:...excludeUrgenciesStats) OR icare.urgency IS NULL)', {
             excludeUrgenciesStats: filters.excludeUrgencies,
           });
         }
@@ -905,12 +994,13 @@ export class ICareService {
       const urgencyDistribution = await urgencyQb.getRawMany();
 
       const urgencyMap = Object.fromEntries(
-        urgencyDistribution.map(r => [r.urgency, parseInt(r.count, 10)]),
+        urgencyDistribution.map(r => [r.urgency ?? '__null__', parseInt(r.count, 10)]),
       );
       const lowCount = urgencyMap[ICareUrgency.LOW] || 0;
       const mediumCount = urgencyMap[ICareUrgency.MEDIUM] || 0;
       const highCount = urgencyMap[ICareUrgency.HIGH] || 0;
       const criticalCount = urgencyMap[ICareUrgency.CRITICAL] || 0;
+      const noUrgencyCount = urgencyMap['__null__'] || 0;
 
       // -- statusDistribution ----------------------------------------------------
       const statusQb = this.iCareRepository
@@ -926,8 +1016,12 @@ export class ICareService {
       );
       const pendingStatusCount = statusMap[ICareStatus.PENDING] || 0;
       const inProgressStatusCount = statusMap[ICareStatus.IN_PROGRESS] || 0;
-      const rejectedStatusCount = statusMap[ICareStatus.REJECTED] || 0; // ← nuevo
+      const rejectedStatusCount = statusMap[ICareStatus.REJECTED] || 0;
       const solvedStatusCount = statusMap[ICareStatus.SOLVED] || 0;
+      const followingUpStatusCount = statusMap[ICareStatus.FOLLOWING_UP] || 0;
+      const commitFulfilledStatusCount = statusMap[ICareStatus.COMMIT_FULFILLED] || 0;
+      const pendingHrReviewStatusCount = statusMap[ICareStatus.PENDING_HR_REVIEW] || 0;
+      const rejectionUnderReviewStatusCount = statusMap[ICareStatus.REJECTION_UNDER_REVIEW] || 0;
 
       // -- monthlyTrend (últimos 6 meses) ----------------------------------------
       const sixMonthsAgo = new Date();
@@ -959,15 +1053,15 @@ export class ICareService {
       // -- criticalActiveCount: High o Critical, excluyendo SOLVED y REJECTED ----
       const criticalActiveQb = this.iCareRepository
         .createQueryBuilder('icare')
-        .where('icare.urgency IN (:...urgencies)', {
-          urgencies: [ICareUrgency.HIGH, ICareUrgency.CRITICAL],
+        .where('icare.urgency IN (:...criticalUrgencies)', {
+          criticalUrgencies: [ICareUrgency.HIGH, ICareUrgency.CRITICAL],
         });
-      if (filters.status) {
-        criticalActiveQb.andWhere('icare.status = :status', { status: filters.status });
+      if (filters.statuses?.length) {
+        criticalActiveQb.andWhere('icare.status IN (:...criticalStatuses)', { criticalStatuses: filters.statuses });
       } else {
         criticalActiveQb.andWhere(
           'icare.status NOT IN (:...excluded)',
-          { excluded: [ICareStatus.SOLVED, ICareStatus.REJECTED] }, // ← excluye ambos
+          { excluded: [ICareStatus.SOLVED, ICareStatus.REJECTED] },
         );
       }
       applyDeptFilter(criticalActiveQb);
@@ -983,13 +1077,18 @@ export class ICareService {
         mediumCount,
         highCount,
         criticalCount,
+        noUrgencyCount,
         criticalActiveCount,
         urgencyDistribution,
         // por status
         pendingStatusCount,
         inProgressStatusCount,
-        rejectedStatusCount,   // ← nuevo
+        rejectedStatusCount,
         solvedStatusCount,
+        followingUpStatusCount,
+        commitFulfilledStatusCount,
+        pendingHrReviewStatusCount,
+        rejectionUnderReviewStatusCount,
         statusDistribution,
         // tendencia
         monthlyTrend,
@@ -1020,19 +1119,15 @@ export class ICareService {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
-    if (
-      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
-      (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
-    ) {
-      throw new ForbiddenException('High and Critical records are handled exclusively by HR and Management');
-    }
-
     const now = moment().tz('America/Chicago');
 
     record.justified = dto.justified;
     record.justified_approved_by = dto.approved_by;
     record.justified_date = now.format('YYYY-MM-DD');
     record.justified_time = now.format('HH:mm');
+
+    // Guardar la urgency seleccionada (coordinator L/M → in_progress; coordinator H/C → pending_hr_review; HR/Mgmt → in_progress)
+    if (dto.urgency && dto.justified) record.urgency = dto.urgency;
 
     if (dto.comment) {
       record.justified_comments = [
@@ -1048,29 +1143,34 @@ export class ICareService {
       ];
     }
 
+    const isCoordinatorRole = dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant';
+    const isHighCriticalUrgency = dto.urgency === ICareUrgency.HIGH || dto.urgency === ICareUrgency.CRITICAL;
+
     if (dto.justified) {
-      record.status = ICareStatus.IN_PROGRESS;
+      if (isCoordinatorRole && isHighCriticalUrgency) {
+        record.status = ICareStatus.PENDING_HR_REVIEW;
+      } else {
+        record.status = ICareStatus.IN_PROGRESS;
+      }
     } else {
-      // justified=false → entra a review de HR/Management antes de quedar REJECTED
       record.status = ICareStatus.REJECTION_UNDER_REVIEW;
     }
 
     const saved = await this.iCareRepository.save(record);
 
     if (dto.justified) {
-      this.triggerJustifiedEmails(saved.id, saved).catch((err) =>
-        this.logger.error(
-          `❌ Failed to trigger 'justified' emails for id=${saved.id}`,
-          err?.message || err,
-        ),
-      );
+      if (isCoordinatorRole && isHighCriticalUrgency) {
+        this.triggerPendingHrReviewEmails(saved.id, saved).catch((err) =>
+          this.logger.error(`❌ Failed to trigger 'pending_hr_review' emails for id=${saved.id}`, err?.message || err),
+        );
+      } else {
+        this.triggerJustifiedEmails(saved.id, saved).catch((err) =>
+          this.logger.error(`❌ Failed to trigger 'justified' emails for id=${saved.id}`, err?.message || err),
+        );
+      }
     } else {
-      // justified=false → notifica a HR + Management para que hagan el review
       this.triggerCoordinatorRejectedEmails(saved.id, saved).catch((err) =>
-        this.logger.error(
-          `❌ Failed to trigger 'not_justified' emails for id=${saved.id}`,
-          err?.message || err,
-        ),
+        this.logger.error(`❌ Failed to trigger 'not_justified' emails for id=${saved.id}`, err?.message || err),
       );
     }
 
@@ -1078,6 +1178,60 @@ export class ICareService {
   }
 
   // -- Commit -----------------------------------------------------------------
+
+  /**
+   * HR/Management aprueban, bajan nivel o rechazan una justificación H/C en PENDING_HR_REVIEW.
+   */
+  async approveJustification(id: string, dto: ApproveJustificationICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (record.status !== ICareStatus.PENDING_HR_REVIEW) {
+      throw new BadRequestException('Record is not pending HR/Management review');
+    }
+
+    const now = moment().tz('America/Chicago');
+
+    if (dto.action === 'accept') {
+      if (!dto.urgency) throw new BadRequestException('Urgency is required when accepting');
+      record.urgency = dto.urgency;
+      record.status = ICareStatus.IN_PROGRESS;
+      record.justified = true;
+      record.justified_approved_by = dto.reviewed_by;
+      record.justified_date = now.format('YYYY-MM-DD');
+      record.justified_time = now.format('HH:mm');
+      if (dto.notes) record.hr_justified_notes = dto.notes;
+      if (dto.attachments?.length) record.hr_justified_attachments = [...(record.hr_justified_attachments ?? []), ...dto.attachments];
+      const saved = await this.iCareRepository.save(record);
+      const isHC = dto.urgency === ICareUrgency.HIGH || dto.urgency === ICareUrgency.CRITICAL;
+      if (isHC) {
+        this.triggerHcAcceptedEmails(saved.id, saved).catch((err) =>
+          this.logger.error(`❌ Failed to trigger 'hc_accepted' emails for id=${saved.id}`, err?.message || err),
+        );
+      } else {
+        this.triggerDowngradedEmails(saved.id, saved).catch((err) =>
+          this.logger.error(`❌ Failed to trigger 'downgraded' emails for id=${saved.id}`, err?.message || err),
+        );
+      }
+      return this.transformDates([saved])[0];
+    }
+
+    if (dto.action === 'reject') {
+      record.status = ICareStatus.REJECTED;
+      record.coordinator_rejected = true;
+      record.coordinator_rejected_by = dto.reviewed_by;
+      record.coordinator_rejected_date = now.format('YYYY-MM-DD');
+      record.coordinator_rejected_time = now.format('HH:mm');
+      if (dto.notes) record.coordinator_rejected_notes = dto.notes;
+      const saved = await this.iCareRepository.save(record);
+      this.triggerHrRejectedEmails(saved.id, saved).catch((err) =>
+        this.logger.error(`❌ Failed to trigger 'hr_rejected' emails for id=${saved.id}`, err?.message || err),
+      );
+      return this.transformDates([saved])[0];
+    }
+
+    throw new BadRequestException('Invalid action');
+  }
 
   /**
    * El Staff registra su compromiso (commit) sobre el iCare.
@@ -1550,12 +1704,8 @@ export class ICareService {
   private transformDates(records: ICare[]): ICare[] {
     return records.map(record => ({
       ...record,
-      createdAt: moment(record.createdAt)
-        .tz('America/Chicago')
-        .format('YYYY-MM-DD HH:mm:ss') as any,
-      updatedAt: moment(record.updatedAt)
-        .tz('America/Chicago')
-        .format('YYYY-MM-DD HH:mm:ss') as any,
+      createdAt: moment(record.createdAt).tz('America/Chicago').format('YYYY-MM-DD HH:mm:ss') as any,
+      updatedAt: moment(record.updatedAt).tz('America/Chicago').format('YYYY-MM-DD HH:mm:ss') as any,
     }));
   }
 }

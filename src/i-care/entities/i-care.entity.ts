@@ -9,6 +9,7 @@ import {
 export enum ICareStatus {
   PENDING = 'pending',
   IN_PROGRESS = 'in_progress',
+  PENDING_HR_REVIEW = 'pending_hr_review',
   REJECTION_UNDER_REVIEW = 'rejection_under_review',
   REJECTED = 'rejected',
   FOLLOWING_UP = 'following_up',
@@ -30,8 +31,8 @@ export class ICare {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'enum', enum: ICareUrgency, default: ICareUrgency.LOW })
-  urgency: ICareUrgency;
+  @Column({ type: 'enum', enum: ICareUrgency, nullable: true, default: null })
+  urgency: ICareUrgency | null;
 
   @Column({ type: 'enum', enum: ICareStatus, default: ICareStatus.PENDING })
   status: ICareStatus;
@@ -124,6 +125,14 @@ export class ICare {
 
   @Column('jsonb', { nullable: true, default: () => "'[]'" })
   justified_attachments: string[];
+
+  /** Evidencia subida por HR/Management al approve-justification */
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  hr_justified_attachments: string[];
+
+  /** Notas de HR/Management al approve-justification (accept) */
+  @Column({ nullable: true, type: 'text' })
+  hr_justified_notes: string | null;
 
   // ─── Commitment fields ─────────────────────────────────────────────────────
   @Column({ type: 'boolean', default: false })

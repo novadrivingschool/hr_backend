@@ -34,9 +34,9 @@ export class PersonDto {
 export class ResponsibleDto extends PersonDto {}
 
 export class CreateICareDto {
+  @IsOptional()
   @IsEnum(ICareUrgency)
-  @IsNotEmpty()
-  urgency: ICareUrgency;
+  urgency?: ICareUrgency;
 
   @IsDateString()
   @IsNotEmpty()

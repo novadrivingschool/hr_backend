@@ -2371,6 +2371,7 @@ export class PayrollService {
     start_date: string,
     end_date: string,
     employees: string[],
+    tcwDisplayName?: string,
   ): Promise<{ buffer: Buffer; filename: string }> {
     // Determinamos el work_schedule del primer empleado encontrado
     const empRecord = await this.employeeRepository.findOne({
@@ -2392,6 +2393,7 @@ export class PayrollService {
       page.setDefaultTimeout(0);
 
       const emp = data[0];
+      if (tcwDisplayName) (emp as any).tcw_display_name = tcwDisplayName;
       const html = buildSummaryEmployeeHtml(emp);
 
       await page.setContent(html, { waitUntil: 'load', timeout: 0 });
@@ -2413,7 +2415,9 @@ export class PayrollService {
 
       const safeStr = (v: string) =>
         String(v || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-zA-Z0-9-_]/g, '_');
-      const name = safeStr(`${emp.last_name ?? ''}_${emp.name ?? ''}`);
+      const name = tcwDisplayName
+        ? safeStr(tcwDisplayName)
+        : safeStr(`${emp.last_name ?? ''}_${emp.name ?? ''}`);
       const filename = `PayrollSummary_${name}_${start_date}_${end_date}.pdf`;
 
       return { buffer: Buffer.from(pdfBuffer), filename };
@@ -2434,7 +2438,7 @@ export class PayrollService {
   }
 
   async getPayrollSummary(
-    work_schedule: WorkSchedule,
+    work_schedule: WorkSchedule | undefined,
     start_date: string,
     end_date: string,
     employeeFilter?: string[],
@@ -2442,8 +2446,9 @@ export class PayrollService {
     const round = (v: number | null | undefined) =>
       Number(Number(v ?? 0).toFixed(2));
 
-    // 1. Empleados activos del work_schedule
-    const whereClause: any = { status: 'Active', work_schedule };
+    // 1. Empleados activos (opcionalmente filtrados por work_schedule)
+    const whereClause: any = { status: 'Active' };
+    if (work_schedule) whereClause.work_schedule = work_schedule;
     if (employeeFilter?.length) {
       whereClause.employee_number = In(employeeFilter);
     }
@@ -2761,6 +2766,7 @@ export class PayrollService {
         name: emp.name,
         last_name: emp.last_name,
         work_schedule: emp.work_schedule,
+        type_of_schedule: emp.type_of_schedule,
         authorized_hours: metrics.total_authorized_hours,
         period: { start_date, end_date },
         days_worked: metrics.days_worked_count,

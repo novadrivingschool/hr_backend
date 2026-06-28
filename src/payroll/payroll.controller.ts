@@ -128,11 +128,11 @@ export class PayrollController {
     @Query('end_date') end_date: string,
     @Body() body: { employees?: string[] },
   ) {
-    if (!work_schedule || !start_date || !end_date) {
-      throw new BadRequestException('work_schedule, start_date y end_date son requeridos');
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date y end_date son requeridos');
     }
 
-    if (!Object.values(WorkSchedule).includes(work_schedule.toLowerCase() as WorkSchedule)) {
+    if (work_schedule && !Object.values(WorkSchedule).includes(work_schedule.toLowerCase() as WorkSchedule)) {
       throw new BadRequestException('work_schedule debe ser "fixed" o "variable"');
     }
 
@@ -145,7 +145,7 @@ export class PayrollController {
     }
 
     const data = await this.payrollService.getPayrollSummary(
-      work_schedule.toLowerCase() as WorkSchedule,
+      work_schedule ? work_schedule.toLowerCase() as WorkSchedule : undefined,
       start_date,
       end_date,
       body?.employees,
@@ -160,10 +160,10 @@ export class PayrollController {
 
   @Post('records/summary/pdf')
   async getPayrollSummaryPdf(
-    @Body() body: { start_date: string; end_date: string; employees: string[] },
+    @Body() body: { start_date: string; end_date: string; employees: string[]; tcw_display_name?: string },
     @Res() res: Response,
   ) {
-    const { start_date, end_date, employees } = body;
+    const { start_date, end_date, employees, tcw_display_name } = body;
 
     if (!start_date || !end_date || !employees?.length) {
       throw new BadRequestException('start_date, end_date y employees son requeridos');
@@ -173,6 +173,7 @@ export class PayrollController {
       start_date,
       end_date,
       employees,
+      tcw_display_name,
     );
 
     res.setHeader('Content-Type', 'application/pdf');

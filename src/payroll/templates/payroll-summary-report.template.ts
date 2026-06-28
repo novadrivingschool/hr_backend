@@ -32,6 +32,7 @@ export function buildSummaryEmployeeHtml(emp: any): string {
   const emptyInline = (text: string) => `<div class="empty-inline">${esc(text)}</div>`;
 
   const fullName = [emp?.name, emp?.last_name].filter(Boolean).join(' ') || '—';
+  const tcwDisplayName = emp?.tcw_display_name || null;
   const periodStart = emp?.period?.start_date || '—';
   const periodEnd = emp?.period?.end_date || '—';
 
@@ -168,6 +169,17 @@ export function buildSummaryEmployeeHtml(emp: any): string {
           background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;
         }
         .source-badge--tcw { background: #ecfeff; color: #0e7490; border-color: #a5f3fc; }
+        .emp-tcw-name {
+          display: block; font-size: 26px; font-weight: 900;
+          background: linear-gradient(90deg, #4f46e5, #0ea5e9);
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+          margin-top: 6px; letter-spacing: -0.5px; line-height: 1.15;
+        }
+        .emp-real-name {
+          display: inline-block; font-size: 10px; color: #64748b;
+          font-style: italic; margin-top: 5px; padding: 2px 8px;
+          background: #f1f5f9; border-radius: 4px; border: 1px solid #e2e8f0;
+        }
       </style>
     </head>
     <body>
@@ -178,14 +190,17 @@ export function buildSummaryEmployeeHtml(emp: any): string {
           <div class="header">
             <div>
               <h1 class="title">Payroll Summary Report</h1>
-              <p class="subtitle">
-                ${esc(fullName)} · ${esc(emp?.employee_number)} · ${esc(periodStart)} — ${esc(periodEnd)}
+              ${tcwDisplayName
+                ? `<span class="emp-tcw-name">${esc(tcwDisplayName)}</span>
+                   <span class="emp-real-name">&#128101; ${esc(fullName)}</span>`
+                : `<p class="subtitle">${esc(fullName)}</p>`
+              }
+              <p class="subtitle" style="margin-top:6px">
+                ${esc(emp?.employee_number)}
               </p>
-            </div>
-            <div style="display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap">
-              <span class="tag">${esc(emp?.work_schedule || '—')}</span>
-              <span class="tag">${esc(rate?.type_of_income || '—')}</span>
-              <span class="tag">${esc(rate?.pay_frequency || '—')}</span>
+              <p style="margin:6px 0 0; font-size:13px; font-weight:700; color:#4f46e5; background:#eef2ff; display:inline-block; padding:3px 10px; border-radius:6px; border:1px solid #c7d2fe;">
+                📅 ${esc(periodStart)} — ${esc(periodEnd)}
+              </p>
             </div>
           </div>
 
@@ -195,12 +210,9 @@ export function buildSummaryEmployeeHtml(emp: any): string {
               <div class="box-title">👤 Employee Information</div>
               <table class="summary-table">
                 <tbody>
-                  <tr><td>Employee</td><td>${esc(fullName)}</td></tr>
-                  <tr><td>Employee Number</td><td>${esc(emp?.employee_number)}</td></tr>
                   <tr><td>Work Schedule</td><td>${esc(emp?.work_schedule)}</td></tr>
                   <tr><td>Days Worked</td><td>${esc(emp?.days_worked ?? 0)}</td></tr>
                   <tr><td>Payment Method</td><td>${esc(rate?.payment_method)}</td></tr>
-                  <tr><td>Type of Schedule</td><td>${esc(rate?.type_of_schedule)}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -306,11 +318,15 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                 <tr>
                   <td>Advanced Amount</td>
                   <td class="text-right ${moneyClass(totals?.advanced_amount, 'red')}">${fmtMoney(totals?.advanced_amount)}</td>
-                  <td><strong>Total Payroll Amount</strong></td>
-                  <td class="text-right"><strong>${fmtMoney(totals?.total_payroll_amount)}</strong></td>
+                  <td></td><td></td>
                 </tr>
               </tbody>
             </table>
+            <!-- TOTAL DESTACADO -->
+            <div style="margin-top:12px; padding:10px 16px; border-top:2px solid #e2e8f0; display:flex; justify-content:space-between; align-items:center;">
+              <span style="font-size:12px; font-weight:700; color:#475569; text-transform:uppercase; letter-spacing:0.5px;">Total Payroll Amount</span>
+              <span style="font-size:20px; font-weight:800; color:#0f172a;">${fmtMoney(totals?.total_payroll_amount)}</span>
+            </div>
           </div>
 
           <!-- DAILY LOG -->
@@ -327,13 +343,12 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                     <th class="text-right">AR Nova</th>
                     <th class="text-right">AR Vout</th>
                     <th class="text-right">TCW</th>
-                    <th class="text-right">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
                   ${(() => {
                     let totalNovaSchedH = 0, totalVoutSchedH = 0;
-                    let totalArNova = 0, totalArVout = 0, totalTcwH = 0, totalAmount = 0;
+                    let totalArNova = 0, totalArVout = 0, totalTcwH = 0;
                     const rows = scheduleDetails.map((day: any) => {
                       const novaShifts = Array.isArray(day?.nova_shifts) ? day.nova_shifts : [];
                       const voutShifts = Array.isArray(day?.vout_shifts) ? day.vout_shifts : [];
@@ -342,13 +357,11 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                       const arNova    = num(day?.ar_nova_hours);
                       const arVout    = num(day?.ar_vout_hours);
                       const tcwH      = num(day?.tcw_hours);
-                      const amount    = num(day?.payroll_day?.day_payable_amount);
                       totalNovaSchedH += novaSchedH;
                       totalVoutSchedH += voutSchedH;
                       totalArNova     += arNova;
                       totalArVout     += arVout;
                       totalTcwH       += tcwH;
-                      totalAmount     += amount;
                       const typeTag = day?.is_holiday
                         ? '<span class="tag tag-holiday">' + esc(day?.holiday_name || 'Holiday') + '</span>'
                         : day?.season
@@ -363,7 +376,6 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                           <td class="text-right nowrap">${arNova > 0 ? fmtHours(arNova) : '—'}</td>
                           <td class="text-right nowrap">${arVout > 0 ? fmtHours(arVout) : '—'}</td>
                           <td class="text-right nowrap">${tcwH > 0 ? fmtHours(tcwH) : '—'}</td>
-                          <td class="text-right nowrap">${amount > 0 ? fmtMoney(amount) : '—'}</td>
                         </tr>
                       `;
                     });
@@ -375,7 +387,6 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                         <td class="text-right nowrap">${totalArNova > 0 ? fmtHours(totalArNova) : '—'}</td>
                         <td class="text-right nowrap">${totalArVout > 0 ? fmtHours(totalArVout) : '—'}</td>
                         <td class="text-right nowrap">${num(totals?.time_clock_wizard_hours) > 0 ? fmtHours(num(totals?.time_clock_wizard_hours)) : '—'}</td>
-                        <td class="text-right nowrap">${totalAmount > 0 ? fmtMoney(totalAmount) : '—'}</td>
                       </tr>
                     `;
                     return rows.join('') + totalsRow;

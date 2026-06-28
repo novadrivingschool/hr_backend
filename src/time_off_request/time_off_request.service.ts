@@ -510,6 +510,40 @@ export class TimeOffRequestService {
     return this.timeOffRequestRepo.find({ where: { status: normalized } });
   }
 
+  /**
+   * Retorna todos los TORs con status=Pending clasificados por su stage actual.
+   * - stage 'coordinator': coordinator_approval.approved = false → reminder a coordinators del department
+   * - stage 'hr':          coordinator_approval.approved = true AND hr_approval.approved = false → reminder a HR
+   * Usado por el cron TIME_OFF_REMINDER del automation-service.
+   */
+  async findPendingForAutomation(): Promise<{ id: string; stage: 'coordinator' | 'hr'; multi_department: string[] }[]> {
+    try {
+      const requests = await this.timeOffRequestRepo
+        .createQueryBuilder('request')
+        .select(['request.id', 'request.employee_data', 'request.coordinator_approval', 'request.hr_approval'])
+        .where('request.status = :status', { status: StatusEnum.Pending })
+        .getMany();
+
+      return requests
+        .map((r) => {
+          const coordApproved = r.coordinator_approval?.approved === true;
+          const hrApproved    = r.hr_approval?.approved === true;
+
+          if (!coordApproved) {
+            return { id: r.id, stage: 'coordinator' as const, multi_department: r.employee_data?.multi_department ?? [] };
+          }
+          if (coordApproved && !hrApproved) {
+            return { id: r.id, stage: 'hr' as const, multi_department: r.employee_data?.multi_department ?? [] };
+          }
+          return null;
+        })
+        .filter((r): r is NonNullable<typeof r> => r !== null);
+    } catch (error) {
+      this.logger.error('Error en findPendingForAutomation:', error);
+      throw new InternalServerErrorException('Error al buscar TORs pendientes para automation');
+    }
+  }
+
   private normalizeStatus(input: string): string {
     // Normaliza el texto (puedes expandir esto si hace falta)
     switch (input.toLowerCase()) {

@@ -28,6 +28,7 @@ import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
 import { CoordinatorRejectICareDto } from './dto/coordinator-reject-i-care.dto';
 import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
 import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
+import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
 import { ICareStatus, ICareUrgency } from './entities/i-care.entity';
 
 @Controller('i-care')
@@ -92,10 +93,11 @@ export class ICareController {
     @Query('staffPositions') staffPositionsRaw?: string,
     @Query('orScope') orScopeRaw?: string,
     @Query('excludeStaffEmployeeNumber') excludeStaffEmployeeNumber?: string,
+    @Query('noUrgency') noUrgencyRaw?: string,
   ) {
     try {
-      const urgency = this.parseUrgency(urgencyRaw);
-      const status = this.parseStatus(statusRaw);
+      const urgencies = this.parseUrgency(urgencyRaw);
+      const statuses = this.parseStatus(statusRaw);
       const excludeUrgencies = excludeUrgenciesRaw
         ? excludeUrgenciesRaw
             .split(',')
@@ -111,13 +113,14 @@ export class ICareController {
         dateTo,
         submitterEmployeeNumber,
         staffEmployeeNumber,
-        urgency,
-        status,
+        urgencies,
+        statuses,
         department,
         excludeUrgencies,
         staffPositions,
         orScope: orScopeRaw === 'true',
         excludeStaffEmployeeNumber,
+        noUrgency: noUrgencyRaw === 'true',
       });
     } catch (error) {
       console.error('Error fetching ICare statistics:', error);
@@ -147,10 +150,11 @@ export class ICareController {
     @Query('staffPositions') staffPositionsRaw?: string,
     @Query('orScope') orScopeRaw?: string,
     @Query('excludeStaffEmployeeNumber') excludeStaffEmployeeNumber?: string,
+    @Query('noUrgency') noUrgencyRaw?: string,
   ) {
     try {
-      const urgency = this.parseUrgency(urgencyRaw);
-      const status = this.parseStatus(statusRaw);
+      const urgencies = this.parseUrgency(urgencyRaw);
+      const statuses = this.parseStatus(statusRaw);
       const committedBool =
         committed === 'true' ? true :
           committed === 'false' ? false :
@@ -175,14 +179,15 @@ export class ICareController {
           submitterEmployeeNumber,
           staffEmployeeNumber,
           responsibleEmployeeNumber,
-          urgency,
+          urgencies,
           committed: committedBool,
           department,
-          status,
+          statuses,
           excludeUrgencies,
           staffPositions,
           orScope: orScopeRaw === 'true',
           excludeStaffEmployeeNumber,
+          noUrgency: noUrgencyRaw === 'true',
         },
         page,
         limit,
@@ -208,9 +213,9 @@ export class ICareController {
     try {
       if (!query || query.trim().length < 2) return [];
 
-      const urgency = this.parseUrgency(urgencyRaw);
+      const urgencies = this.parseUrgency(urgencyRaw);
 
-      return await this.iCareService.search(query.trim(), { dateFrom, dateTo, urgency });
+      return await this.iCareService.search(query.trim(), { dateFrom, dateTo, urgency: urgencies?.[0] });
     } catch (error) {
       console.error('Error in advanced search:', error);
       throw error;
@@ -476,6 +481,24 @@ export class ICareController {
     }
   }
 
+  // ── PATCH /i-care/:id/approve-justification ────────────────────────────────
+  // HR / Management aprueba, baja nivel o rechaza una justificación High/Critical.
+
+  @Patch(':id/approve-justification')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+  @HttpCode(HttpStatus.OK)
+  async approveJustification(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ApproveJustificationICareDto,
+  ) {
+    try {
+      return await this.iCareService.approveJustification(id, dto);
+    } catch (error) {
+      console.error('Error in approve-justification for ICare record:', id, error);
+      throw error;
+    }
+  }
+
   // ── PATCH /i-care/:id/review-rejection ─────────────────────────────────────
   // HR / Management revisa el rejected del coordinator.
   // accept=true → REJECTED final. accept=false → override, vuelve a PENDING.
@@ -586,19 +609,17 @@ export class ICareController {
 
   // -- Private helpers --
 
-  private parseUrgency(raw?: string): ICareUrgency | undefined {
+  private parseUrgency(raw?: string): ICareUrgency[] | undefined {
     if (!raw) return undefined;
-    const val = raw.trim();
-    return Object.values(ICareUrgency).includes(val as ICareUrgency)
-      ? (val as ICareUrgency)
-      : undefined;
+    const vals = raw.split(',').map(v => v.trim())
+      .filter(v => Object.values(ICareUrgency).includes(v as ICareUrgency)) as ICareUrgency[];
+    return vals.length ? vals : undefined;
   }
 
-  private parseStatus(raw?: string): ICareStatus | undefined {
+  private parseStatus(raw?: string): ICareStatus[] | undefined {
     if (!raw) return undefined;
-    const val = raw.trim();
-    return Object.values(ICareStatus).includes(val as ICareStatus)
-      ? (val as ICareStatus)
-      : undefined;
+    const vals = raw.split(',').map(v => v.trim())
+      .filter(v => Object.values(ICareStatus).includes(v as ICareStatus)) as ICareStatus[];
+    return vals.length ? vals : undefined;
   }
 }

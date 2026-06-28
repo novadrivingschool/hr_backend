@@ -1,9 +1,10 @@
 // dto/justify-i-care.dto.ts
 import { Type } from 'class-transformer';
 import {
-  IsArray, IsBoolean, IsIn, IsObject, IsOptional,
+  IsArray, IsBoolean, IsEnum, IsObject, IsOptional,
   IsString, ValidateNested,
 } from 'class-validator';
+import { ICareUrgency } from '../entities/i-care.entity';
 
 class EmployeeRefDto {
   @IsString() name: string;
@@ -21,6 +22,11 @@ export class JustifyICareDto {
   @ValidateNested()
   @Type(() => EmployeeRefDto)
   approved_by: EmployeeRefDto;
+
+  /** Urgency asignada por el coordinator al aprobar. Requerida cuando justified=true. */
+  @IsOptional()
+  @IsEnum(ICareUrgency)
+  urgency?: ICareUrgency;
 
   @IsOptional()
   @IsString()

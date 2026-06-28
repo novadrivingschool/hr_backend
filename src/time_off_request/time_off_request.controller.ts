@@ -47,6 +47,16 @@ export class TimeOffRequestController {
     return this.timeOffRequestService.findCoordinatorByStatusAndDepartment(status, department);
   }
 
+  /**
+   * GET /time-off-request/pending/automation
+   * Retorna TORs pendientes con su stage actual (coordinator | hr).
+   * Usado exclusivamente por el automation-service para enviar reminders.
+   */
+  @Get('pending/automation')
+  findPendingForAutomation() {
+    return this.timeOffRequestService.findPendingForAutomation();
+  }
+
   @Get('hr/filter')
   getFilteredRequestsForHr(
     @Query('status') status: string,
