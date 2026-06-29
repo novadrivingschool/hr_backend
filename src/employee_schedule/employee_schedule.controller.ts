@@ -88,10 +88,12 @@ export class EmployeeScheduleController {
 
     const internalHeaders = { 'x-internal-key': internalKey };
 
+    const targetUrl = `${voutApi}/internal/employee-schedule/panel/filter`;
+
     try {
       // 1. Fetch schedule panel from vout-api (internal endpoint, no JWT)
       const scheduleRes = await axios.post(
-        `${voutApi}/internal/employee-schedule/panel/filter`,
+        targetUrl,
         { start_date: body.start_date, end_date: body.end_date },
         { headers: internalHeaders, timeout: 15_000 },
       );
@@ -113,16 +115,43 @@ export class EmployeeScheduleController {
             ...e,
             name: e.name || nameMap[String(e.employee_number)] || null,
           }));
-        } catch (err) {
-          console.warn('[voutPanelProxy] No se pudo obtener nombres del auth service:', err?.message);
+        } catch (authErr: any) {
+          console.warn('[voutPanelProxy] No se pudo obtener nombres del auth service:', authErr?.message);
         }
       }
 
       return { employees: employeesWithNames, events, fixed, meta };
     } catch (err: any) {
-      const status = err?.response?.status || HttpStatus.BAD_GATEWAY;
-      const message = err?.response?.data?.message || err?.message || 'Error al conectar con vout-api';
-      throw new HttpException(message, status);
+      const status   = err?.response?.status;
+      const voutMsg  = err?.response?.data?.message;
+      const errCode  = err?.code;
+
+      console.error('[voutPanelProxy] Error al llamar vout-api:', {
+        url:      targetUrl,
+        status,
+        voutMsg,
+        errCode,
+        errMsg:   err?.message,
+        range:    { start_date: body.start_date, end_date: body.end_date },
+      });
+
+      // Mensaje de usuario claro según tipo de fallo
+      let userMessage: string;
+      if (errCode === 'ECONNREFUSED' || errCode === 'ENOTFOUND') {
+        userMessage = 'No se puede conectar al servicio VOUT. Verifica que esté corriendo.';
+      } else if (errCode === 'ECONNABORTED' || err?.message?.includes('timeout')) {
+        userMessage = `El servicio VOUT no respondió a tiempo (timeout 15s). Rango: ${body.start_date} → ${body.end_date}`;
+      } else if (status === 403) {
+        userMessage = 'Acceso denegado al servicio VOUT (x-internal-key inválida).';
+      } else if (status === 400) {
+        userMessage = voutMsg || 'Parámetros inválidos enviados al servicio VOUT.';
+      } else if (voutMsg) {
+        userMessage = `VOUT: ${voutMsg}`;
+      } else {
+        userMessage = `Error ${status || 'de conexión'} al obtener datos del schedule VOUT.`;
+      }
+
+      throw new HttpException(userMessage, status || HttpStatus.BAD_GATEWAY);
     }
   }
 }
