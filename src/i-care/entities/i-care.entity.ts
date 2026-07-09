@@ -8,6 +8,7 @@ import {
 
 export enum ICareStatus {
   PENDING = 'pending',
+  PENDING_CREATION_REVIEW = 'pending_creation_review',
   IN_PROGRESS = 'in_progress',
   PENDING_HR_REVIEW = 'pending_hr_review',
   REJECTION_UNDER_REVIEW = 'rejection_under_review',
@@ -260,6 +261,41 @@ export class ICare {
 
   @Column('jsonb', { nullable: true, default: () => "'[]'" })
   coordinator_rejected_attachments: string[];
+
+  // ─── Creation Review fields (coordinator reporting own personnel) ─────────
+  /** true = el submitter es supervisor/responsible del staff reportado (caso "propio personal") */
+  @Column({ type: 'boolean', default: false })
+  creation_review_required: boolean;
+
+  /** true = HR/Management ya revisó la creación de este caso */
+  @Column({ type: 'boolean', default: false })
+  creation_reviewed: boolean;
+
+  /** true = se aprobó la creación (vuelve a coordinator), false = se rechazó (REJECTED). null = aún no revisado.
+   *  Se guarda por separado del status porque el status puede seguir cambiando después (justified, in_progress, etc.)
+   *  y necesitamos poder mostrar el resultado de este stage en el historial sin importar el status actual. */
+  @Column({ type: 'boolean', nullable: true })
+  creation_review_approved: boolean | null;
+
+  @Column('jsonb', { nullable: true })
+  creation_reviewed_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  creation_review_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  creation_review_time: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  creation_review_notes: string | null;
+
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  creation_review_attachments: string[];
 
   // ─── Rejection Review fields (HR / Management) ─────────────────────────────
   /** true = HR/Mgmt ya revisó el rejected del coordinator */

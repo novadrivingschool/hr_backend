@@ -16,6 +16,7 @@ import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
 import { CoordinatorRejectICareDto } from './dto/coordinator-reject-i-care.dto';
 import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
 import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
+import { ReviewCreationICareDto } from './dto/review-creation-i-care.dto';
 import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
@@ -61,6 +62,11 @@ export interface PaginatedResult<T> {
  *   resolved_coordinator          → coordinator(s)
  *   resolved_hr                   → role 'hr'
  *   resolved_management           → role 'management'
+ *
+ *   Caso "propio personal" (submitter es responsible/supervisor del staff reportado):
+ *   creation_review_hr / creation_review_management → HR / Management (creator y coordinator(s) NO se notifican, status=pending_creation_review)
+ *   creation_approved_coordinator/hr/management      → HR/Mgmt aprobó la creación, vuelve a PENDING
+ *   creation_rejected_staff/coordinator/hr/management → HR/Mgmt rechazó la creación, va directo a REJECTED
  */
 type ICareEmailEvent =
   | 'created_staff' | 'created_coordinator' | 'created_hr' | 'created_management'
@@ -78,7 +84,10 @@ type ICareEmailEvent =
   | 'pending_hr_review_coordinator' | 'pending_hr_review_hr' | 'pending_hr_review_management'
   | 'hc_accepted_hr' | 'hc_accepted_management' | 'hc_accepted_staff'
   | 'justification_downgraded_staff' | 'justification_downgraded_coordinator'
-  | 'justification_downgraded_hr' | 'justification_downgraded_management';
+  | 'justification_downgraded_hr' | 'justification_downgraded_management'
+  | 'creation_review_hr' | 'creation_review_management'
+  | 'creation_approved_coordinator' | 'creation_approved_hr' | 'creation_approved_management'
+  | 'creation_rejected_staff' | 'creation_rejected_coordinator' | 'creation_rejected_hr' | 'creation_rejected_management';
 
 // -- Service --------------------------------------------------------------------
 
@@ -233,12 +242,17 @@ export class ICareService {
 
     const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
     const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+    // "Propio personal": el submitter (coordinator) es responsible/supervisor del staff reportado.
+    // El caso queda oculto para el coordinator hasta que HR/Management aprueben la creación.
+    const isCreationReviewCase = record.creation_review_required === true;
 
-    if (staffEmail) {
+    // Ni el creator ni los coordinators asignados se notifican mientras el caso
+    // está pendiente de revisión de creación — solo HR y Management (abajo, incondicional).
+    if (staffEmail && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_staff', [staffEmail]));
     }
-    // Coordinator does NOT receive email for High/Critical or coordinator-as-staff cases
-    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) {
+    // Coordinator does NOT receive email for High/Critical, coordinator-as-staff, or creation-review cases
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_coordinator', coordinatorEmails));
     }
     if (allHrEmails.length > 0) {
@@ -247,9 +261,15 @@ export class ICareService {
     if (managementEmails.length > 0) {
       sends.push(this.triggerEmail(id, 'created_management', managementEmails));
     }
+    // Notificación específica pidiendo a HR/Management que revisen la CREACIÓN
+    // (el coordinator reportó a su propio personal — conflicto de interés).
+    if (isCreationReviewCase) {
+      if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_review_hr', allHrEmails));
+      if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_review_management', managementEmails));
+    }
 
-    // Position-based emails: Operator / Instructor / Teacher (skip if High/Critical or coordinator-as-staff)
-    if (!isHighCritical && !isCoordinatorCase && record.submitter?.employee_number) {
+    // Position-based emails: Operator / Instructor / Teacher (skip if High/Critical, coordinator-as-staff, or creation-review)
+    if (!isHighCritical && !isCoordinatorCase && !isCreationReviewCase && record.submitter?.employee_number) {
       const positionRoleMap: Record<string, { event: ICareEmailEvent; role: string }> = {
         'Operator':   { event: 'created_operator',   role: 'i-care-operator' },
         'Instructor': { event: 'created_instructor', role: 'i-care-instructor' },
@@ -512,18 +532,35 @@ export class ICareService {
     const record = this.iCareRepository.create(createICareDto);
 
     // Embed is_coordinator inside the existing staff_name JSONB (no migration needed)
+    let isStaffCoordinator = false;
     if (record.staff_name?.employee_number) {
       const staffEmployee = await this.employeeRepository.findOne({
         where: { employee_number: record.staff_name.employee_number },
         select: ['roles'],
       });
       const staffRoles: string[] = (staffEmployee as any)?.roles ?? [];
-      const isCoordinator = staffRoles.some(r =>
+      isStaffCoordinator = staffRoles.some(r =>
         r === 'coordinator' || r === 'coordinator-assistant' || r === 'super-coordinator',
       );
-      if (isCoordinator) {
+      if (isStaffCoordinator) {
         record.staff_name = { ...record.staff_name, is_coordinator: true };
       }
+    }
+
+    // Caso "propio personal": el submitter aparece dentro de responsible[] (es supervisor/
+    // coordinator asignado del staff reportado). Escala directo a HR/Management —
+    // el caso queda oculto para el coordinator hasta que aprueben la creación.
+    // No aplica si el staff reportado ya es coordinator (ese caso ya escala por su cuenta arriba).
+    const submitterEmployeeNumber = record.submitter?.employee_number;
+    const isOwnPersonnelCase =
+      !isStaffCoordinator &&
+      !!submitterEmployeeNumber &&
+      Array.isArray(record.responsible) &&
+      record.responsible.some(r => r?.employee_number === submitterEmployeeNumber);
+
+    if (isOwnPersonnelCase) {
+      record.status = ICareStatus.PENDING_CREATION_REVIEW;
+      record.creation_review_required = true;
     }
 
     const saved = await this.iCareRepository.save(record);
@@ -767,6 +804,23 @@ export class ICareService {
           `TRIM(icare.staff_name->>'employee_number') != TRIM(:excludeStaffEmpNum)`,
           { excludeStaffEmpNum: filters.excludeStaffEmployeeNumber },
         );
+      }
+
+      // Registros en pending_creation_review: se ocultan SOLO del coordinator que los creó
+      // (conflicto de interés — es juez y parte de su propio reporte). Otros supervisores
+      // del mismo staff sí los ven (de solo lectura, hasta que HR/Management decida) — así
+      // se enteran de que el caso existe sin poder actuar sobre él (eso queda exclusivo de
+      // HR/Management vía review-creation). Reutiliza excludeStaffEmployeeNumber, que ya
+      // trae el employee_number del usuario logueado, comparándolo ahora contra el submitter
+      // en vez del staff reportado.
+      if (filters.excludeStaffEmployeeNumber) {
+        query.andWhere(new Brackets(qb => {
+          qb.where('icare.status != :hideCreationReviewForCreator', {
+            hideCreationReviewForCreator: ICareStatus.PENDING_CREATION_REVIEW,
+          }).orWhere(`TRIM(icare.submitter->>'employee_number') != TRIM(:currentUserEmpNum)`, {
+            currentUserEmpNum: filters.excludeStaffEmployeeNumber,
+          });
+        }));
       }
 
       // Cuando committed=true, los records activos tienen status in_progress/following_up.
@@ -1022,6 +1076,7 @@ export class ICareService {
       const commitFulfilledStatusCount = statusMap[ICareStatus.COMMIT_FULFILLED] || 0;
       const pendingHrReviewStatusCount = statusMap[ICareStatus.PENDING_HR_REVIEW] || 0;
       const rejectionUnderReviewStatusCount = statusMap[ICareStatus.REJECTION_UNDER_REVIEW] || 0;
+      const pendingCreationReviewStatusCount = statusMap[ICareStatus.PENDING_CREATION_REVIEW] || 0;
 
       // -- monthlyTrend (últimos 6 meses) ----------------------------------------
       const sixMonthsAgo = new Date();
@@ -1089,6 +1144,7 @@ export class ICareService {
         commitFulfilledStatusCount,
         pendingHrReviewStatusCount,
         rejectionUnderReviewStatusCount,
+        pendingCreationReviewStatusCount,
         statusDistribution,
         // tendencia
         monthlyTrend,
@@ -1118,6 +1174,10 @@ export class ICareService {
   async justify(id: string, dto: JustifyICareDto): Promise<ICare> {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (record.status === ICareStatus.PENDING_CREATION_REVIEW) {
+      throw new ForbiddenException('This record still needs HR/Management to approve its creation before it can be justified');
+    }
 
     const now = moment().tz('America/Chicago');
 
@@ -1610,6 +1670,105 @@ export class ICareService {
     );
 
     return this.transformDates([saved])[0];
+  }
+
+  // -- Creation Review (caso "propio personal") --------------------------------
+
+  /**
+   * HR / Management revisan la CREACIÓN de un iCare levantado por un coordinator
+   * sobre su propio personal (submitter está dentro de responsible[] del staff).
+   * Este paso SOLO legitima la creación — no toca urgency ni justifica nada.
+   *
+   * action='approve' → status vuelve a PENDING (sin justified, sin urgency). El
+   *                     caso es visible de nuevo para el coordinator, que hace su
+   *                     PROPIO Justify con el flujo normal ya existente (ahí decide
+   *                     la urgency y, si es High/Critical, ese mismo justify() ya
+   *                     lo manda a PENDING_HR_REVIEW — no hay que duplicar esa
+   *                     lógica aquí).
+   * action='reject'  → status pasa directo a REJECTED. No regresa al coordinator.
+   *
+   * (No confundir con reviewRejection(): ese es un flujo aparte — coordinator
+   * rechaza un pending, HR/Mgmt revisa el rechazo y ahí SÍ elige urgency si hace
+   * override. Ese método no se toca.)
+   */
+  async reviewCreation(id: string, dto: ReviewCreationICareDto): Promise<ICare> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (record.status !== ICareStatus.PENDING_CREATION_REVIEW) {
+      throw new BadRequestException('Record is not pending creation review');
+    }
+
+    const now = moment().tz('America/Chicago');
+
+    record.creation_reviewed = true;
+    record.creation_review_approved = dto.action === 'approve';
+    record.creation_reviewed_by = dto.reviewed_by;
+    record.creation_review_date = now.format('YYYY-MM-DD');
+    record.creation_review_time = now.format('HH:mm');
+    record.creation_review_notes = dto.notes ?? null;
+    record.creation_review_attachments = dto.attachments ?? [];
+
+    record.status = dto.action === 'approve' ? ICareStatus.PENDING : ICareStatus.REJECTED;
+
+    const saved = await this.iCareRepository.save(record);
+
+    if (dto.action === 'approve') {
+      // El staff NO se notifica aquí — eso ocurre cuando el coordinator haga su
+      // propio Justify.
+      this.triggerCreationApprovedEmails(saved.id, saved).catch((err) =>
+        this.logger.error(`Failed to trigger 'creation_approved' emails for id=${saved.id}`, err?.message || err),
+      );
+    } else {
+      this.triggerCreationRejectedEmails(saved.id, saved).catch((err) =>
+        this.logger.error(`Failed to trigger 'creation_rejected' emails for id=${saved.id}`, err?.message || err),
+      );
+    }
+
+    return this.transformDates([saved])[0];
+  }
+
+  /**
+   * Notifica que HR/Management APROBARON la creación — el caso vuelve al coordinator.
+   * Destinatarios: coordinator(s) asignados + HR + Management (no el submitter directamente,
+   * ya que el submitter normalmente ES uno de los coordinator(s) asignados).
+   */
+  private async triggerCreationApprovedEmails(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+
+    const sends: Promise<void>[] = [];
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_approved_coordinator', coordinatorEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_approved_hr', allHrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_approved_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  /**
+   * Notifica que HR/Management RECHAZARON la creación — el caso queda REJECTED definitivo.
+   * Destinatarios: submitter + coordinator(s) asignados + HR + Management.
+   */
+  private async triggerCreationRejectedEmails(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
+    const submitterEmail = record.submitter?.nova_email ?? null;
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+
+    const sends: Promise<void>[] = [];
+    if (submitterEmail) sends.push(this.triggerEmail(id, 'creation_rejected_staff', [submitterEmail]));
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_rejected_coordinator', coordinatorEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_rejected_hr', allHrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_rejected_management', managementEmails));
+    await Promise.all(sends);
   }
 
   // -- Search -----------------------------------------------------------------

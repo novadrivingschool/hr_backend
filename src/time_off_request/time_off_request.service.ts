@@ -108,6 +108,8 @@ export class TimeOffRequestService {
       }
 
       // ── 2. Solo se puede editar si está Pending ───────────────────────────
+      //    (La autorización de recuperación de horas se maneja aparte,
+      //    vía updateRecoveryAuthorization, sin esta restricción — ver más abajo).
       if (request.status !== StatusEnum.Pending) {
         throw new BadRequestException(
           `Cannot edit a request with status "${request.status}". Only Pending requests can be edited.`,
@@ -183,6 +185,32 @@ export class TimeOffRequestService {
 
       this.logger.error(`[update] Failed to update request ID ${id}`, error.stack);
       throw new InternalServerErrorException('Error updating time off request');
+    }
+  }
+
+  /**
+   * Actualiza únicamente recovery_required (hrs autorizadas).
+   * Sin restricción de status: HR/Management puede autorizar o desautorizar
+   * la recuperación de horas en cualquier momento, incluso con el TOR ya
+   * Approved/Not Approved — a diferencia de update(), que solo aplica a Pending.
+   */
+  async updateRecoveryAuthorization(id: string, recovery_required: boolean): Promise<TimeOffRequest> {
+    try {
+      const request = await this.findOne(id);
+
+      if (!request) {
+        throw new NotFoundException(`Time-off request with ID ${id} not found`);
+      }
+
+      request.recovery_required = recovery_required === true;
+      return await this.timeOffRequestRepo.save(request);
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+
+      this.logger.error(`[updateRecoveryAuthorization] Failed for request ID ${id}`, error.stack);
+      throw new InternalServerErrorException('Error updating hour recovery authorization');
     }
   }
 

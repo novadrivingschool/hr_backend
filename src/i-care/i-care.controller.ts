@@ -28,6 +28,7 @@ import { FulfillCommitICareDto } from './dto/fulfill-commit-i-care.dto';
 import { CoordinatorRejectICareDto } from './dto/coordinator-reject-i-care.dto';
 import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
 import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
+import { ReviewCreationICareDto } from './dto/review-creation-i-care.dto';
 import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
 import { ICareStatus, ICareUrgency } from './entities/i-care.entity';
 
@@ -495,6 +496,31 @@ export class ICareController {
       return await this.iCareService.approveJustification(id, dto);
     } catch (error) {
       console.error('Error in approve-justification for ICare record:', id, error);
+      throw error;
+    }
+  }
+
+  // ── PATCH /i-care/:id/review-creation ───────────────────────────────────────
+  // HR / Management revisan la CREACIÓN de un iCare levantado por un coordinator
+  // sobre su propio personal (status=pending_creation_review).
+  // action='approve' → vuelve a PENDING (visible de nuevo para el coordinator).
+  // action='reject'  → pasa directo a REJECTED.
+
+  @Patch(':id/review-creation')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.OK)
+  async reviewCreation(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ReviewCreationICareDto,
+  ) {
+    try {
+      return await this.iCareService.reviewCreation(id, dto);
+    } catch (error) {
+      console.error('Error reviewing creation for ICare record:', id, error);
       throw error;
     }
   }

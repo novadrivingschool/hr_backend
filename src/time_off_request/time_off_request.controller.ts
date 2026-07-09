@@ -169,6 +169,21 @@ export class TimeOffRequestController {
     return this.timeOffRequestService.resendStaffEmail(id);
   }
 
+  /**
+   * PATCH /time-off-request/:id/recovery-authorization
+   * Actualiza únicamente la propiedad recovery_required (hrs autorizadas).
+   * A diferencia de PATCH /:id, no exige que el request esté Pending: HR/Management
+   * debe poder autorizar o desautorizar la recuperación de horas en cualquier momento,
+   * incluso con el TOR ya Approved/Not Approved.
+   */
+  @Patch(':id/recovery-authorization')
+  updateRecoveryAuthorization(
+    @Param('id') id: string,
+    @Body('recovery_required') recovery_required: boolean,
+  ) {
+    return this.timeOffRequestService.updateRecoveryAuthorization(id, recovery_required);
+  }
+
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateTimeOffRequestDto: UpdateTimeOffRequestDto) {
     return this.timeOffRequestService.update(id, updateTimeOffRequestDto);
