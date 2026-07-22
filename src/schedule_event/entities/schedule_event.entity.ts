@@ -63,6 +63,10 @@ export class ScheduleEvent {
   @Column({ type: 'uuid', nullable: true, default: null })
   uuid_extra_hours: string | null;
 
+  /** Enlaza el evento de Outage con el Absence Request que lo originó. */
+  @Column({ type: 'uuid', nullable: true, default: null })
+  uuid_absence: string | null;
+
   @Column({ type: 'boolean', default: false })
   strict: boolean;
 

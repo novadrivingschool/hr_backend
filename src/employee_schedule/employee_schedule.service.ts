@@ -995,6 +995,10 @@ export class EmployeeScheduleService {
         ? dto.uuid_extra_hours ?? existing?.uuid_extra_hours ?? null
         : null,
 
+      uuid_absence: isOutage
+        ? dto.uuid_absence ?? existing?.uuid_absence ?? null
+        : null,
+
       is_paid: (isTimeOffRequest || isOutage)
         ? dto.is_paid ?? existing?.is_paid ?? false
         : null,

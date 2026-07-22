@@ -43,6 +43,7 @@ import { NoShowPayrollModule } from './no-show-payroll/no-show-payroll.module';
 import { AssignmentRateTypesModule } from './assignment-rate-types/assignment-rate-types.module';
 import { IpSummaryModule } from './ip-summary/ip-summary.module';
 import { HrsAutorizadasModule } from './hrs-autorizadas/hrs-autorizadas.module';
+import { AbsenceModule } from './absence/absence.module';
 
 
 dotenv.config();
@@ -109,9 +110,11 @@ dotenv.config();
         __dirname + '/inventory/entities/*.entity.{ts,js}',
         __dirname + '/bank-deposits/entities/*.entity.{ts,js}',
         __dirname + '/instructor-payroll/entities/*.entity.{ts,js}',
+        __dirname + '/absence/entities/*.entity.{ts,js}',
       ],
     }),
     TimeOffRequestModule,
+    AbsenceModule,
     EmployeesModule,
     DepartmentsModule,
     EmployeeScheduleModule,

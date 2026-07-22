@@ -14,6 +14,7 @@ import { EmployeeScheduleService } from 'src/employee_schedule/employee_schedule
 import { ScheduleEvent } from 'src/schedule_event/entities/schedule_event.entity';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
 import { RegisterEnum } from 'src/schedule_event/entities/register.enum';
+import { pushBellNotification, resolveEmployeeNumbersByRoles } from 'src/common/it-api.client';
 
 interface EmployeeNumbersByPermissionResponse {
   permission: string;
@@ -62,6 +63,13 @@ export class TimeOffRequestService {
         await this.sentCoordinatorRequest(saved);
       } catch (emailErr) {
         this.logger.warn(`[create] Coordinator email failed (non-blocking): ${emailErr?.message}`);
+      }
+
+      // ── Admin navbar bell notification — non-blocking ─────────────────────
+      try {
+        await this.notifyAdminsOfNewRequest(saved);
+      } catch (bellErr) {
+        this.logger.warn(`[create] Bell notification failed (non-blocking): ${bellErr?.message}`);
       }
 
       return saved;
@@ -347,6 +355,17 @@ export class TimeOffRequestService {
         this.logger.warn(`[approveByCoordinator] Management email failed (non-blocking): ${err?.message}`);
       }
 
+      // Bell: ONE shared notification, not one per role — HR and Management
+      // both need to know "it's your turn" when approved, so they get the
+      // same notification instead of two duplicate rows. On rejection there's
+      // nothing left to act on, so only Management is informed (visibility).
+      try {
+        const rolesToNotify = approved ? ['hr', 'management'] : ['management'];
+        await this.notifyRolesOfStageDecision(updatedRequest, rolesToNotify, 'coordinator', approved);
+      } catch (err) {
+        this.logger.warn(`[approveByCoordinator] HR/Management bell notification failed (non-blocking): ${err?.message}`);
+      }
+
       // Siempre avisa al Staff
       try {
         await this.apiClient.sendStaffTemplate({
@@ -356,6 +375,13 @@ export class TimeOffRequestService {
         });
       } catch (err) {
         this.logger.warn(`[approveByCoordinator] Staff notification failed (non-blocking): ${err?.message}`);
+      }
+
+      // Bell notification to the requester — non-blocking, same trigger as the email above.
+      try {
+        await this.notifyEmployeeOfDecision(updatedRequest, 'coordinator', approved);
+      } catch (err) {
+        this.logger.warn(`[approveByCoordinator] Employee bell notification failed (non-blocking): ${err?.message}`);
       }
 
       return {
@@ -461,6 +487,13 @@ export class TimeOffRequestService {
         this.logger.warn(`[approveByHR] Management email failed (non-blocking): ${err?.message}`);
       }
 
+      // Bell: Management gets the final outcome too (flow closed by HR).
+      try {
+        await this.notifyRolesOfStageDecision(updatedRequest, ['management'], 'hr', approved);
+      } catch (err) {
+        this.logger.warn(`[approveByHR] Management bell notification failed (non-blocking): ${err?.message}`);
+      }
+
       // Siempre avisa al Staff
       try {
         await this.apiClient.sendStaffTemplate({
@@ -470,6 +503,13 @@ export class TimeOffRequestService {
         });
       } catch (err) {
         this.logger.warn(`[approveByHR] Staff notification failed (non-blocking): ${err?.message}`);
+      }
+
+      // Bell notification to the requester — non-blocking, same trigger as the email above.
+      try {
+        await this.notifyEmployeeOfDecision(updatedRequest, 'hr', approved);
+      } catch (err) {
+        this.logger.warn(`[approveByHR] Employee bell notification failed (non-blocking): ${err?.message}`);
       }
 
       return updatedRequest;
@@ -755,6 +795,175 @@ export class TimeOffRequestService {
       console.error('❌ Error sending coordinator template:', err.message);
       throw err;
     }
+  }
+
+  /**
+   * Pushes a "new time off request" event to the generic admin navbar bell
+   * (it_backend `/notifications`). Recipients are:
+   *  - HR + Management (per role, resolved live via nova-one-backend), AND
+   *  - the requester's own supervisors/coordinators — same local
+   *    `employees.supervisors` column already used by sentCoordinatorRequest()
+   *    to email them, above. This is why "fulano" in IT still reaches his own
+   *    supervisors even though they're not globally "hr"/"management": their
+   *    relationship is per-employee, not per-department.
+   * This is a snapshot at creation time, independent of the email flow above.
+   */
+  private async notifyAdminsOfNewRequest(saved: TimeOffRequest): Promise<void> {
+    this.logger.log(`[notifyAdminsOfNewRequest] START for TOR ${saved.id} — IT_API_URL=${process.env.IT_API_URL || '(unset)'} NOVA_ONE_API=${process.env.NOVA_ONE_API || '(unset)'}`);
+
+    const [roleRecipients, supervisorNumbers] = await Promise.all([
+      resolveEmployeeNumbersByRoles(['hr', 'management']),
+      this.employeeService
+        .getSupervisorEmployeeNumbersByEmployeeNumber(saved.employee_data?.employee_number)
+        .catch((err) => {
+          this.logger.warn(`[notifyAdminsOfNewRequest] could not resolve supervisors: ${err?.message}`);
+          return [] as string[];
+        }),
+    ]);
+
+    const recipients = [...new Set([...roleRecipients, ...supervisorNumbers])];
+    this.logger.log(
+      `[notifyAdminsOfNewRequest] roles=${roleRecipients.length} supervisors=${supervisorNumbers.length} total=${recipients.length} recipient(s): ${JSON.stringify(recipients)}`,
+    );
+
+    if (recipients.length === 0) {
+      this.logger.warn(
+        '[notifyAdminsOfNewRequest] no hr/management employee and no supervisor resolved for this requester — skipping bell notification. ' +
+        'Check the employee\'s `supervisors` column in hr_backend and GET/POST NOVA_ONE_API/employees/filter with {"status":"Active","permissions":"hr"|"management"}.',
+      );
+      return;
+    }
+
+    const requester = `${saved.employee_data?.name ?? ''} ${saved.employee_data?.last_name ?? ''}`.trim()
+      || saved.employee_data?.employee_number
+      || 'An employee';
+
+    await pushBellNotification({
+      category: 'time_off_request',
+      type: 'created',
+      title: 'New Time Off Request',
+      message: `${requester} requested ${saved.requestType} (${saved.dateOrRange})`,
+      link: '/time-off-request-admin',
+      source_id: saved.id,
+      recipients,
+    });
+
+    this.logger.log(`[notifyAdminsOfNewRequest] DONE — bell notification pushed to it_backend for TOR ${saved.id}`);
+  }
+
+  /**
+   * Pushes a bell notification to HR and/or Management about a decision
+   * made on someone else's TOR — mirrors exactly the same "who needs to
+   * know" logic already encoded in sendHrEmail/sendManagementEmail:
+   *  - HR is only notified when the coordinator approved (Stage 1 done,
+   *    it's now HR's turn to close the flow) — never on rejection, since
+   *    a coordinator rejection is already final and there's nothing left
+   *    for HR to act on.
+   *  - Management is notified on every decision, at both stages, regardless
+   *    of outcome — same as their email, which always fires.
+   * Callers pass which role(s) to notify for a given call; recipients are
+   * resolved live (role-based, not a per-employee snapshot like supervisors).
+   */
+  private async notifyRolesOfStageDecision(
+    updated: TimeOffRequest,
+    roles: string[],
+    stage: 'coordinator' | 'hr',
+    approved: boolean,
+  ): Promise<void> {
+    const recipients = await resolveEmployeeNumbersByRoles(roles);
+    if (recipients.length === 0) {
+      this.logger.warn(`[notifyRolesOfStageDecision] no recipients for roles=${JSON.stringify(roles)} stage=${stage} — skipping`);
+      return;
+    }
+
+    const requester = `${updated.employee_data?.name ?? ''} ${updated.employee_data?.last_name ?? ''}`.trim()
+      || updated.employee_data?.employee_number
+      || 'An employee';
+
+    // Report the actual person who acted (already stored in
+    // coordinator_approval.by / hr_approval.by) instead of a role label
+    // like "HR" or "Management" — someone can hold both roles (or be a
+    // supervisor too), so their name is the only thing that's always
+    // accurate, regardless of which "hat" they used to click approve.
+    const actorName = (stage === 'coordinator' ? updated.coordinator_approval?.by : updated.hr_approval?.by)
+      || (stage === 'coordinator' ? 'the coordinator' : 'HR/Management');
+
+    let title: string;
+    let message: string;
+
+    if (stage === 'coordinator') {
+      title = approved ? 'Time Off Request Awaiting HR Approval' : 'Time Off Request Rejected by Coordinator';
+      message = approved
+        ? `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was approved by ${actorName} and now needs HR/Management approval.`
+        : `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was rejected by ${actorName}.`;
+    } else {
+      title = approved ? 'Time Off Request Approved' : 'Time Off Request Not Approved';
+      message = `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was ${approved ? 'approved' : 'not approved'} by ${actorName}.`;
+    }
+
+    await pushBellNotification({
+      category: 'time_off_request',
+      type: `${stage}_${approved ? 'approved' : 'rejected'}_notice`,
+      title,
+      message,
+      link: '/time-off-request-admin',
+      source_id: updated.id,
+      recipients,
+    });
+  }
+
+  /**
+   * Pushes a bell notification to the REQUESTER when a decision is made on
+   * their TOR — one notification per real decision taken:
+   *  - coordinator approves  → status stays Pending (awaiting HR)
+   *  - coordinator rejects   → final, both stages close at once
+   *  - hr/management decides → final (approves or rejects), whether or not
+   *    a coordinator ever acted (if HR covers that stage, this fires once)
+   * Mirrors the existing best-effort "staff email" notification already
+   * sent at both of these points — same trigger points, same non-blocking
+   * behavior, just to the in-app bell instead of email.
+   */
+  private async notifyEmployeeOfDecision(
+    updated: TimeOffRequest,
+    stage: 'coordinator' | 'hr',
+    approved: boolean,
+  ): Promise<void> {
+    const employeeNumber = updated.employee_data?.employee_number;
+    if (!employeeNumber) {
+      this.logger.warn('[notifyEmployeeOfDecision] request has no employee_number — skipping');
+      return;
+    }
+
+    // Same reasoning as notifyRolesOfStageDecision: report the actual
+    // approver's name (already stored on the request) instead of a role
+    // label, since that person may hold hr/management/supervisor at once.
+    const actorName = (stage === 'coordinator' ? updated.coordinator_approval?.by : updated.hr_approval?.by)
+      || (stage === 'coordinator' ? 'your coordinator' : 'HR/Management');
+
+    let title: string;
+    let message: string;
+
+    if (stage === 'coordinator') {
+      title = approved ? 'Time Off Request Approved by Coordinator' : 'Time Off Request Not Approved';
+      message = approved
+        ? `Your ${updated.requestType} request (${updated.dateOrRange}) was approved by ${actorName}. Awaiting final approval from HR.`
+        : `Your ${updated.requestType} request (${updated.dateOrRange}) was not approved by ${actorName}.`;
+    } else {
+      title = approved ? 'Time Off Request Approved' : 'Time Off Request Not Approved';
+      message = approved
+        ? `Your ${updated.requestType} request (${updated.dateOrRange}) has been fully approved by ${actorName}.`
+        : `Your ${updated.requestType} request (${updated.dateOrRange}) was not approved by ${actorName}.`;
+    }
+
+    await pushBellNotification({
+      category: 'time_off_request',
+      type: `${stage}_${approved ? 'approved' : 'rejected'}`,
+      title,
+      message,
+      link: '/time-off-request',
+      source_id: updated.id,
+      recipients: [employeeNumber],
+    });
   }
 
   async getEmployeeNumbersByPermission(perm: string): Promise<any[]> {

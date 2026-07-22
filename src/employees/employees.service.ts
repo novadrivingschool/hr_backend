@@ -326,6 +326,29 @@ export class EmployeesService {
   }
 
   /**
+   * Same source as getSupervisorsEmailsByEmployeeNumber() (the `supervisors`
+   * jsonb column already used to email coordinators on Time Off Request
+   * events), but returns employee_number instead of email — needed for the
+   * navbar bell, which keys recipients/read state by employee_number.
+   */
+  async getSupervisorEmployeeNumbersByEmployeeNumber(employeeNumber: string): Promise<string[]> {
+    const row = await this.employeeRepo
+      .createQueryBuilder('e')
+      .select('e.supervisors', 'supervisors')
+      .where('e.employee_number = :employeeNumber', { employeeNumber })
+      .getRawOne<{ supervisors: any[] }>();
+
+    if (!row) throw new NotFoundException(`Employee ${employeeNumber} not found`);
+
+    const supervisors = Array.isArray(row.supervisors) ? row.supervisors : [];
+    const employeeNumbers = supervisors
+      .map(s => String(s?.employee_number || '').trim())
+      .filter(Boolean);
+
+    return Array.from(new Set(employeeNumbers));
+  }
+
+  /**
  * Busca empleados con status 'Active' por posición.
  */
   async findActiveByPosition(positions: string | string[]) {

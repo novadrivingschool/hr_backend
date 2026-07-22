@@ -739,7 +739,7 @@ export function buildSingleEmployeeHtml(
                       ${compInFavor.map((l: any) => `
                         <tr>
                           <td>${esc(l?.name ?? '—')}</td>
-                          <td>${esc(typeLabel(l?.type))}</td>
+                          <td>${esc(typeLabel(l?.reason))}</td>
                           <td>${esc(l?.installment ? `Installment #${l.installment.installment_number} · ${l.installment.status}` : (l?.effective_date ?? l?.date ?? '—'))}</td>
                           <td class="text-right ${moneyClass(l?.amount, 'green')}">${fmtMoney(l?.amount)}</td>
                         </tr>
@@ -747,7 +747,7 @@ export function buildSingleEmployeeHtml(
                       ${compToDeduct.map((l: any) => `
                         <tr>
                           <td>${esc(l?.name ?? '—')}</td>
-                          <td>${esc(typeLabel(l?.type))}</td>
+                          <td>${esc(typeLabel(l?.reason))}</td>
                           <td>${esc(l?.installment ? `Installment #${l.installment.installment_number} · ${l.installment.status}` : (l?.effective_date ?? l?.date ?? '—'))}</td>
                           <td class="text-right ${moneyClass(l?.amount, 'red')}">${fmtMoney(l?.amount)}</td>
                         </tr>

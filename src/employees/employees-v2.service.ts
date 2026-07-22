@@ -343,6 +343,55 @@ export class EmployeesV2Service {
   }
 
   /**
+   * Coordinators activos, identificados por PUESTO (multi_position), no por rol.
+   *
+   * 'roles' son permisos de la app (qué puede hacer en Nova One); el puesto real
+   * vive en multi_position — mismo criterio que isCoordinator() del organigrama.
+   * Un empleado puede tener role 'coordinator' para ver pantallas sin ser el
+   * coordinator de ningún department, y al revés.
+   *
+   * Devuelve multi_department para que el consumidor (email_service) pueda
+   * acotar a cada coordinator SOLO los registros de sus departments: mandarle
+   * los de otro department filtra información de empleados que no le pertenecen.
+   */
+  async findCoordinators(): Promise<Employee[]> {
+    return this.employeeRepo
+      .createQueryBuilder('e')
+      .select([
+        'e.id',
+        'e.name',
+        'e.last_name',
+        'e.employee_number',
+        'e.status',
+        'e.multi_position',
+        'e.multi_department',
+        'e.multi_company',
+        'e.multi_location',
+        'e.nova_email',
+      ])
+      .where('e.status = :active', { active: 'Active' })
+      .andWhere(
+        `
+        EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(
+                 CASE
+                   WHEN jsonb_typeof(e.multi_position::jsonb) = 'array'
+                   THEN e.multi_position::jsonb
+                   ELSE '[]'::jsonb
+                 END
+               ) AS p(val)
+          WHERE regexp_replace(TRIM(LOWER(p.val)), '\\s+', ' ', 'g') = :coordinator
+        )
+        `,
+        { coordinator: 'coordinator' },
+      )
+      .orderBy('e.last_name', 'ASC')
+      .addOrderBy('e.name', 'ASC')
+      .getMany();
+  }
+
+  /**
    * Busca empleados activos que contengan al menos uno de los roles proporcionados.
    * Busca en el campo JSON 'roles'.
    */
@@ -365,6 +414,11 @@ export class EmployeesV2Service {
         'e.status',
         'e.multi_location',
         'e.multi_company',
+        // Sin esto, los consumidores que filtran coordinators por department
+        // (email_service → fetchCoordinatorsByDepartments / fetchAllCoordinators)
+        // reciben multi_department undefined, lo tratan como [] y NINGÚN
+        // coordinator matchea nunca — se quedaban sin recibir sus reminders.
+        'e.multi_department',
         'e.nova_email',
       ])
       .where('e.status = :status', { status: 'Active' });

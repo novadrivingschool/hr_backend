@@ -10,11 +10,16 @@ class EmployeeRefDto {
 }
 
 export class ApproveJustificationICareDto {
-  /** accept = HR/Mgmt justifica con urgency elegida → in_progress | reject = rechaza definitivo */
-  @IsIn(['accept', 'reject'])
-  action: 'accept' | 'reject';
+  /**
+   * accept     = HR/Mgmt confirma la urgency H/C tal cual → in_progress (HR/Mgmt gestiona el seguimiento)
+   * downgrade  = HR/Mgmt baja la urgency a Low/Medium → vuelve a status 'pending' con el coordinator,
+   *              quien debe completar su propio Justify (igual que cualquier caso L/M nuevo)
+   * reject     = rechaza definitivo
+   */
+  @IsIn(['accept', 'downgrade', 'reject'])
+  action: 'accept' | 'downgrade' | 'reject';
 
-  /** Requerido cuando action = 'accept'. Urgency final que establece HR/Management. */
+  /** Requerido cuando action = 'accept' (cualquier urgency) o 'downgrade' (debe ser Low o Medium). */
   @IsOptional()
   @IsEnum(ICareUrgency)
   urgency?: ICareUrgency;

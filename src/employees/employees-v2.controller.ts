@@ -46,6 +46,16 @@ export class EmployeesV2Controller {
     return this.employeesService.findAllPaginated(searchDto);
   }
 
+  /**
+   * Coordinators activos, por PUESTO (multi_position), con sus multi_department.
+   * Los consumidores (email_service) acotan por department con esa lista.
+   * METHOD: GET /v2/employees/coordinators
+   */
+  @Get('coordinators')
+  findCoordinators() {
+    return this.employeesService.findCoordinators();
+  }
+
   // 👉 GET /employees/role?role=Admin
   // 👉 GET /employees/role?role=Admin,Sales
   @Get('role')

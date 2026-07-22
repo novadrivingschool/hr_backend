@@ -101,6 +101,40 @@ export class ICare {
   @Column('jsonb', { nullable: true })
   attachments: any[];
 
+  // ─── Coordinator Escalation fields (snapshot inmutable: coordinator marcó
+  // el caso como High/Critical y lo escaló a HR/Mgmt). Se setea UNA sola vez
+  // dentro de justify() y nunca se vuelve a tocar, ni en el re-justify que
+  // sigue a un downgrade — a diferencia de justified_*, que sí se pisa en
+  // cada llamada a justify(). ────────────────────────────────────────────────
+  @Column({ type: 'boolean', default: false })
+  escalated: boolean;
+
+  /** Coordinator que escaló el caso */
+  @Column('jsonb', { nullable: true })
+  escalated_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+    roles?: string[];
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  escalated_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  escalated_time: string | null;
+
+  /** Urgency con la que se escaló (High o Critical) */
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  escalated_urgency: string | null;
+
+  @Column({ nullable: true, type: 'text' })
+  escalated_comment: string | null;
+
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  escalated_attachments: string[];
+
   // ─── Justified fields ──────────────────────────────────────────────────────
   @Column({ type: 'boolean', default: false })
   justified: boolean;
@@ -134,6 +168,36 @@ export class ICare {
   /** Notas de HR/Management al approve-justification (accept) */
   @Column({ nullable: true, type: 'text' })
   hr_justified_notes: string | null;
+
+  // ─── Downgrade fields (HR/Mgmt baja H/C a Low/Medium, regresa a PENDING) ───
+  @Column({ type: 'boolean', default: false })
+  downgraded: boolean;
+
+  /** HR/Management que hizo el downgrade */
+  @Column('jsonb', { nullable: true })
+  downgraded_by: {
+    name: string;
+    last_name: string;
+    employee_number: string;
+    nova_email: string;
+    roles?: string[];
+  } | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  downgraded_date: string | null;
+
+  @Column({ nullable: true, type: 'varchar', length: 10 })
+  downgraded_time: string | null;
+
+  /** Urgency original (High/Critical) antes del downgrade */
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  downgraded_from_urgency: string | null;
+
+  @Column({ nullable: true, type: 'text' })
+  downgraded_notes: string | null;
+
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  downgraded_attachments: string[];
 
   // ─── Commitment fields ─────────────────────────────────────────────────────
   @Column({ type: 'boolean', default: false })

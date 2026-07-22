@@ -152,6 +152,7 @@ export class ICareController {
     @Query('orScope') orScopeRaw?: string,
     @Query('excludeStaffEmployeeNumber') excludeStaffEmployeeNumber?: string,
     @Query('noUrgency') noUrgencyRaw?: string,
+    @Query('creationReviewApproved') creationReviewApprovedRaw?: string,
   ) {
     try {
       const urgencies = this.parseUrgency(urgencyRaw);
@@ -159,6 +160,11 @@ export class ICareController {
       const committedBool =
         committed === 'true' ? true :
           committed === 'false' ? false :
+            undefined;
+
+      const creationReviewApproved =
+        creationReviewApprovedRaw === 'true' ? true :
+          creationReviewApprovedRaw === 'false' ? false :
             undefined;
 
       const excludeUrgencies = excludeUrgenciesRaw
@@ -189,6 +195,7 @@ export class ICareController {
           orScope: orScopeRaw === 'true',
           excludeStaffEmployeeNumber,
           noUrgency: noUrgencyRaw === 'true',
+          creationReviewApproved,
         },
         page,
         limit,

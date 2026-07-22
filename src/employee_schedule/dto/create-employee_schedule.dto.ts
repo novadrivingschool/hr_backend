@@ -152,6 +152,10 @@ export class CreateScheduleEventDto {
   uuid_extra_hours: string | null;
 
   @IsOptional()
+  @IsUUID()
+  uuid_absence?: string | null;
+
+  @IsOptional()
   @IsBoolean()
   strict?: boolean;
 

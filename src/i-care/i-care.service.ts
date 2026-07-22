@@ -64,7 +64,9 @@ export interface PaginatedResult<T> {
  *   resolved_management           → role 'management'
  *
  *   Caso "propio personal" (submitter es responsible/supervisor del staff reportado):
- *   creation_review_hr / creation_review_management → HR / Management (creator y coordinator(s) NO se notifican, status=pending_creation_review)
+ *   creation_review_submitter → el submitter SIEMPRE recibe confirmación de que su reporte
+ *                                fue recibido y está pendiente de aprobación por HR/Management.
+ *   creation_review_hr / creation_review_management → HR / Management (coordinator(s) asignados NO se notifican, status=pending_creation_review)
  *   creation_approved_coordinator/hr/management      → HR/Mgmt aprobó la creación, vuelve a PENDING
  *   creation_rejected_staff/coordinator/hr/management → HR/Mgmt rechazó la creación, va directo a REJECTED
  */
@@ -85,7 +87,8 @@ type ICareEmailEvent =
   | 'hc_accepted_hr' | 'hc_accepted_management' | 'hc_accepted_staff'
   | 'justification_downgraded_staff' | 'justification_downgraded_coordinator'
   | 'justification_downgraded_hr' | 'justification_downgraded_management'
-  | 'creation_review_hr' | 'creation_review_management'
+  | 'downgrade_returned_coordinator' | 'downgrade_returned_hr' | 'downgrade_returned_management'
+  | 'creation_review_submitter' | 'creation_review_hr' | 'creation_review_management'
   | 'creation_approved_coordinator' | 'creation_approved_hr' | 'creation_approved_management'
   | 'creation_rejected_staff' | 'creation_rejected_coordinator' | 'creation_rejected_hr' | 'creation_rejected_management';
 
@@ -221,11 +224,13 @@ export class ICareService {
   }
 
   /**
-   * Dispara los 4 emails de creación en paralelo:
-   *   created_staff       → quien creó el registro
-   *   created_coordinator → assigned coordinators (no submitter identity)
-   *   created_hr          → role 'hr' (con identidad completa)
-   *   created_management  → role 'management' (con identidad completa)
+   * Dispara los emails de creación en paralelo:
+   *   created_staff              → quien creó el registro (caso normal)
+   *   created_coordinator        → assigned coordinators (no submitter identity)
+   *   created_hr                 → role 'hr' (con identidad completa)
+   *   created_management         → role 'management' (con identidad completa)
+   *   creation_review_submitter  → quien creó el registro, cuando el caso requiere
+   *                                revisión de HR/Management (reemplaza a created_staff)
    */
   private async triggerCreatedEmails(id: string, record: ICare): Promise<void> {
     const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
@@ -246,8 +251,9 @@ export class ICareService {
     // El caso queda oculto para el coordinator hasta que HR/Management aprueben la creación.
     const isCreationReviewCase = record.creation_review_required === true;
 
-    // Ni el creator ni los coordinators asignados se notifican mientras el caso
-    // está pendiente de revisión de creación — solo HR y Management (abajo, incondicional).
+    // Ni el creator, ni los coordinators asignados, ni HR/Management reciben el correo
+    // genérico "New Case" mientras el caso está pendiente de revisión de creación.
+    // En ese caso, HR/Management solo reciben 'creation_review_hr'/'creation_review_management' (abajo).
     if (staffEmail && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_staff', [staffEmail]));
     }
@@ -255,15 +261,18 @@ export class ICareService {
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_coordinator', coordinatorEmails));
     }
-    if (allHrEmails.length > 0) {
+    if (allHrEmails.length > 0 && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_hr', allHrEmails));
     }
-    if (managementEmails.length > 0) {
+    if (managementEmails.length > 0 && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_management', managementEmails));
     }
     // Notificación específica pidiendo a HR/Management que revisen la CREACIÓN
     // (el coordinator reportó a su propio personal — conflicto de interés).
     if (isCreationReviewCase) {
+      // El submitter SIEMPRE debe recibir confirmación de que su reporte fue recibido,
+      // aunque el caso quede oculto para el resto (coordinator/HR genérico) hasta la revisión.
+      if (staffEmail) sends.push(this.triggerEmail(id, 'creation_review_submitter', [staffEmail]));
       if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_review_hr', allHrEmails));
       if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_review_management', managementEmails));
     }
@@ -502,8 +511,15 @@ export class ICareService {
     await Promise.all(sends);
   }
 
-  private async triggerDowngradedEmails(id: string, record: ICare): Promise<void> {
-    const staffEmail = record.staff_name?.nova_email;
+  /**
+   * Trigger para el evento 'downgrade_returned' — HR/Mgmt bajó la urgency de un caso
+   * escalado (H/C) a Low/Medium y lo devolvió al coordinator (status → PENDING).
+   * Destinatarios: coordinator(s) asignados + HR + Management.
+   * El staff NO se notifica aquí — recién se entera cuando el coordinator complete su
+   * propio Justify (triggerJustifiedEmails ya le manda 'justified_staff' en ese momento),
+   * para no duplicar el aviso.
+   */
+  private async triggerDowngradeReturnedEmails(id: string, record: ICare): Promise<void> {
     const responsibleEmails = (record.responsible ?? []).map((r: any) => r.nova_email).filter(Boolean);
     const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
@@ -512,10 +528,9 @@ export class ICareService {
     ]);
     const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const sends: Promise<void>[] = [];
-    if (staffEmail) sends.push(this.triggerEmail(id, 'justification_downgraded_staff', [staffEmail]));
-    if (responsibleEmails.length > 0) sends.push(this.triggerEmail(id, 'justification_downgraded_coordinator', responsibleEmails));
-    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'justification_downgraded_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'justification_downgraded_management', managementEmails));
+    if (responsibleEmails.length > 0) sends.push(this.triggerEmail(id, 'downgrade_returned_coordinator', responsibleEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'downgrade_returned_hr', allHrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'downgrade_returned_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -702,6 +717,9 @@ export class ICareService {
       excludeStaffEmployeeNumber?: string;
       /** When true, only return records with NULL urgency */
       noUrgency?: boolean;
+      /** Filtra por resultado de la revisión de creación (HR/Mgmt ya decidieron sobre un
+       *  caso pending_creation_review): true = aprobado, false = rechazado, undefined = sin filtro */
+      creationReviewApproved?: boolean;
     },
     page = 1,
     limit = 15,
@@ -821,6 +839,12 @@ export class ICareService {
             currentUserEmpNum: filters.excludeStaffEmployeeNumber,
           });
         }));
+      }
+
+      if (filters.creationReviewApproved !== undefined) {
+        query.andWhere('icare.creation_reviewed = true AND icare.creation_review_approved = :creationReviewApproved', {
+          creationReviewApproved: filters.creationReviewApproved,
+        });
       }
 
       // Cuando committed=true, los records activos tienen status in_progress/following_up.
@@ -1179,6 +1203,19 @@ export class ICareService {
       throw new ForbiddenException('This record still needs HR/Management to approve its creation before it can be justified');
     }
 
+    // HR/Mgmt ya revisó este caso (downgrade de H/C a Low/Medium) y decidió tanto su
+    // legitimidad como su urgency final — el coordinator ya no puede rechazarlo ni
+    // cambiar la urgency, solo justificarlo/aceptarlo tal cual quedó. Ver stage
+    // "Downgrade" (columnas downgraded_*) y approveJustification() acción 'downgrade'.
+    if (record.downgraded) {
+      if (dto.justified === false) {
+        throw new ForbiddenException('This case was already reviewed and downgraded by HR/Management — it cannot be rejected by the coordinator, only justified');
+      }
+      if (dto.urgency && dto.urgency !== record.urgency) {
+        throw new ForbiddenException('Urgency was already decided by HR/Management during the downgrade and cannot be changed by the coordinator');
+      }
+    }
+
     const now = moment().tz('America/Chicago');
 
     record.justified = dto.justified;
@@ -1186,8 +1223,9 @@ export class ICareService {
     record.justified_date = now.format('YYYY-MM-DD');
     record.justified_time = now.format('HH:mm');
 
-    // Guardar la urgency seleccionada (coordinator L/M → in_progress; coordinator H/C → pending_hr_review; HR/Mgmt → in_progress)
-    if (dto.urgency && dto.justified) record.urgency = dto.urgency;
+    // Guardar la urgency seleccionada (coordinator L/M → in_progress; coordinator H/C → pending_hr_review; HR/Mgmt → in_progress).
+    // Si el caso fue downgraded, la urgency ya quedó fija por HR/Mgmt — no se vuelve a tocar.
+    if (dto.urgency && dto.justified && !record.downgraded) record.urgency = dto.urgency;
 
     if (dto.comment) {
       record.justified_comments = [
@@ -1204,11 +1242,27 @@ export class ICareService {
     }
 
     const isCoordinatorRole = dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant';
-    const isHighCriticalUrgency = dto.urgency === ICareUrgency.HIGH || dto.urgency === ICareUrgency.CRITICAL;
+    // Se evalúa sobre record.urgency (valor ya persistido en memoria arriba) y no sobre
+    // dto.urgency crudo, para que un caso downgraded (que no manda urgency en el payload
+    // una vez corregido el frontend) siga evaluando correctamente su urgency real.
+    const isHighCriticalUrgency = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
 
     if (dto.justified) {
       if (isCoordinatorRole && isHighCriticalUrgency) {
         record.status = ICareStatus.PENDING_HR_REVIEW;
+        // Snapshot inmutable del momento de la escalación — se setea UNA sola vez.
+        // No puede volver a ocurrir para este record (una vez escalado, si HR/Mgmt
+        // downgradea la urgency queda bloqueada a Low/Medium — ver record.downgraded
+        // arriba — así que justify() nunca vuelve a entrar a este branch).
+        if (!record.escalated) {
+          record.escalated = true;
+          record.escalated_by = dto.approved_by;
+          record.escalated_date = now.format('YYYY-MM-DD');
+          record.escalated_time = now.format('HH:mm');
+          record.escalated_urgency = record.urgency;
+          record.escalated_comment = dto.comment ?? null;
+          record.escalated_attachments = dto.attachments?.length ? [...dto.attachments] : [];
+        }
       } else {
         record.status = ICareStatus.IN_PROGRESS;
       }
@@ -1254,6 +1308,9 @@ export class ICareService {
 
     if (dto.action === 'accept') {
       if (!dto.urgency) throw new BadRequestException('Urgency is required when accepting');
+      if (dto.urgency !== ICareUrgency.HIGH && dto.urgency !== ICareUrgency.CRITICAL) {
+        throw new BadRequestException('Accept requires High or Critical urgency — use action "downgrade" for Low/Medium');
+      }
       record.urgency = dto.urgency;
       record.status = ICareStatus.IN_PROGRESS;
       record.justified = true;
@@ -1263,16 +1320,55 @@ export class ICareService {
       if (dto.notes) record.hr_justified_notes = dto.notes;
       if (dto.attachments?.length) record.hr_justified_attachments = [...(record.hr_justified_attachments ?? []), ...dto.attachments];
       const saved = await this.iCareRepository.save(record);
-      const isHC = dto.urgency === ICareUrgency.HIGH || dto.urgency === ICareUrgency.CRITICAL;
-      if (isHC) {
-        this.triggerHcAcceptedEmails(saved.id, saved).catch((err) =>
-          this.logger.error(`❌ Failed to trigger 'hc_accepted' emails for id=${saved.id}`, err?.message || err),
-        );
-      } else {
-        this.triggerDowngradedEmails(saved.id, saved).catch((err) =>
-          this.logger.error(`❌ Failed to trigger 'downgraded' emails for id=${saved.id}`, err?.message || err),
-        );
+      this.triggerHcAcceptedEmails(saved.id, saved).catch((err) =>
+        this.logger.error(`❌ Failed to trigger 'hc_accepted' emails for id=${saved.id}`, err?.message || err),
+      );
+      return this.transformDates([saved])[0];
+    }
+
+    // HR/Mgmt determina que el caso escalado NO amerita High/Critical — lo baja a Low/Medium
+    // y lo regresa al coordinator (status → PENDING) para que complete su propio Justify,
+    // igual que cualquier caso L/M nuevo. No se toca `justified` aquí: lo setea el coordinator
+    // en su siguiente llamada a justify().
+    //
+    // Stage propio con columnas dedicadas (downgraded_*) — NO reutiliza justified_approved_by /
+    // hr_justified_notes / hr_justified_attachments, que pertenecen al stage "Coordinator
+    // Justification"/"HR Accept". Reutilizarlos pisaba el autor original de la justificación
+    // del coordinator en el Case History hasta el siguiente justify(). Ver migration_downgrade_returned.sql.
+    if (dto.action === 'downgrade') {
+      if (!dto.urgency) throw new BadRequestException('Urgency is required when downgrading');
+      if (dto.urgency !== ICareUrgency.LOW && dto.urgency !== ICareUrgency.MEDIUM) {
+        throw new BadRequestException('Downgrade requires Low or Medium urgency — use action "accept" to keep High/Critical');
       }
+      record.downgraded = true;
+      record.downgraded_by = dto.reviewed_by;
+      record.downgraded_date = now.format('YYYY-MM-DD');
+      record.downgraded_time = now.format('HH:mm');
+      record.downgraded_from_urgency = record.urgency; // captura el H/C original antes de pisarlo
+      // Limpiar el snapshot de justify() de la escalación original: justified/justified_date/time
+      // ya no representan nada válido — pertenecían al justify() que mandó el caso a HR, y ese
+      // evento ya quedó inmortalizado aparte en escalated_*. Si no se limpian: (1) el Case History
+      // muestra un stage "Coordinator Justification" fantasma (con la fecha/comentario de la
+      // escalación) ANTES de que el coordinator realmente vuelva a justificar tras el downgrade,
+      // y (2) la tabla/timeline lo siguen marcando como "Justified" pese a estar de vuelta en Pending.
+      record.justified = false;
+      record.justified_date = null;
+      record.justified_time = null;
+      // Mismo motivo: justified_comments/justified_attachments son append-only en justify()
+      // (para permitir agregar evidencia dentro de un mismo episodio). Si no se vacían aquí,
+      // el re-justify post-downgrade ACUMULA la evidencia/comentario de la escalación original
+      // encima de la nueva — dos stages independientes terminan mostrando los mismos archivos.
+      // La evidencia/comentario original de la escalación ya vive, intacta, en escalated_*.
+      record.justified_comments = [];
+      record.justified_attachments = [];
+      if (dto.notes) record.downgraded_notes = dto.notes;
+      if (dto.attachments?.length) record.downgraded_attachments = [...(record.downgraded_attachments ?? []), ...dto.attachments];
+      record.urgency = dto.urgency;
+      record.status = ICareStatus.PENDING;
+      const saved = await this.iCareRepository.save(record);
+      this.triggerDowngradeReturnedEmails(saved.id, saved).catch((err) =>
+        this.logger.error(`❌ Failed to trigger 'downgrade_returned' emails for id=${saved.id}`, err?.message || err),
+      );
       return this.transformDates([saved])[0];
     }
 
@@ -1563,6 +1659,13 @@ export class ICareService {
 
     if (record.rejection_override) {
       throw new BadRequestException('This record cannot be rejected again — override is in effect');
+    }
+
+    // HR/Mgmt ya revisó y downgradeó este caso — el coordinator ya no puede rechazarlo,
+    // solo justificarlo. Ver misma regla en justify(). Defensa en profundidad: el
+    // frontend ya oculta el botón (canCoordinatorRejectRecord), esto cubre la API directa.
+    if (record.downgraded) {
+      throw new ForbiddenException('This case was already reviewed and downgraded by HR/Management — it cannot be rejected by the coordinator, only justified');
     }
 
     const now = moment().tz('America/Chicago');

@@ -43,6 +43,7 @@ import { TeacherPayroll } from 'src/teacher-payroll/entities/teacher-payroll.ent
 import { AssignmentPayroll } from 'src/assignment-payroll/entities/assignment-payroll.entity';
 import { NoShowPayroll } from 'src/no-show-payroll/entities/no-show-payroll.entity';
 import { AssignmentRateType } from 'src/assignment-rate-types/entities/assignment-rate-type.entity';
+import { Absence } from 'src/absence/entities/absence.entity';
 
 dotenv.config();
 
@@ -107,6 +108,7 @@ export const AppDataSource = new DataSource({
     AssignmentPayroll,
     NoShowPayroll,
     AssignmentRateType,
+    Absence,
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,
