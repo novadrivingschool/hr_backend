@@ -65,6 +65,11 @@ export class TimeOffRequestController {
     // compatibilidad legacy opcional (también puede venir CSV)
     @Query('department') departmentLegacy?: string,
     @Query('employee_number') employee_number?: string,
+    // búsqueda parcial por nombre/apellido/employee_number (live search)
+    @Query('search') search?: string,
+    // rango de fechas SOLICITADAS (no createdDate), formato YYYY-MM-DD
+    @Query('date_from') date_from?: string,
+    @Query('date_to') date_to?: string,
   ) {
     const normalizeToArray = (input?: string | string[]): string[] => {
       if (!input) return [];
@@ -79,10 +84,20 @@ export class TimeOffRequestController {
     // “All” desactiva filtro
     if (depts.some(d => d.toLowerCase?.() === 'all')) depts = [];
 
+    // Sanitizar fechas: solo aceptar YYYY-MM-DD (evita input inválido en SQL)
+    const isValidDate = (v?: string) => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    let dateFrom = isValidDate(date_from) ? date_from : undefined;
+    let dateTo = isValidDate(date_to) ? date_to : undefined;
+    // Si vienen invertidas, se corrigen
+    if (dateFrom && dateTo && dateFrom > dateTo) [dateFrom, dateTo] = [dateTo, dateFrom];
+
     return this.timeOffRequestService.findHrByStatusDepartmentAndEmployee(
       status,
       depts, // siempre array (posible vacío)
       employee_number,
+      search?.trim() || undefined,
+      dateFrom,
+      dateTo,
     );
   }
 

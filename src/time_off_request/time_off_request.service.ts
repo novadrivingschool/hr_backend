@@ -58,19 +58,17 @@ export class TimeOffRequestService {
       const saved = await this.timeOffRequestRepo.save(request);
       console.log("saved: ", saved);
 
-      // ── Coordinator email — non-blocking ──────────────────────────────────
-      try {
-        await this.sentCoordinatorRequest(saved);
-      } catch (emailErr) {
+      // ── Coordinator email + admin bell — fire-and-forget ──────────────────
+      // Deliberately NOT awaited: both fan out to other services (email_service,
+      // nova-one, it_backend) with up-to-7s timeouts each, and none of their
+      // results affect the response. Awaiting them made the employee's
+      // "create request" click hang for the sum of every downstream timeout.
+      this.sentCoordinatorRequest(saved).catch((emailErr) => {
         this.logger.warn(`[create] Coordinator email failed (non-blocking): ${emailErr?.message}`);
-      }
-
-      // ── Admin navbar bell notification — non-blocking ─────────────────────
-      try {
-        await this.notifyAdminsOfNewRequest(saved);
-      } catch (bellErr) {
+      });
+      this.notifyAdminsOfNewRequest(saved).catch((bellErr) => {
         this.logger.warn(`[create] Bell notification failed (non-blocking): ${bellErr?.message}`);
-      }
+      });
 
       return saved;
 
@@ -705,7 +703,10 @@ export class TimeOffRequestService {
   async findHrByStatusDepartmentAndEmployee(
     status: string,
     multi_department: string[] = [],
-    employee_number?: string
+    employee_number?: string,
+    search?: string,
+    dateFrom?: string,
+    dateTo?: string,
   ): Promise<TimeOffRequest[]> {
     const query = this.timeOffRequestRepo.createQueryBuilder('request');
 
@@ -724,6 +725,34 @@ export class TimeOffRequestService {
 
     if (employee_number) {
       query.andWhere(`request.employee_data ->> 'employee_number' = :employee_number`, { employee_number });
+    }
+
+    // 🔍 Búsqueda parcial (live search): nombre, apellido, nombre completo o employee_number
+    if (search) {
+      query.andWhere(new Brackets(sqb => {
+        sqb.orWhere(
+          `(request.employee_data ->> 'name') || ' ' || (request.employee_data ->> 'last_name') ILIKE :search`,
+          { search: `%${search}%` },
+        );
+        sqb.orWhere(`request.employee_data ->> 'employee_number' ILIKE :search`, { search: `%${search}%` });
+      }));
+    }
+
+    // 📅 Rango sobre las fechas SOLICITADAS (no createdDate), con solapamiento:
+    //  - Hours: hourDate dentro del rango
+    //  - Days:  [startDate, endDate] se solapa con [dateFrom, dateTo]
+    if (dateFrom || dateTo) {
+      const from = dateFrom ?? dateTo;
+      const to = dateTo ?? dateFrom;
+      query.andWhere(new Brackets(sqb => {
+        sqb.orWhere(
+          `(request."hourDate" IS NOT NULL AND request."hourDate" >= :dateFrom AND request."hourDate" <= :dateTo)`,
+        );
+        sqb.orWhere(
+          `(request."startDate" IS NOT NULL AND request."startDate" <= :dateTo AND COALESCE(request."endDate", request."startDate") >= :dateFrom)`,
+        );
+      }));
+      query.setParameters({ dateFrom: from, dateTo: to });
     }
 
     const s = status?.toLowerCase?.() ?? '';
@@ -808,22 +837,40 @@ export class TimeOffRequestService {
    *    relationship is per-employee, not per-department.
    * This is a snapshot at creation time, independent of the email flow above.
    */
-  private async notifyAdminsOfNewRequest(saved: TimeOffRequest): Promise<void> {
-    this.logger.log(`[notifyAdminsOfNewRequest] START for TOR ${saved.id} — IT_API_URL=${process.env.IT_API_URL || '(unset)'} NOVA_ONE_API=${process.env.NOVA_ONE_API || '(unset)'}`);
-
+  /**
+   * Shared recipient set for TOR lifecycle events (created / cancelled /
+   * reopened): everyone with the hr or management role, PLUS the requester's
+   * own supervisors (per-employee relationship, independent of global roles).
+   */
+  private async resolveAdminAndSupervisorRecipients(
+    requesterEmployeeNumber: string | undefined,
+    context: string,
+  ): Promise<string[]> {
     const [roleRecipients, supervisorNumbers] = await Promise.all([
       resolveEmployeeNumbersByRoles(['hr', 'management']),
-      this.employeeService
-        .getSupervisorEmployeeNumbersByEmployeeNumber(saved.employee_data?.employee_number)
-        .catch((err) => {
-          this.logger.warn(`[notifyAdminsOfNewRequest] could not resolve supervisors: ${err?.message}`);
-          return [] as string[];
-        }),
+      requesterEmployeeNumber
+        ? this.employeeService
+            .getSupervisorEmployeeNumbersByEmployeeNumber(requesterEmployeeNumber)
+            .catch((err) => {
+              this.logger.warn(`[${context}] could not resolve supervisors: ${err?.message}`);
+              return [] as string[];
+            })
+        : Promise.resolve([] as string[]),
     ]);
 
     const recipients = [...new Set([...roleRecipients, ...supervisorNumbers])];
     this.logger.log(
-      `[notifyAdminsOfNewRequest] roles=${roleRecipients.length} supervisors=${supervisorNumbers.length} total=${recipients.length} recipient(s): ${JSON.stringify(recipients)}`,
+      `[${context}] roles=${roleRecipients.length} supervisors=${supervisorNumbers.length} total=${recipients.length} recipient(s): ${JSON.stringify(recipients)}`,
+    );
+    return recipients;
+  }
+
+  private async notifyAdminsOfNewRequest(saved: TimeOffRequest): Promise<void> {
+    this.logger.log(`[notifyAdminsOfNewRequest] START for TOR ${saved.id} — IT_API_URL=${process.env.IT_API_URL || '(unset)'} NOVA_ONE_API=${process.env.NOVA_ONE_API || '(unset)'}`);
+
+    const recipients = await this.resolveAdminAndSupervisorRecipients(
+      saved.employee_data?.employee_number,
+      'notifyAdminsOfNewRequest',
     );
 
     if (recipients.length === 0) {
@@ -849,6 +896,68 @@ export class TimeOffRequestService {
     });
 
     this.logger.log(`[notifyAdminsOfNewRequest] DONE — bell notification pushed to it_backend for TOR ${saved.id}`);
+  }
+
+  /**
+   * Bell notifications for cancel/reopen — the bell previously only covered
+   * created + decisions, so an admin could act on a request that no longer
+   * existed if they only followed the bell. Recipients mirror the created
+   * event (hr + management + the requester's supervisors); on cancellation
+   * by an admin role, the requester is notified too (their self-cancel needs
+   * no notification — they just did it themselves).
+   */
+  private async notifyAdminsOfLifecycleEvent(
+    updated: TimeOffRequest,
+    event: 'cancelled' | 'reopened',
+    actor: string,
+  ): Promise<void> {
+    const recipients = await this.resolveAdminAndSupervisorRecipients(
+      updated.employee_data?.employee_number,
+      `notifyAdminsOfLifecycleEvent:${event}`,
+    );
+    if (recipients.length === 0) {
+      this.logger.warn(`[notifyAdminsOfLifecycleEvent] no recipients for TOR ${updated.id} event=${event} — skipping`);
+      return;
+    }
+
+    const requester = `${updated.employee_data?.name ?? ''} ${updated.employee_data?.last_name ?? ''}`.trim()
+      || updated.employee_data?.employee_number
+      || 'An employee';
+
+    await pushBellNotification({
+      category: 'time_off_request',
+      type: event,
+      title: event === 'cancelled' ? 'Time Off Request Cancelled' : 'Time Off Request Reopened',
+      message: event === 'cancelled'
+        ? `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was cancelled by ${actor}.`
+        : `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was reopened by ${actor} and is pending approval again.`,
+      link: '/time-off-request-admin',
+      source_id: updated.id,
+      recipients,
+    });
+  }
+
+  /**
+   * Tells the REQUESTER their request was cancelled by an admin (hr /
+   * management / coordinator). Mirrors the staff email already sent at the
+   * same point.
+   */
+  private async notifyEmployeeOfCancellation(
+    updated: TimeOffRequest,
+    actor: string,
+  ): Promise<void> {
+    const employeeNumber = updated.employee_data?.employee_number;
+    if (!employeeNumber) return;
+
+    await pushBellNotification({
+      category: 'time_off_request',
+      type: 'cancelled',
+      title: 'Time Off Request Cancelled',
+      message: `Your ${updated.requestType} request (${updated.dateOrRange}) was cancelled by ${actor}.`,
+      link: '/time-off-request',
+      source_id: updated.id,
+      recipients: [employeeNumber],
+    });
   }
 
   /**
@@ -1195,6 +1304,18 @@ export class TimeOffRequestService {
         );
       }
 
+      // ── Bell notifications — fire-and-forget, mirrors the email above ────
+      const cancelActor = cancelled_by || role || 'System';
+      this.notifyAdminsOfLifecycleEvent(updated, 'cancelled', cancelActor).catch((err) => {
+        this.logger.warn(`[cancelRequest] Admin bell notification failed (non-blocking): ${err?.message}`);
+      });
+      if (['hr', 'management', 'coordinator'].includes((role || '').toLowerCase())) {
+        // Cancelled on the employee's behalf — let them know via the bell too.
+        this.notifyEmployeeOfCancellation(updated, cancelActor).catch((err) => {
+          this.logger.warn(`[cancelRequest] Employee bell notification failed (non-blocking): ${err?.message}`);
+        });
+      }
+
       console.log('🏁 [cancelRequest] END');
 
       return {
@@ -1244,6 +1365,11 @@ export class TimeOffRequestService {
     } catch (err) {
       this.logger.warn(`Reopen coordinator notification failed for request ${id}: ${err?.message}`);
     }
+
+    // ── Bell notification — fire-and-forget, mirrors the email above ──────
+    this.notifyAdminsOfLifecycleEvent(updated, 'reopened', reopened_by || 'System').catch((err) => {
+      this.logger.warn(`[reopenRequest] Bell notification failed (non-blocking): ${err?.message}`);
+    });
 
     return {
       message: `Time-off request reopened by ${reopened_by}`,

@@ -55,14 +55,24 @@ export async function resolveEmployeeNumbersByRoles(roles: string[]): Promise<st
     throw new Error('NOVA_ONE_API is not configured');
   }
 
+  const PER_PAGE = 100;
+  const MAX_PAGES = 10; // safety valve: 1000 employees per role is plenty
+
   const fetchByRole = async (role: string): Promise<string[]> => {
-    const resp = await axios.post(
-      `${nova}/employees/filter?page=1&per_page=100`,
-      { status: 'Active', permissions: role },
-      { timeout: 7000 },
-    );
-    const rows: any[] = resp.data?.data ?? [];
-    return rows.map((e) => String(e?.employee_number || '').trim()).filter(Boolean);
+    const numbers: string[] = [];
+    // Page until a short page (or the safety cap): a single page=1 call
+    // silently truncated roles with more than PER_PAGE active holders.
+    for (let page = 1; page <= MAX_PAGES; page++) {
+      const resp = await axios.post(
+        `${nova}/employees/filter?page=${page}&per_page=${PER_PAGE}`,
+        { status: 'Active', permissions: role },
+        { timeout: 7000 },
+      );
+      const rows: any[] = resp.data?.data ?? [];
+      numbers.push(...rows.map((e) => String(e?.employee_number || '').trim()).filter(Boolean));
+      if (rows.length < PER_PAGE) break;
+    }
+    return numbers;
   };
 
   // allSettled: a failure resolving one role (e.g. a typo'd role name)
