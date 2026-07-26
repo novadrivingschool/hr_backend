@@ -17,7 +17,7 @@ async function bootstrap() {
 
   // Middleware personalizado para configurar CORS manualmente
   app.use((req, res, next) => {
-    const allowedOrigins = ['https://novadrivingone.net', 'https://www.novadrivingone.net', 'http://localhost:5002/']; // Dominios permitidos
+    const allowedOrigins = ['https://novadrivingone.net', 'https://www.novadrivingone.net', 'http://localhost:5002/', 'https://dev.go-nova.novadrivingone.net', 'https://go-nova.novadrivingone.net']; // Dominios permitidos
     const origin = req.headers.origin;
 
     if (allowedOrigins.includes(origin)) {
@@ -39,7 +39,7 @@ async function bootstrap() {
 
   // Habilitar CORS
   app.enableCors({
-    origin: ['https://novadrivingone.net', 'https://www.novadrivingone.net', 'https://dev.novadrivingone.net', 'https://www.dev.novadrivingone.net', 'http://localhost:8080', 'http://127.0.0.1:8080'],
+    origin: ['https://novadrivingone.net', 'https://www.novadrivingone.net', 'https://dev.novadrivingone.net', 'https://www.dev.novadrivingone.net', 'http://localhost:8080', 'http://127.0.0.1:8080', 'https://dev.go-nova.novadrivingone.net', 'https://go-nova.novadrivingone.net'],
     //origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,

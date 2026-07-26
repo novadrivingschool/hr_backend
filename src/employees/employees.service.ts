@@ -117,7 +117,9 @@ export class EmployeesService {
       let best = 0;
       for (const et of empTokens) {
         if (qt === et) { best = Math.max(best, 2); if (best === 2) break; }
-        else if (this.equalOrOneEdit(qt, et)) { best = Math.max(best, 1); }
+        // Fuzzy (1 edición) solo para tokens de 3+ caracteres: en tokens cortos
+        // una edición cambia el nombre completo ("na"≈"m", "al"≈"el").
+        else if (qt.length >= 3 && this.equalOrOneEdit(qt, et)) { best = Math.max(best, 1); }
       }
       if (best === 0) return { ok: false, score: 0 }; // algún token no está -> descarta
       score += best;
@@ -134,8 +136,11 @@ export class EmployeesService {
     const qNorm = this.normalize(fullName);
     if (!qNorm) return null;
 
-    const qTokens = this.tokenizeNormalized(qNorm);
-    if (qTokens.length < 2) return null; // p.ej. "NORRIDGE" -> null
+    // Descarta tokens de 1 caracter (iniciales, restos de "N/A" -> ['n','a']).
+    // Sin este filtro, "N/A" pasaba el guard de 2 tokens y el fuzzy matching
+    // lo emparejaba con iniciales de empleados reales.
+    const qTokens = this.tokenizeNormalized(qNorm).filter((t) => t.length >= 2);
+    if (qTokens.length < 2) return null; // p.ej. "NORRIDGE" o "N/A" -> null
 
     // 1) Consulta acotada: trae candidatos donde name o last_name contengan CUALQUIER token
     //    (ILIKE es case-insensitive, suficiente para recortar resultados)
