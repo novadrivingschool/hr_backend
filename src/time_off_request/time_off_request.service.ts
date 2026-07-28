@@ -353,15 +353,17 @@ export class TimeOffRequestService {
         this.logger.warn(`[approveByCoordinator] Management email failed (non-blocking): ${err?.message}`);
       }
 
-      // Bell: ONE shared notification, not one per role — HR and Management
-      // both need to know "it's your turn" when approved, so they get the
-      // same notification instead of two duplicate rows. On rejection there's
-      // nothing left to act on, so only Management is informed (visibility).
-      try {
-        const rolesToNotify = approved ? ['hr', 'management'] : ['management'];
-        await this.notifyRolesOfStageDecision(updatedRequest, rolesToNotify, 'coordinator', approved);
-      } catch (err) {
-        this.logger.warn(`[approveByCoordinator] HR/Management bell notification failed (non-blocking): ${err?.message}`);
+      // Bell: ONE shared notification to HR + Management, only on approval —
+      // it's their turn to act. On rejection the coordinator is the first
+      // filter and the request is already final: notifying HR/Management
+      // would just be noise about something they never need to touch. The
+      // requester still hears about it either way, via notifyEmployeeOfDecision below.
+      if (approved) {
+        try {
+          await this.notifyRolesOfStageDecision(updatedRequest, ['hr', 'management'], 'coordinator', true);
+        } catch (err) {
+          this.logger.warn(`[approveByCoordinator] HR/Management bell notification failed (non-blocking): ${err?.message}`);
+        }
       }
 
       // Siempre avisa al Staff
@@ -485,11 +487,20 @@ export class TimeOffRequestService {
         this.logger.warn(`[approveByHR] Management email failed (non-blocking): ${err?.message}`);
       }
 
-      // Bell: Management gets the final outcome too (flow closed by HR).
+      // Bell: Management + the requester's own supervisors get the final
+      // outcome, whether approved or not — this is the flow closing, so both
+      // "who manages the department" (role) and "who manages this specific
+      // person" (per-employee supervisor) need to know. HR is excluded on
+      // purpose: it just acted, notifying itself would be noise.
       try {
-        await this.notifyRolesOfStageDecision(updatedRequest, ['management'], 'hr', approved);
+        const recipients = await this.resolveAdminAndSupervisorRecipients(
+          updatedRequest.employee_data?.employee_number,
+          'approveByHR',
+          ['management'],
+        );
+        await this.notifyStageDecisionRecipients(updatedRequest, recipients, 'hr', approved);
       } catch (err) {
-        this.logger.warn(`[approveByHR] Management bell notification failed (non-blocking): ${err?.message}`);
+        this.logger.warn(`[approveByHR] Management/supervisor bell notification failed (non-blocking): ${err?.message}`);
       }
 
       // Siempre avisa al Staff
@@ -838,16 +849,19 @@ export class TimeOffRequestService {
    * This is a snapshot at creation time, independent of the email flow above.
    */
   /**
-   * Shared recipient set for TOR lifecycle events (created / cancelled /
-   * reopened): everyone with the hr or management role, PLUS the requester's
-   * own supervisors (per-employee relationship, independent of global roles).
+   * Shared recipient set for TOR events that must reach role-based staff PLUS
+   * the requester's own supervisors (per-employee relationship, independent
+   * of global roles). `roles` defaults to `['hr', 'management']` (creation),
+   * but the final HR/Management decision below narrows it to `['management']`
+   * only — HR just acted, notifying itself would be noise.
    */
   private async resolveAdminAndSupervisorRecipients(
     requesterEmployeeNumber: string | undefined,
     context: string,
+    roles: string[] = ['hr', 'management'],
   ): Promise<string[]> {
     const [roleRecipients, supervisorNumbers] = await Promise.all([
-      resolveEmployeeNumbersByRoles(['hr', 'management']),
+      resolveEmployeeNumbersByRoles(roles),
       requesterEmployeeNumber
         ? this.employeeService
             .getSupervisorEmployeeNumbersByEmployeeNumber(requesterEmployeeNumber)
@@ -890,7 +904,13 @@ export class TimeOffRequestService {
       type: 'created',
       title: 'New Time Off Request',
       message: `${requester} requested ${saved.requestType} (${saved.dateOrRange})`,
-      link: '/time-off-request-admin',
+      // El id va embebido en el link, no sólo en `source_id`: mismo patrón
+      // que car_inspection (go-nova-api). Cuando este módulo se abra en
+      // Nova One 2.0, la vista admin sólo tiene que leer `?request=` — no
+      // hace falta tocar hr_backend otra vez. Cubre a HR, Management y a
+      // los supervisores del solicitante (coordinator vía relación directa,
+      // no por rol): los tres son destinatarios de ESTA misma notificación.
+      link: `/time-off-request-admin?request=${saved.id}`,
       source_id: saved.id,
       recipients,
     });
@@ -931,7 +951,9 @@ export class TimeOffRequestService {
       message: event === 'cancelled'
         ? `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was cancelled by ${actor}.`
         : `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was reopened by ${actor} and is pending approval again.`,
-      link: '/time-off-request-admin',
+      // Ver nota en notifyAdminsOfNewRequest: mismo id embebido, misma
+      // audiencia (HR + Management + supervisores del solicitante).
+      link: `/time-off-request-admin?request=${updated.id}`,
       source_id: updated.id,
       recipients,
     });
@@ -954,7 +976,9 @@ export class TimeOffRequestService {
       type: 'cancelled',
       title: 'Time Off Request Cancelled',
       message: `Your ${updated.requestType} request (${updated.dateOrRange}) was cancelled by ${actor}.`,
-      link: '/time-off-request',
+      // Vista del empleado: mismo patrón, id embebido para abrir esta
+      // solicitud puntual en vez de la lista genérica.
+      link: `/time-off-request?request=${updated.id}`,
       source_id: updated.id,
       recipients: [employeeNumber],
     });
@@ -972,6 +996,11 @@ export class TimeOffRequestService {
    *    of outcome — same as their email, which always fires.
    * Callers pass which role(s) to notify for a given call; recipients are
    * resolved live (role-based, not a per-employee snapshot like supervisors).
+   *
+   * Thin wrapper around `notifyStageDecisionRecipients`: resolves recipients
+   * by role only. The coordinator stage uses this — no supervisors, since
+   * they were already notified at creation and don't need a second ping for
+   * the same request moving one stage forward.
    */
   private async notifyRolesOfStageDecision(
     updated: TimeOffRequest,
@@ -980,8 +1009,24 @@ export class TimeOffRequestService {
     approved: boolean,
   ): Promise<void> {
     const recipients = await resolveEmployeeNumbersByRoles(roles);
+    await this.notifyStageDecisionRecipients(updated, recipients, stage, approved);
+  }
+
+  /**
+   * Builds and sends the "stage decision" bell to an already-resolved
+   * recipient list. Split out from `notifyRolesOfStageDecision` so the final
+   * HR/Management decision can notify supervisors too — a set that mixes a
+   * global role (management) with a per-employee relationship (supervisors),
+   * which `resolveEmployeeNumbersByRoles` alone can't produce.
+   */
+  private async notifyStageDecisionRecipients(
+    updated: TimeOffRequest,
+    recipients: string[],
+    stage: 'coordinator' | 'hr',
+    approved: boolean,
+  ): Promise<void> {
     if (recipients.length === 0) {
-      this.logger.warn(`[notifyRolesOfStageDecision] no recipients for roles=${JSON.stringify(roles)} stage=${stage} — skipping`);
+      this.logger.warn(`[notifyStageDecisionRecipients] no recipients for stage=${stage} approved=${approved} — skipping`);
       return;
     }
 
@@ -1001,10 +1046,11 @@ export class TimeOffRequestService {
     let message: string;
 
     if (stage === 'coordinator') {
-      title = approved ? 'Time Off Request Awaiting HR Approval' : 'Time Off Request Rejected by Coordinator';
-      message = approved
-        ? `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was approved by ${actorName} and now needs HR/Management approval.`
-        : `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was rejected by ${actorName}.`;
+      // Sólo se llega aquí en aprobación: un rechazo del coordinator es
+      // final y no le queda nada por hacer a HR/Management, así que
+      // `approveByCoordinator` ni siquiera llama a esta función en ese caso.
+      title = 'Time Off Request Awaiting HR Approval';
+      message = `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was approved by ${actorName} and now needs HR/Management approval.`;
     } else {
       title = approved ? 'Time Off Request Approved' : 'Time Off Request Not Approved';
       message = `${requester}'s ${updated.requestType} request (${updated.dateOrRange}) was ${approved ? 'approved' : 'not approved'} by ${actorName}.`;
@@ -1015,7 +1061,10 @@ export class TimeOffRequestService {
       type: `${stage}_${approved ? 'approved' : 'rejected'}_notice`,
       title,
       message,
-      link: '/time-off-request-admin',
+      // Cubre tanto el aviso al aprobar el coordinator (hr+management) como
+      // el aviso final de hr/management (management+supervisors) — las dos
+      // llamadas pasan por aquí. Mismo id embebido que el resto de esta clase.
+      link: `/time-off-request-admin?request=${updated.id}`,
       source_id: updated.id,
       recipients,
     });
@@ -1069,7 +1118,7 @@ export class TimeOffRequestService {
       type: `${stage}_${approved ? 'approved' : 'rejected'}`,
       title,
       message,
-      link: '/time-off-request',
+      link: `/time-off-request?request=${updated.id}`,
       source_id: updated.id,
       recipients: [employeeNumber],
     });
