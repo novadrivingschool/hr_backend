@@ -311,6 +311,55 @@ export class EmployeesService {
     return this.employeeRepo.save(employee);
   }
 
+  /**
+   * Recalcula has_assigned_equipment / had_assigned_equipment para TODOS los
+   * empleados en base al estado real de la tabla `computer_equipment_assigned`
+   * (misma BD física, compartida con it_backend/nova-one-backend).
+   *
+   * has_assigned_equipment = true  si existe al menos un registro de asignación
+   *                                 ACTIVO (status_assigned_equipment = true)
+   *                                 para ese employee_number.
+   * had_assigned_equipment = true  si existió al menos un registro INACTIVO
+   *                                 (status_assigned_equipment = false) y no
+   *                                 tiene ninguno activo actualmente.
+   *
+   * Es idempotente y corrige drift causado por borrados/actualizaciones que
+   * no sincronizaron el flag (ver DELETE/PUT de computer_equipment_assigned).
+   *
+   * Author: sync equipment flags (2026-07-30)
+   */
+  async syncEquipmentFlags(): Promise<{ updated: number }> {
+    const result = await this.employeeRepo.manager.query(`
+      UPDATE employees e
+      SET
+        has_assigned_equipment = COALESCE(agg.has_active, false),
+        had_assigned_equipment = COALESCE(agg.had_inactive, false)
+          AND NOT COALESCE(agg.has_active, false)
+      FROM (
+        SELECT
+          e2.employee_number AS employee_number,
+          bool_or(cea.status_assigned_equipment IS TRUE)  AS has_active,
+          bool_or(cea.status_assigned_equipment IS FALSE) AS had_inactive
+        FROM employees e2
+        LEFT JOIN computer_equipment_assigned cea
+          ON NULLIF(TRIM(cea.employee->>'employee_number'), '') = e2.employee_number
+        GROUP BY e2.employee_number
+      ) agg
+      WHERE e.employee_number = agg.employee_number
+        AND (
+          e.has_assigned_equipment IS DISTINCT FROM COALESCE(agg.has_active, false)
+          OR e.had_assigned_equipment IS DISTINCT FROM (
+            COALESCE(agg.had_inactive, false) AND NOT COALESCE(agg.has_active, false)
+          )
+        )
+      RETURNING e.employee_number;
+    `);
+
+    const updated = Array.isArray(result) ? result.length : 0;
+    console.log(`syncEquipmentFlags: ${updated} empleado(s) actualizados`);
+    return { updated };
+  }
+
   async getSupervisorsEmailsByEmployeeNumber(employeeNumber: string): Promise<string[]> {
     // Trae SOLO la columna supervisors para no cargar de más
     const row = await this.employeeRepo

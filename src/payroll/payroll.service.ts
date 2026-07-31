@@ -2372,6 +2372,7 @@ export class PayrollService {
     end_date: string,
     employees: string[],
     tcwDisplayName?: string,
+    ratesToken?: string,
   ): Promise<{ buffer: Buffer; filename: string }> {
     // Determinamos el work_schedule del primer empleado encontrado
     const empRecord = await this.employeeRepository.findOne({
@@ -2380,7 +2381,7 @@ export class PayrollService {
     });
     const work_schedule = (empRecord?.work_schedule as any) ?? 'fixed';
 
-    const data = await this.getPayrollSummary(work_schedule, start_date, end_date, employees);
+    const data = await this.getPayrollSummary(work_schedule, start_date, end_date, employees, ratesToken);
 
     const browser = await puppeteer.launch({
       headless: true,
@@ -2426,6 +2427,46 @@ export class PayrollService {
     }
   }
 
+  /**
+   * Pide a nova-one-backend los rates YA desencriptados de un lote de
+   * employee_number (endpoint `/employees/rates-batch`, protegido con
+   * X-Rates-Token). El DEK vive únicamente en el proceso de
+   * nova-one-backend — acá nunca se intenta desencriptar nada directamente.
+   *
+   * Sin `ratesToken` (usuario sin payroll_total o sin sesión de Rates
+   * desbloqueada), o si nova-one-backend rechaza el token / no responde,
+   * devuelve `{}` y el caller debe tratar los rates como no disponibles
+   * (null) en vez de usar el valor crudo de la columna local, que hoy es
+   * texto cifrado, no un número.
+   */
+  private async fetchDecryptedRates(
+    employeeNumbers: string[],
+    ratesToken?: string,
+  ): Promise<Record<string, Record<string, number | null>>> {
+    if (!ratesToken || !employeeNumbers.length) return {};
+
+    const nova = (process.env.NOVA_ONE_API ?? '').trim().replace(/\/+$/, '');
+    if (!nova) {
+      console.error('NOVA_ONE_API no está configurado — no se pueden obtener los rates desencriptados.');
+      return {};
+    }
+
+    try {
+      const { data } = await axios.post(
+        `${nova}/employees/rates-batch`,
+        { employee_numbers: employeeNumbers },
+        { headers: { 'X-Rates-Token': ratesToken }, timeout: 10000 },
+      );
+      return data?.rates ?? {};
+    } catch (e) {
+      // No tumbamos todo el payroll summary si nova-one-backend rechaza el
+      // token (401, expiró) o no responde — el caller ya sabe tratar el
+      // resultado vacío como "rates no disponibles".
+      console.error('No se pudieron obtener los rates desencriptados de nova-one-backend:', e?.message ?? e);
+      return {};
+    }
+  }
+
   async hasTimesheetDataForRange(start_date: string, end_date: string): Promise<boolean> {
     const count = await this.timesheetRepository
       .createQueryBuilder('t')
@@ -2442,6 +2483,7 @@ export class PayrollService {
     start_date: string,
     end_date: string,
     employeeFilter?: string[],
+    ratesToken?: string,
   ) {
     const round = (v: number | null | undefined) =>
       Number(Number(v ?? 0).toFixed(2));
@@ -2464,21 +2506,35 @@ export class PayrollService {
         pay_frequency: true,
         type_of_schedule: true,
         payment_method: true,
-        assignment_rate: true,
-        btw_rate: true,
-        class_c_rate: true,
-        cr_rate: true,
-        ss_rate: true,
-        corporate_rate: true,
-        mechanics_rate: true,
+        // assignment_rate, btw_rate, class_c_rate, cr_rate, ss_rate,
+        // corporate_rate, mechanics_rate, rate_office_staff YA NO se leen de
+        // acá: esta misma tabla `employees` está encriptada por
+        // nova-one-backend (envelope encryption, ver crypto_fields.py) —
+        // esta columna hoy contiene el valor cifrado en base64, no un float.
+        // Se piden ya desencriptados a nova-one-backend más abajo.
         office_maintenance: true,
-        rate_office_staff: true,
       },
     });
 
     if (!employees.length) return [];
 
     const employeeNumbers = employees.map((e) => e.employee_number);
+
+    // Rates ya desencriptados, pedidos a nova-one-backend (dueño del DEK).
+    // Sin un X-Rates-Token vigente (el usuario no tiene payroll_total o no
+    // desbloqueó Rates), quedan explícitamente en null — nunca se calcula
+    // un monto a partir del texto cifrado.
+    const decryptedRates = await this.fetchDecryptedRates(employeeNumbers, ratesToken);
+    const RATE_KEYS = [
+      'assignment_rate', 'btw_rate', 'class_c_rate', 'cr_rate', 'ss_rate',
+      'corporate_rate', 'mechanics_rate', 'rate_office_staff',
+    ] as const;
+    for (const emp of employees) {
+      const rates = decryptedRates[emp.employee_number];
+      for (const key of RATE_KEYS) {
+        (emp as any)[key] = rates ? rates[key] ?? null : null;
+      }
+    }
 
     // 2. Rate history de todos los empleados en paralelo
     const rateHistoryRecords = await this.rateHistoryRepository

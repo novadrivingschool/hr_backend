@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Res } from '@nestjs/common'
+import { Controller, Get, Query, Res, Headers } from '@nestjs/common'
 import { Response } from 'express'
 import { IpSummaryService } from './ip-summary.service'
 
@@ -11,8 +11,9 @@ export class IpSummaryController {
     @Query('start_date') start_date: string,
     @Query('end_date') end_date: string,
     @Res() res: Response,
+    @Headers('x-rates-token') ratesToken?: string,
   ) {
-    const buffer = await this.service.buildExcel(start_date, end_date)
+    const buffer = await this.service.buildExcel(start_date, end_date, ratesToken)
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

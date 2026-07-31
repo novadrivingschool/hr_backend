@@ -1,7 +1,7 @@
 import {
   Controller, Query, BadRequestException,
   Post, UseInterceptors, UploadedFile, Res,
-  Body,
+  Body, Headers,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { PayrollService } from './payroll.service';
@@ -127,6 +127,7 @@ export class PayrollController {
     @Query('start_date') start_date: string,
     @Query('end_date') end_date: string,
     @Body() body: { employees?: string[] },
+    @Headers('x-rates-token') ratesToken?: string,
   ) {
     if (!start_date || !end_date) {
       throw new BadRequestException('start_date y end_date son requeridos');
@@ -149,6 +150,7 @@ export class PayrollController {
       start_date,
       end_date,
       body?.employees,
+      ratesToken,
     );
 
     return {
@@ -162,6 +164,7 @@ export class PayrollController {
   async getPayrollSummaryPdf(
     @Body() body: { start_date: string; end_date: string; employees: string[]; tcw_display_name?: string },
     @Res() res: Response,
+    @Headers('x-rates-token') ratesToken?: string,
   ) {
     const { start_date, end_date, employees, tcw_display_name } = body;
 
@@ -174,6 +177,7 @@ export class PayrollController {
       end_date,
       employees,
       tcw_display_name,
+      ratesToken,
     );
 
     res.setHeader('Content-Type', 'application/pdf');

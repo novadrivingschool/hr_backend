@@ -129,6 +129,17 @@ export class EmployeesController {
     );
   }
 
+  // Reconciliación masiva: recalcula has_assigned_equipment/had_assigned_equipment
+  // de TODOS los empleados contra el estado real de computer_equipment_assigned.
+  // Pensado para invocarse al terminar un import de Excel (it_backend) u otro
+  // proceso batch, para corregir drift si algún PATCH puntual falló o se
+  // borró/actualizó una asignación sin pasar por el flujo normal.
+  @Post('equipment-status/sync')
+  @HttpCode(HttpStatus.OK)
+  async syncEquipmentFlags() {
+    return this.employeesService.syncEquipmentFlags();
+  }
+
   @Patch(':employee_number/danubanet-name')
   async updateDanubanetName(
     @Param('employee_number') employeeNumber: string,

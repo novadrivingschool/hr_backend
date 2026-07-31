@@ -37,7 +37,7 @@ export class IpSummaryService {
     @InjectRepository(AssignmentRateType) private readonly artRepo: Repository<AssignmentRateType>,
   ) {}
 
-  async buildExcel(start_date: string, end_date: string): Promise<Buffer> {
+  async buildExcel(start_date: string, end_date: string, ratesToken?: string): Promise<Buffer> {
     const num = (x: any) => parseFloat(x) || 0
     const norm = (s: any) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 
@@ -49,10 +49,16 @@ export class IpSummaryService {
       this.artRepo.find(),
     ])
 
-    // Empleados (con rates + danubanet) desde el backend Python
+    // Empleados (con rates + danubanet) desde el backend Python. Los rates
+    // (btw_rate, cr_rate, etc.) viven encriptados ahí — sin X-Rates-Token
+    // vigente, nova-one-backend los devuelve en null (no rompe el excel,
+    // solo esas columnas quedan en blanco), igual que en /employees desde
+    // el frontend.
     let empList: any[] = []
     try {
-      const r = await axios.get(`${process.env.NOVA_ONE_API}/employees`)
+      const r = await axios.get(`${process.env.NOVA_ONE_API}/employees`, {
+        headers: ratesToken ? { 'X-Rates-Token': ratesToken } : {},
+      })
       empList = r.data?.employees ?? (Array.isArray(r.data) ? r.data : [])
     } catch (e) {
       empList = []
