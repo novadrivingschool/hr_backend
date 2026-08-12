@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, InternalServerErrorException, Logger, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, NotFoundException, InternalServerErrorException, Logger, BadRequestException, ServiceUnavailableException, ConflictException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository } from 'typeorm';
 import { TimeOffRequest } from './entities/time_off_request.entity';
@@ -439,6 +439,20 @@ export class TimeOffRequestService {
     try {
 
       const request = await this.findOne(id);
+
+      // 🔒 Idempotencia: evita doble aprobación concurrente (doble click / doble
+      // submit) que dispararía _createScheduleEventsFromTimeOff() dos veces y
+      // duplicaría los eventos en el master schedule. Una vez que HR ya resolvió
+      // (Approved o Not Approved), un segundo request para el mismo id se rechaza.
+      if (
+        request.status === StatusEnum.Approved ||
+        request.status === StatusEnum.NotApproved
+      ) {
+        throw new ConflictException(
+          `Time-off request ${id} was already resolved by HR (status: ${request.status}).`,
+        );
+      }
+
       const chicagoNow = moment().tz('America/Chicago');
 
       // ✅ Solo sobreescribe Stage 1 si AÚN NO fue aprobado por coordinator
@@ -524,6 +538,13 @@ export class TimeOffRequestService {
       return updatedRequest;
 
     } catch (error) {
+      if (
+        error instanceof NotFoundException ||
+        error instanceof ConflictException
+      ) {
+        throw error;
+      }
+
       this.logger.error(`HR approval failed for request ID ${id}`, error.stack);
       throw new InternalServerErrorException('Error approving by HR');
     }

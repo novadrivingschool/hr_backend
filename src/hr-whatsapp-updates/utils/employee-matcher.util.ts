@@ -21,6 +21,10 @@ export interface EmployeeIndex {
   // aunque el Excel solo traiga un subconjunto ("Daniela Salazar") o en
   // otro orden ("Salazar Daniela").
   tokensByEmployee: Map<string, Set<string>>;
+  // employee_number -> palabras de name+last_name EN ORDEN (no un Set) —
+  // usado para el desempate por adyacencia cuando 2+ empleados comparten
+  // todas las palabras del texto (ver `isContiguous` en matchEmployee).
+  orderedTokensByEmployee: Map<string, string[]>;
   // palabra normalizada -> empleados que la tienen en nombre o apellido.
   // Índice invertido para no recorrer TODA la plantilla en cada match.
   employeesByToken: Map<string, NovaOneEmployee[]>;
@@ -102,15 +106,18 @@ export async function fetchNovaOneEmployees(): Promise<NovaOneEmployee[]> {
  */
 export function buildEmployeeIndex(employees: NovaOneEmployee[]): EmployeeIndex {
   const tokensByEmployee = new Map<string, Set<string>>();
+  const orderedTokensByEmployee = new Map<string, string[]>();
   const employeesByToken = new Map<string, NovaOneEmployee[]>();
 
   for (const emp of employees) {
     if (!emp?.employee_number) continue;
 
-    const tokens = new Set([...tokenize(emp.name), ...tokenize(emp.last_name)]);
-    if (!tokens.size) continue;
+    const ordered = [...tokenize(emp.name), ...tokenize(emp.last_name)];
+    if (!ordered.length) continue;
+    const tokens = new Set(ordered);
 
     tokensByEmployee.set(emp.employee_number, tokens);
+    orderedTokensByEmployee.set(emp.employee_number, ordered);
     for (const t of tokens) {
       const arr = employeesByToken.get(t) ?? [];
       // Un mismo empleado no debe repetirse en la lista de un token (ya
@@ -121,7 +128,28 @@ export function buildEmployeeIndex(employees: NovaOneEmployee[]): EmployeeIndex 
     }
   }
 
-  return { employees, tokensByEmployee, employeesByToken };
+  return { employees, tokensByEmployee, orderedTokensByEmployee, employeesByToken };
+}
+
+/**
+ * ¿Aparece `query` (en ese orden exacto) como bloque contiguo dentro de
+ * `full`? Ej. isContiguous(['vanessa','arcos'], ['erika','vanessa','arcos',
+ * 'barahona']) -> true (están seguidas); isContiguous(['vanessa','arcos'],
+ * ['jessica','vanessa','calle','arcos']) -> false ("calle" las separa).
+ */
+function isContiguous(query: string[], full: string[]): boolean {
+  if (!query.length || query.length > full.length) return false;
+  for (let i = 0; i <= full.length - query.length; i++) {
+    let matches = true;
+    for (let j = 0; j < query.length; j++) {
+      if (full[i + j] !== query[j]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
 }
 
 function toMatch(emp: NovaOneEmployee): EmployeeMatch {
@@ -178,11 +206,30 @@ export function matchEmployee(rawText: string, index: EmployeeIndex): EmployeeMa
 
   if (candidates.length > 1) {
     // Ambiguo (varios empleados contienen todas las palabras del texto) —
-    // desempatar por el candidato "más ajustado": el que tenga MENOS
-    // palabras de más respecto al texto (ej. si el texto es "Daniela
-    // Salazar", un empleado con exactamente esas 2 palabras es más
-    // confiable que uno con 4 palabras que también las contiene todas).
-    const scored = candidates
+    // ej. "Vanessa Arcos" puede matchear tanto a "Erika Vanessa Arcos
+    // Barahona" como a "Jessica Vanessa Calle Arcos" (ambas tienen "vanessa"
+    // Y "arcos"). Antes de rendirse, se prueban 2 desempates EXACTOS (nunca
+    // aproximados):
+
+    // Desempate 1: ADYACENCIA. Si las palabras del texto aparecen SEGUIDAS
+    // (en ese orden, o en el orden invertido por si el Excel puso apellido
+    // primero) dentro del nombre completo de un único candidato, es el match
+    // correcto — es literalmente "Vanessa Arcos" como frase, no una mezcla
+    // de campos distintos. En el ejemplo, "vanessa arcos" está seguido en
+    // "Erika VANESSA ARCOS Barahona" pero NO en "Jessica Vanessa Calle
+    // ARCOS" (los separa "Calle") -> resuelve a la primera sin ambigüedad.
+    const reversedTokens = [...tokens].reverse();
+    const adjacent = candidates.filter((emp) => {
+      const ordered = index.orderedTokensByEmployee.get(emp.employee_number) ?? [];
+      return isContiguous(tokens, ordered) || isContiguous(reversedTokens, ordered);
+    });
+    if (adjacent.length === 1) return toMatch(adjacent[0]);
+
+    // Desempate 2: candidato "más ajustado" — el que tenga MENOS palabras de
+    // más respecto al texto (ej. un empleado con exactamente esas 2 palabras
+    // es más confiable que uno con 4 palabras que también las contiene).
+    const pool = adjacent.length > 1 ? adjacent : candidates;
+    const scored = pool
       .map((emp) => ({
         emp,
         extra: (index.tokensByEmployee.get(emp.employee_number)?.size ?? Infinity) - tokens.length,
