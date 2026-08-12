@@ -11,7 +11,7 @@ import {
   HR_WHATSAPP_DEFAULT_STATUS,
   HR_WHATSAPP_STATUS_OPTIONS,
 } from './constants/hr-whatsapp-update.constants';
-import { buildEmployeeIndex, fetchNovaOneEmployees, matchEmployee } from './utils/employee-matcher.util';
+import { buildEmployeeIndex, debugMatchEmployee, fetchNovaOneEmployees, matchEmployee } from './utils/employee-matcher.util';
 
 export interface FindAllHrWhatsappUpdatesFilters {
   date_from?: string;
@@ -478,5 +478,22 @@ export class HrWhatsappUpdatesService {
     if (date_to) qb.andWhere('u.entry_date <= :date_to', { date_to });
 
     return qb.getMany();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // DEBUG: por qué un texto puntual matchea o no contra los empleados REALES
+  // de nova-one-backend en este momento. Trae la lista fresca (sin caché) y
+  // devuelve cada tier del algoritmo por separado — sirve para diferenciar
+  // en el ambiente real si el problema es conectividad/env (totalEmployees-
+  // Fetched=0), ambigüedad (tier1Candidates.length > 1) o que el empleado
+  // simplemente no está en la respuesta de /employees.
+  // ─────────────────────────────────────────────────────────────────────
+  async debugMatchEmployee(text: string) {
+    const employees = await fetchNovaOneEmployees();
+    const index = buildEmployeeIndex(employees);
+    return {
+      totalEmployeesFetched: employees.length,
+      ...debugMatchEmployee(text, index),
+    };
   }
 }

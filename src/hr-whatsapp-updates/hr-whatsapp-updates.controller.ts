@@ -41,6 +41,21 @@ export class HrWhatsappUpdatesController {
     return this.service.getAnalyticsData({ date_from, date_to });
   }
 
+  // Diagnóstico del matcher de empleados contra los datos REALES de
+  // nova-one-backend en este momento — sin esto hay que adivinar a ciegas
+  // por qué un texto puntual no matchea. Ej:
+  // GET /hr-whatsapp-updates/debug/match?text=Ana%20Maria%20Gallegos
+  // Devuelve totalEmployeesFetched (si da 0, el problema es NOVA_ONE_API /
+  // conectividad, no el algoritmo de matching) y el detalle de cada tier.
+  // Debe ir ANTES de @Get(':id') por la misma razón que 'analytics/raw'.
+  @Get('debug/match')
+  async debugMatch(@Query('text') text?: string) {
+    if (!text || !text.trim()) {
+      throw new BadRequestException('Falta el parámetro "text"');
+    }
+    return this.service.debugMatchEmployee(text);
+  }
+
   @Post()
   create(@Body() dto: CreateHrWhatsappUpdateDto) {
     return this.service.create(dto);

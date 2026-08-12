@@ -255,3 +255,67 @@ export function matchEmployee(rawText: string, index: EmployeeIndex): EmployeeMa
 
   return null;
 }
+
+export interface MatchDebugInfo {
+  rawText: string;
+  tokens: string[];
+  totalEmployeesInIndex: number;
+  // Empleados que YA fueron descartados a nivel de índice porque no tienen
+  // NINGUNA palabra en común (útil para ver si el problema es que el
+  // empleado ni siquiera llegó al índice — ver totalEmployeesInIndex).
+  tier1Candidates: EmployeeMatch[];
+  adjacentCandidates: EmployeeMatch[];
+  tightestCandidates: EmployeeMatch[];
+  tier2SingleTokenCandidates: EmployeeMatch[];
+  result: EmployeeMatch | null;
+}
+
+/**
+ * Misma lógica que `matchEmployee`, pero devolviendo CADA paso intermedio en
+ * vez de solo el resultado final. Pensado para diagnosticar en el ambiente
+ * real (vía un endpoint de debug) por qué un texto puntual no matchea, sin
+ * tener que adivinar a ciegas: cuántos empleados llegaron al índice (si da 0,
+ * el problema es NOVA_ONE_API / fetchNovaOneEmployees, no el matching en sí),
+ * cuántos candidatos hay en cada tier, y cuál gana en cada desempate.
+ */
+export function debugMatchEmployee(rawText: string, index: EmployeeIndex): MatchDebugInfo {
+  const tokens = tokenize(rawText);
+  const tier1Candidates = candidatesWithAllTokens(tokens, index);
+
+  let adjacentCandidates: NovaOneEmployee[] = [];
+  let tightestCandidates: NovaOneEmployee[] = [];
+  let tier2SingleTokenCandidates: NovaOneEmployee[] = [];
+
+  if (tier1Candidates.length > 1) {
+    const reversedTokens = [...tokens].reverse();
+    adjacentCandidates = tier1Candidates.filter((emp) => {
+      const ordered = index.orderedTokensByEmployee.get(emp.employee_number) ?? [];
+      return isContiguous(tokens, ordered) || isContiguous(reversedTokens, ordered);
+    });
+
+    const pool = adjacentCandidates.length > 1 ? adjacentCandidates : tier1Candidates;
+    const scored = pool
+      .map((emp) => ({
+        emp,
+        extra: (index.tokensByEmployee.get(emp.employee_number)?.size ?? Infinity) - tokens.length,
+      }))
+      .sort((a, b) => a.extra - b.extra);
+    const minExtra = scored[0]?.extra;
+    tightestCandidates = scored.filter((c) => c.extra === minExtra).map((c) => c.emp);
+  }
+
+  if (tier1Candidates.length === 0 && tokens.length === 1) {
+    tier2SingleTokenCandidates = index.employeesByToken.get(tokens[0]) ?? [];
+  }
+
+  return {
+    rawText,
+    tokens,
+    totalEmployeesInIndex: index.employees.length,
+    tier1Candidates: tier1Candidates.map(toMatch),
+    adjacentCandidates: adjacentCandidates.map(toMatch),
+    tightestCandidates: tightestCandidates.map(toMatch),
+    tier2SingleTokenCandidates: tier2SingleTokenCandidates.map(toMatch),
+    result: matchEmployee(rawText, index),
+  };
+}
