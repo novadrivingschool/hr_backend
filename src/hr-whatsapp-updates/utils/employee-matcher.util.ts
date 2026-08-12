@@ -5,6 +5,11 @@ export interface NovaOneEmployee {
   employee_number: string;
   name: string;
   last_name: string;
+  // Campo real de la tabla employees (default 'Active'), ya expuesto por
+  // GET /employees. El índice de matching solo considera empleados Active —
+  // dos personas con el mismo nombre completo, una activa y otra
+  // inactiva/dada de baja, no deben competir por el mismo registro.
+  status?: string | null;
 }
 
 export interface EmployeeMatch {
@@ -103,19 +108,28 @@ export async function fetchNovaOneEmployees(): Promise<NovaOneEmployee[]> {
  * conjunto de tokens (en vez de un string armado con un orden fijo) el
  * match funciona sin importar orden, cuántas palabras tenga cada campo en
  * la BD, ni cuántas de esas palabras trajo el Excel.
+ *
+ * Solo entran al índice los empleados con status Active (mismo criterio que
+ * ya usa el buscador en vivo del form — ver filterEmployees({status:
+ * 'Active'}) en EmployeeSearchField.vue). Empleados inactivos/dados de baja
+ * quedan afuera de la competencia por un match — evita que un ex-empleado
+ * con el mismo nombre le "robe" el match a quien realmente está activo hoy.
  */
 export function buildEmployeeIndex(employees: NovaOneEmployee[]): EmployeeIndex {
   const tokensByEmployee = new Map<string, Set<string>>();
   const orderedTokensByEmployee = new Map<string, string[]>();
   const employeesByToken = new Map<string, NovaOneEmployee[]>();
+  const activeEmployees: NovaOneEmployee[] = [];
 
   for (const emp of employees) {
     if (!emp?.employee_number) continue;
+    if (String(emp.status ?? '').trim().toLowerCase() !== 'active') continue;
 
     const ordered = [...tokenize(emp.name), ...tokenize(emp.last_name)];
     if (!ordered.length) continue;
     const tokens = new Set(ordered);
 
+    activeEmployees.push(emp);
     tokensByEmployee.set(emp.employee_number, tokens);
     orderedTokensByEmployee.set(emp.employee_number, ordered);
     for (const t of tokens) {
@@ -128,7 +142,7 @@ export function buildEmployeeIndex(employees: NovaOneEmployee[]): EmployeeIndex 
     }
   }
 
-  return { employees, tokensByEmployee, orderedTokensByEmployee, employeesByToken };
+  return { employees: activeEmployees, tokensByEmployee, orderedTokensByEmployee, employeesByToken };
 }
 
 /**
