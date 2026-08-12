@@ -14,21 +14,56 @@ export interface EmployeeMatch {
 }
 
 export interface EmployeeIndex {
-  byFullName: Map<string, NovaOneEmployee>;
-  byFirstName: Map<string, NovaOneEmployee[]>;
-  byLastName: Map<string, NovaOneEmployee[]>;
+  employees: NovaOneEmployee[];
+  // employee_number -> conjunto de TODAS las palabras normalizadas de su
+  // nombre + apellido (ej. name="Daniela Maria", last_name="Salazar Lopez"
+  // -> {daniela, maria, salazar, lopez}). Es lo que permite matchear
+  // aunque el Excel solo traiga un subconjunto ("Daniela Salazar") o en
+  // otro orden ("Salazar Daniela").
+  tokensByEmployee: Map<string, Set<string>>;
+  // palabra normalizada -> empleados que la tienen en nombre o apellido.
+  // Índice invertido para no recorrer TODA la plantilla en cada match.
+  employeesByToken: Map<string, NovaOneEmployee[]>;
 }
 
 const logger = new Logger('EmployeeMatcher');
 
+// Rango unicode de diacríticos combinantes (U+0300–U+036F), construido con
+// fromCharCode para evitar problemas de encoding al escribir el literal
+// "̀-ͯ" directamente en el código fuente (mismo criterio que
+// HrWhatsappUpdatesService.DIACRITICS_REGEX).
+const DIACRITICS_REGEX = new RegExp(
+  `[${String.fromCharCode(0x0300)}-${String.fromCharCode(0x036f)}]`,
+  'g',
+);
+
 /**
- * Normaliza un nombre para comparar: minúsculas, sin espacios ni signos.
- * Mismo criterio que ya usa `norm()` en ip-summary.service.ts.
+ * Normaliza un nombre completo para comparar: minúsculas, sin acentos, sin
+ * espacios ni signos. Útil para comparar un solo campo de una — no separa
+ * en palabras (ver `tokenize` para eso).
  */
 export function normalizeName(value: string | null | undefined): string {
   return String(value ?? '')
     .toLowerCase()
+    .normalize('NFD')
+    .replace(DIACRITICS_REGEX, '')
     .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Separa un texto en palabras normalizadas (minúsculas, sin acentos, sin
+ * signos). Es la base del matching por "conjunto de tokens": a diferencia de
+ * `normalizeName` (que concatena todo en un solo string), esto permite
+ * comparar nombre/apellido sin importar el orden en que vengan ni cuántas
+ * palabras tenga cada campo.
+ */
+function tokenize(value: string | null | undefined): string[] {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(DIACRITICS_REGEX, '')
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
 }
 
 /**
@@ -55,72 +90,121 @@ export async function fetchNovaOneEmployees(): Promise<NovaOneEmployee[]> {
 }
 
 /**
- * Arma un índice para matchear texto libre contra empleados, tolerando que
- * nombre y apellido vengan en cualquier orden (ej. "Pérez Juan" o
- * "Juan Pérez") o que solo venga uno de los dos. El match es siempre EXACTO
- * tras normalizar — deliberadamente no hay aproximación difusa (Levenshtein,
- * etc.) para no correr el riesgo de asignar un registro al empleado
- * equivocado.
+ * Arma el índice de matching por CONJUNTO DE PALABRAS (no por string
+ * concatenado). Esto es clave porque en la BD de empleados el "nombre" y/o
+ * "apellido" pueden tener dos (o más) palabras — ej. name="Daniela Maria",
+ * last_name="Salazar Lopez" — mientras que en el Excel casi siempre viene
+ * solo una palabra de cada uno, y en cualquier orden ("Daniela Salazar",
+ * "Salazar Daniela", "Salazar Lopez Daniela", etc.). Comparando por
+ * conjunto de tokens (en vez de un string armado con un orden fijo) el
+ * match funciona sin importar orden, cuántas palabras tenga cada campo en
+ * la BD, ni cuántas de esas palabras trajo el Excel.
  */
 export function buildEmployeeIndex(employees: NovaOneEmployee[]): EmployeeIndex {
-  const byFullName = new Map<string, NovaOneEmployee>();
-  const byFirstName = new Map<string, NovaOneEmployee[]>();
-  const byLastName = new Map<string, NovaOneEmployee[]>();
-
-  const pushTo = (map: Map<string, NovaOneEmployee[]>, key: string, emp: NovaOneEmployee) => {
-    if (!key) return;
-    const arr = map.get(key) ?? [];
-    arr.push(emp);
-    map.set(key, arr);
-  };
+  const tokensByEmployee = new Map<string, Set<string>>();
+  const employeesByToken = new Map<string, NovaOneEmployee[]>();
 
   for (const emp of employees) {
     if (!emp?.employee_number) continue;
 
-    const name = normalizeName(emp.name);
-    const lastName = normalizeName(emp.last_name);
+    const tokens = new Set([...tokenize(emp.name), ...tokenize(emp.last_name)]);
+    if (!tokens.size) continue;
 
-    if (name && lastName) {
-      const nameFirst = `${name}${lastName}`; // "Juan Perez"  -> "juanperez"
-      const lastFirst = `${lastName}${name}`; // "Perez Juan"  -> "perezjuan"
-      if (!byFullName.has(nameFirst)) byFullName.set(nameFirst, emp);
-      if (!byFullName.has(lastFirst)) byFullName.set(lastFirst, emp);
+    tokensByEmployee.set(emp.employee_number, tokens);
+    for (const t of tokens) {
+      const arr = employeesByToken.get(t) ?? [];
+      // Un mismo empleado no debe repetirse en la lista de un token (ya
+      // viene de un Set, pero por las dudas si hubiera duplicados en la
+      // lista de origen de nova-one-backend).
+      if (!arr.some((e) => e.employee_number === emp.employee_number)) arr.push(emp);
+      employeesByToken.set(t, arr);
     }
-
-    pushTo(byFirstName, name, emp);
-    pushTo(byLastName, lastName, emp);
   }
 
-  return { byFullName, byFirstName, byLastName };
+  return { employees, tokensByEmployee, employeesByToken };
+}
+
+function toMatch(emp: NovaOneEmployee): EmployeeMatch {
+  return { employee_number: emp.employee_number, name: emp.name, last_name: emp.last_name };
 }
 
 /**
- * Intenta matchear un texto libre (ej. "Sara Jarrín", "Jarrín Sara", "Jen")
- * contra el índice de empleados. Devuelve `null` si no hay match único y
- * confiable — en ese caso el llamador debe guardar el texto original en el
- * campo "_other" en vez de forzar un match incorrecto.
+ * Intersección de las listas de empleados de cada token (índice invertido) —
+ * devuelve solo los empleados que tienen TODOS los tokens pedidos en su
+ * nombre+apellido, sin recorrer la plantilla completa.
+ */
+function candidatesWithAllTokens(tokens: string[], index: EmployeeIndex): NovaOneEmployee[] {
+  if (!tokens.length) return [];
+
+  let candidates: NovaOneEmployee[] | null = null;
+  for (const t of tokens) {
+    const list = index.employeesByToken.get(t) ?? [];
+    if (candidates === null) {
+      candidates = list;
+    } else {
+      const ids = new Set(list.map((e) => e.employee_number));
+      candidates = candidates.filter((e) => ids.has(e.employee_number));
+    }
+    if (!candidates.length) return [];
+  }
+  return candidates ?? [];
+}
+
+/**
+ * Intenta matchear un texto libre (ej. "Sara Jarrín", "Jarrín Sara", "Daniela
+ * Salazar" cuando en la BD el empleado es name="Daniela Maria" / last_name=
+ * "Salazar Gomez", o simplemente "Jen") contra el índice de empleados.
+ * Devuelve `null` si no hay match único y confiable — en ese caso el
+ * llamador debe guardar el texto original en el campo "_other" en vez de
+ * forzar un match incorrecto.
+ *
+ * Deliberadamente NO hay aproximación difusa (Levenshtein, similitud, etc.):
+ * todo match exige que CADA palabra del texto exista literalmente (tras
+ * normalizar) entre las palabras de nombre + apellido del empleado (name +
+ * last_name — ningún otro campo). Lo único "inteligente" acá es que no
+ * importa el ORDEN de las palabras ni que el empleado tenga más palabras de
+ * las que trajo el Excel — nunca se adivina una palabra que no está.
  */
 export function matchEmployee(rawText: string, index: EmployeeIndex): EmployeeMatch | null {
-  const normalized = normalizeName(rawText);
-  if (!normalized) return null;
+  const tokens = tokenize(rawText);
+  if (!tokens.length) return null;
 
-  const toMatch = (emp: NovaOneEmployee): EmployeeMatch => ({
-    employee_number: emp.employee_number,
-    name: emp.name,
-    last_name: emp.last_name,
-  });
+  // Tier 1: empleados cuyo nombre+apellido contiene TODAS las palabras del
+  // texto (en cualquier orden, sin importar cuántas palabras más tenga el
+  // registro del empleado en la BD).
+  const candidates = candidatesWithAllTokens(tokens, index);
 
-  // Tier 1: "nombre apellido" o "apellido nombre" completos, en cualquier orden.
-  const exact = index.byFullName.get(normalized);
-  if (exact) return toMatch(exact);
+  if (candidates.length === 1) return toMatch(candidates[0]);
 
-  // Tier 2: el Excel solo trae una palabra — aceptar solo si es única (sin ambigüedad
-  // entre varios empleados que compartan ese nombre o apellido).
-  const byFirst = index.byFirstName.get(normalized);
-  if (byFirst && byFirst.length === 1) return toMatch(byFirst[0]);
+  if (candidates.length > 1) {
+    // Ambiguo (varios empleados contienen todas las palabras del texto) —
+    // desempatar por el candidato "más ajustado": el que tenga MENOS
+    // palabras de más respecto al texto (ej. si el texto es "Daniela
+    // Salazar", un empleado con exactamente esas 2 palabras es más
+    // confiable que uno con 4 palabras que también las contiene todas).
+    const scored = candidates
+      .map((emp) => ({
+        emp,
+        extra: (index.tokensByEmployee.get(emp.employee_number)?.size ?? Infinity) - tokens.length,
+      }))
+      .sort((a, b) => a.extra - b.extra);
 
-  const byLast = index.byLastName.get(normalized);
-  if (byLast && byLast.length === 1) return toMatch(byLast[0]);
+    const minExtra = scored[0].extra;
+    const tightest = scored.filter((c) => c.extra === minExtra);
+    if (tightest.length === 1) return toMatch(tightest[0].emp);
+
+    // Sigue ambiguo incluso desempatando -> no forzar, queda para revisión
+    // manual (cae a *_other).
+    return null;
+  }
+
+  // Tier 2: ninguna coincidencia con TODAS las palabras — si el texto es una
+  // sola palabra (ej. "Jen"), aceptar solo si esa palabra es única entre
+  // TODOS los nombres/apellidos de la empresa (sin ambigüedad).
+  if (tokens.length === 1) {
+    const single = index.employeesByToken.get(tokens[0]) ?? [];
+    if (single.length === 1) return toMatch(single[0]);
+  }
 
   return null;
 }

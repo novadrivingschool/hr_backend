@@ -226,6 +226,14 @@ export class HrWhatsappUpdatesService {
     skippedRows: number;
     unmatchedReported: number;
     unmatchedResponsable: number;
+    // Textos originales (deduplicados) que NO se pudieron matchear contra
+    // ningún empleado y quedaron guardados en *_other. Sirve para revisar
+    // rápido después de importar si quedaron casos por apodos (ej. "Vane"
+    // cuando el empleado está registrado como "Vanessa") o errores de tipeo
+    // (ej. "Martines" vs "Martinez") — el matcher es deliberadamente estricto
+    // (sin aproximación difusa) para no asignar mal un registro.
+    unmatchedReportedNames: string[];
+    unmatchedResponsableNames: string[];
     errors: ImportRowError[];
   }> {
     const workbook = new ExcelJS.Workbook();
@@ -320,6 +328,8 @@ export class HrWhatsappUpdatesService {
     let skipped = 0;
     let unmatchedReported = 0;
     let unmatchedResponsable = 0;
+    const unmatchedReportedNames = new Set<string>();
+    const unmatchedResponsableNames = new Set<string>();
 
     for (let i = 2; i <= sheet.rowCount; i++) {
       const row = sheet.getRow(i);
@@ -364,12 +374,18 @@ export class HrWhatsappUpdatesService {
 
       // ── Match de "Name" contra empleados ──────────────────────────────
       const reportedMatch = matchEmployee(rawName, employeeIndex);
-      if (!reportedMatch) unmatchedReported++;
+      if (!reportedMatch) {
+        unmatchedReported++;
+        unmatchedReportedNames.add(rawName);
+      }
 
       // ── Match de "Responsable" contra empleados (opcional) ────────────
       const rawResponsable = getCellValue(row, colResponsable).trim();
       const responsableMatch = rawResponsable ? matchEmployee(rawResponsable, employeeIndex) : null;
-      if (rawResponsable && !responsableMatch) unmatchedResponsable++;
+      if (rawResponsable && !responsableMatch) {
+        unmatchedResponsable++;
+        unmatchedResponsableNames.add(rawResponsable);
+      }
 
       entities.push({
         entry_date: entryDate,
@@ -433,6 +449,8 @@ export class HrWhatsappUpdatesService {
       skippedRows: skipped,
       unmatchedReported,
       unmatchedResponsable,
+      unmatchedReportedNames: Array.from(unmatchedReportedNames).sort(),
+      unmatchedResponsableNames: Array.from(unmatchedResponsableNames).sort(),
       errors,
     };
   }
