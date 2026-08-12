@@ -283,6 +283,26 @@ export class PayrollController {
     return { ok: true, rows };
   }
 
+  @Post('tcw-name-matches')
+  async getTcwNameMatches(
+    @Body() body: {
+      employees?: Array<{ employee_number: string; name: string; last_name: string }>;
+    },
+  ) {
+    const employees = body?.employees;
+    if (!Array.isArray(employees) || !employees.length) {
+      throw new BadRequestException('employees (array no vacío) es requerido');
+    }
+    for (const emp of employees) {
+      if (!emp?.employee_number) {
+        throw new BadRequestException('Cada empleado requiere employee_number');
+      }
+    }
+
+    const result = await this.payrollService.matchEmployeesToTcwNames(employees);
+    return { ok: true, ...result };
+  }
+
   @Post('timesheets/clock-comparison/detail')
   async getClockComparisonDetail(
     @Body() body: {

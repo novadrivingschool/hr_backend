@@ -30,6 +30,7 @@ import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
 import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
 import { ReviewCreationICareDto } from './dto/review-creation-i-care.dto';
 import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
+import { ICareAnalyticsQueryDto } from './dto/analytics-query-i-care.dto';
 import { ICareStatus, ICareUrgency } from './entities/i-care.entity';
 
 @Controller('i-care')
@@ -125,6 +126,26 @@ export class ICareController {
       });
     } catch (error) {
       console.error('Error fetching ICare statistics:', error);
+      throw error;
+    }
+  }
+
+  // ── GET /i-care/analytics ─────────────────────────────────────────────────
+  // Dashboard de Analytics: KPIs, gráficas y tablas para HR/Coordinator/Mgmt.
+  // Incluye el funnel de coordinator-reject -> HR review (confirm/override
+  // L-M/override H-C), el funnel de escalation H/C, tendencia created vs
+  // solved, breakdown por department/reason/staff position, tiempos de
+  // resolución/justificación, y top coordinators / top staff reportado.
+  // Toda la agregación corre en Postgres — ver ICareService.analytics().
+
+  @Get('analytics')
+  @UsePipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
+  @HttpCode(HttpStatus.OK)
+  async analytics(@Query() query: ICareAnalyticsQueryDto) {
+    try {
+      return await this.iCareService.analytics(query);
+    } catch (error) {
+      console.error('Error computing ICare analytics:', error);
       throw error;
     }
   }
@@ -534,7 +555,9 @@ export class ICareController {
 
   // ── PATCH /i-care/:id/review-rejection ─────────────────────────────────────
   // HR / Management revisa el rejected del coordinator.
-  // accept=true → REJECTED final. accept=false → override, vuelve a PENDING.
+  // accept=true → REJECTED final.
+  // accept=false → override (urgency requerida): Low/Medium → vuelve a PENDING (coordinator);
+  //                High/Critical → PENDING_HR_JUSTIFY (se queda con HR/Mgmt).
 
   @Patch(':id/review-rejection')
   @UsePipes(new ValidationPipe({

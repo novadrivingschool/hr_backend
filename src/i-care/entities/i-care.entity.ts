@@ -12,6 +12,10 @@ export enum ICareStatus {
   IN_PROGRESS = 'in_progress',
   PENDING_HR_REVIEW = 'pending_hr_review',
   REJECTION_UNDER_REVIEW = 'rejection_under_review',
+  /** HR/Mgmt hizo override de un rejected con urgency High/Critical (ver reviewRejection()).
+   *  El caso se queda con HR/Mgmt — no vuelve al coordinator — a la espera de que ellos mismos
+   *  lo justifiquen (mismo endpoint /justify, urgency ya bloqueada por rejection_override). */
+  PENDING_HR_JUSTIFY = 'pending_hr_justify',
   REJECTED = 'rejected',
   FOLLOWING_UP = 'following_up',
   COMMIT_FULFILLED = 'commit_fulfilled',

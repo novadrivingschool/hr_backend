@@ -35,6 +35,7 @@ export interface HaRow {
   vout: string
   extra: string
   timeOff: string
+  outage: string
   total: string
   arNova: string
   arVout: string
@@ -115,7 +116,7 @@ export async function buildHrsAutorizadasExcel(p: HrsAutorizadasPayload): Promis
   // ── Anchos ──
   ws.getColumn(1).width = 28
   for (let i = 0; i < totalDayCols; i++) ws.getColumn(2 + i).width = 4.5
-  const sumLabels = ['Hrs Aut', 'WS Nova', 'WS Vout', 'Extra', 'Time Off', 'Total', 'AR Nova', 'AR Vout', 'TCW']
+  const sumLabels = ['Hrs Aut', 'WS Nova', 'WS Vout', 'Extra', 'Time Off', 'Outage', 'Total', 'AR Nova', 'AR Vout', 'TCW']
   sumLabels.forEach((_, i) => {
     ws.getColumn(sumStart + i).width = 8
   })
@@ -140,7 +141,7 @@ export async function buildHrsAutorizadasExcel(p: HrsAutorizadasPayload): Promis
     align(mc)
     dayIdx += mg.count
   }
-  const sumSpacerColors = ['FFE8F5E9', 'FFFFF2CC', 'FFD0B4F5', 'FFA8D8EA', 'FFEA9999', 'FFE8E7FC', 'FFEBF4FF', 'FFDDEEFF', 'FFE8E7FC']
+  const sumSpacerColors = ['FFE8F5E9', 'FFFFF2CC', 'FFD0B4F5', 'FFA8D8EA', 'FFEA9999', 'FFFFCC80', 'FFE8E7FC', 'FFEBF4FF', 'FFDDEEFF', 'FFE8E7FC']
   sumSpacerColors.forEach((a, i) => {
     const c = ws.getCell(1, sumStart + i)
     fill(c, a)
@@ -174,6 +175,7 @@ export async function buildHrsAutorizadasExcel(p: HrsAutorizadasPayload): Promis
     { label: 'WS Vout', fill: 'FFD0B4F5', color: 'FF4A1F8C' },
     { label: 'Extra', fill: 'FFA8D8EA', color: 'FF1A5276' },
     { label: 'Time Off', fill: 'FFEA9999', color: 'FF7F1F1F' },
+    { label: 'Outage', fill: 'FFFFCC80', color: 'FFE65100' },
     { label: 'Total', fill: 'FFE8E7FC', color: 'FF3C2F8C' },
     { label: 'AR Nova', fill: 'FFEBF4FF', color: 'FF1565C0' },
     { label: 'AR Vout', fill: 'FFDDEEFF', color: 'FF0D47A1' },
@@ -272,22 +274,23 @@ export async function buildHrsAutorizadasExcel(p: HrsAutorizadasPayload): Promis
     sumCell(2, row.vout, 'FFD0B4F5', 'FF4A1F8C')
     sumCell(3, row.extra, 'FFA8D8EA', 'FF1A5276')
     sumCell(4, row.timeOff, 'FFEA9999', 'FF7F1F1F')
+    sumCell(5, row.outage, 'FFFFCC80', 'FFE65100')
 
     // Total → cian si > 0
     const totalNum = num(row.total)
-    const totalC = ws.getCell(exRow, sumStart + 5)
+    const totalC = ws.getCell(exRow, sumStart + 6)
     totalC.value = totalNum
     fill(totalC, totalNum != null && totalNum > 0 ? 'FF00FFFF' : rowArgb)
     font(totalC, { bold: true })
     align(totalC)
     totalC.border = thin()
 
-    sumCell(6, row.arNova, 'FFEBF4FF', 'FF1565C0')
-    sumCell(7, row.arVout, 'FFDDEEFF', 'FF0D47A1')
+    sumCell(7, row.arNova, 'FFEBF4FF', 'FF1565C0')
+    sumCell(8, row.arVout, 'FFDDEEFF', 'FF0D47A1')
 
     // TCW → rojo si TCW>Total, naranja si <, verde si =
     const tcwNum = num(row.tcw)
-    const tcwC = ws.getCell(exRow, sumStart + 8)
+    const tcwC = ws.getCell(exRow, sumStart + 9)
     tcwC.value = tcwNum
     let tcwBg = rowArgb
     if (tcwNum != null && totalNum != null) {

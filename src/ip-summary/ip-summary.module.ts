@@ -7,6 +7,7 @@ import { NoShowPayroll } from '../no-show-payroll/entities/no-show-payroll.entit
 import { AssignmentRateType } from '../assignment-rate-types/entities/assignment-rate-type.entity'
 import { IpSummaryService } from './ip-summary.service'
 import { IpSummaryController } from './ip-summary.controller'
+import { DanubenetHistoryModule } from '../danubenet-history/danubenet-history.module'
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { IpSummaryController } from './ip-summary.controller'
       NoShowPayroll,
       AssignmentRateType,
     ]),
+    DanubenetHistoryModule,
   ],
   controllers: [IpSummaryController],
   providers: [IpSummaryService],

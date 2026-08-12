@@ -76,6 +76,20 @@ export class AbsenceController {
     }
 
     /**
+     * PATCH /absence/:id/recovery-authorization
+     * Actualiza únicamente recovery_required (hour recovery authorized).
+     * Solo hr/management — misma deuda que el resto del módulo: sin guards,
+     * el rol se valida en el frontend (ver nota en remove()).
+     */
+    @Patch(':id/recovery-authorization')
+    updateRecoveryAuthorization(
+        @Param('id', ParseUUIDPipe) id: string,
+        @Body('recovery_required') recovery_required: boolean,
+    ): Promise<Absence> {
+        return this.absenceService.updateRecoveryAuthorization(id, recovery_required);
+    }
+
+    /**
      * Borrado duro — solo admin (HR / Management).
      *
      * ⚠️ El backend no tiene guards: el rol se valida únicamente en el router

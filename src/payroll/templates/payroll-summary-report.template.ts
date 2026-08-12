@@ -31,6 +31,15 @@ export function buildSummaryEmployeeHtml(emp: any): string {
 
   const emptyInline = (text: string) => `<div class="empty-inline">${esc(text)}</div>`;
 
+  // Muestra el rate_office_staff EFECTIVAMENTE aplicado a un día/registro
+  // puntual (schedule_details, time off, extra hours, outage) — el monto del
+  // tramo real, no una etiqueta genérica "Office". Si el día cayó en un hueco
+  // del historial (has_rate === false), se marca como advertencia.
+  const rateTag = (d: any) =>
+    d?.has_rate === false
+      ? '<span class="tag tag-warning">No Rate</span>'
+      : `<span class="tag tag-office">${fmtMoney(d?.rate_period?.rate)}</span>`;
+
   const fullName = [emp?.name, emp?.last_name].filter(Boolean).join(' ') || '—';
   const tcwDisplayName = emp?.tcw_display_name || null;
   const periodStart = emp?.period?.start_date || '—';
@@ -43,12 +52,17 @@ export function buildSummaryEmployeeHtml(emp: any): string {
   const scheduleDetails = Array.isArray(emp?.schedule_details) ? emp.schedule_details : [];
   const timeOffDetails = Array.isArray(emp?.time_off?.details) ? emp.time_off.details : [];
   const extraHoursDetails = Array.isArray(emp?.extra_hours?.details) ? emp.extra_hours.details : [];
+  const outageDetails = Array.isArray(emp?.outage?.details) ? emp.outage.details : [];
   const advancedDetails = Array.isArray(emp?.advanced_requests?.details) ? emp.advanced_requests.details : [];
   const compInFavor = Array.isArray(emp?.compensation_summary?.in_favor) ? emp.compensation_summary.in_favor : [];
   const compToDeduct = Array.isArray(emp?.compensation_summary?.to_deduct) ? emp.compensation_summary.to_deduct : [];
   const commissions = Array.isArray(emp?.commissions_summary) ? emp.commissions_summary : [];
   const holidaysInRange = Array.isArray(emp?.holidays_in_range) ? emp.holidays_in_range : [];
-  const seasonalRates = Array.isArray(validRate?.seasonal_rates) ? validRate.seasonal_rates : [];
+  const officeRatePeriods = Array.isArray(validRate?.office_rate_periods) ? validRate.office_rate_periods : [];
+  const noRateDays = {
+    count: Number(validRate?.no_rate_days?.count ?? 0),
+    dates: Array.isArray(validRate?.no_rate_days?.dates) ? validRate.no_rate_days.dates : [],
+  };
 
   const typeLabel = (type: string) => {
     switch (type) {
@@ -103,6 +117,7 @@ export function buildSummaryEmployeeHtml(emp: any): string {
         .tag-season { background: #fef3c7; color: #92400e; border-color: #fde68a; }
         .tag-office { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
         .tag-holiday { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
+        .tag-warning { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
         .box {
           border: 1px solid #e5e7eb; border-radius: 12px;
           padding: 14px; background: #fff; margin-bottom: 12px;
@@ -137,6 +152,7 @@ export function buildSummaryEmployeeHtml(emp: any): string {
         .amount-red { color: #b91c1c; font-weight: 700; }
         .holiday-row { background: #faf5ff; }
         .season-row { background: #fffbeb; }
+        .no-rate-row { background: #fef2f2; }
         .empty-inline { color: #64748b; font-style: italic; padding: 6px 0; }
         .comp-subtotal {
           display: flex; justify-content: space-between; align-items: center;
@@ -163,6 +179,9 @@ export function buildSummaryEmployeeHtml(emp: any): string {
         .hours-chip--timeoff .hours-chip__value { color: #c0392b; }
         .hours-chip--extra { background: #f3e9fb; border-color: #d3aee8; }
         .hours-chip--extra .hours-chip__value { color: #6a1b9a; }
+        .hours-chip--outage { background: #fff3e0; border-color: #ffcc80; }
+        .hours-chip--outage .hours-chip__value { color: #e65100; }
+        .amount-outage { color: #e65100; font-weight: 700; }
         .source-badge {
           display: inline-block; padding: 3px 8px; border-radius: 6px;
           font-size: 10px; font-weight: 700;
@@ -218,32 +237,40 @@ export function buildSummaryEmployeeHtml(emp: any): string {
             </div>
 
             <div class="box">
-              <div class="box-title">🏷️ Valid Rates</div>
-              ${seasonalRates.length ? `
-                <div class="box-subtitle">Seasonal Rates</div>
+              <div class="box-title">🏷️ Valid Rates — Office Staff</div>
+              ${officeRatePeriods.length ? `
                 <table>
-                  <thead><tr><th>Season</th><th>From</th><th>To</th><th class="text-right">Rate</th></tr></thead>
+                  <thead><tr><th>From</th><th>To</th><th class="text-right">Rate</th><th class="text-right">Hours Paid</th><th class="text-right">Earned</th></tr></thead>
                   <tbody>
-                    ${seasonalRates.map((r: any) => `
+                    ${officeRatePeriods.map((p: any) => `
                       <tr>
-                        <td><span class="tag tag-season">${esc(r?.season)}</span></td>
-                        <td class="nowrap">${esc(r?.start_date)}</td>
-                        <td class="nowrap">${esc(r?.end_date)}</td>
-                        <td class="text-right">${fmtMoney(r?.amount)}</td>
+                        <td class="nowrap">${esc(p?.start_date)}</td>
+                        <td class="nowrap">${hasValue(p?.end_date) ? esc(p?.end_date) : 'Ongoing'}</td>
+                        <td class="text-right">${fmtMoney(p?.rate)}</td>
+                        <td class="text-right">${fmtHours(p?.hours_paid)}</td>
+                        <td class="text-right ${moneyClass(p?.amount_earned, 'green')}">${fmtMoney(p?.amount_earned)}</td>
                       </tr>
                     `).join('')}
                   </tbody>
+                  ${officeRatePeriods.length > 1 ? `
+                    <tfoot>
+                      <tr>
+                        <td colspan="3" style="text-align:right;font-weight:700;">Total</td>
+                        <td class="text-right" style="font-weight:700;">
+                          ${fmtHours(officeRatePeriods.reduce((s: number, p: any) => s + num(p?.hours_paid), 0))}
+                        </td>
+                        <td class="text-right amount-green" style="font-weight:700;">
+                          ${fmtMoney(officeRatePeriods.reduce((s: number, p: any) => s + num(p?.amount_earned), 0))}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  ` : ''}
                 </table>
+              ` : emptyInline('No rate_office_staff period configured for this range')}
+              ${noRateDays.count ? `
+                <div class="box-subtitle" style="margin-top:10px;color:#b91c1c;">⚠️ Days paid $0 — no rate configured</div>
+                <div style="font-size:11px;color:#b91c1c;line-height:1.5;">${noRateDays.dates.map(esc).join(', ')}</div>
               ` : ''}
-              <div class="box-subtitle" style="margin-top:${seasonalRates.length ? '10px' : '0'}">Office Rate</div>
-              <table>
-                <tbody>
-                  <tr>
-                    <td><span class="tag tag-office">Office Staff</span></td>
-                    <td class="text-right">${fmtMoney(validRate?.office_rate?.amount)}</td>
-                  </tr>
-                </tbody>
-              </table>
             </div>
           </div>
 
@@ -258,6 +285,10 @@ export function buildSummaryEmployeeHtml(emp: any): string {
               <div class="hours-chip">
                 <span class="hours-chip__label">Lunch Hrs</span>
                 <span class="hours-chip__value">${num(totals?.authorized_hours?.lunch_hours).toFixed(2)}</span>
+              </div>
+              <div class="hours-chip hours-chip--outage">
+                <span class="hours-chip__label">Outage Hrs</span>
+                <span class="hours-chip__value">&minus;${num(totals?.authorized_hours?.outage_hours).toFixed(2)}</span>
               </div>
               <div class="hours-chip hours-chip--tcw">
                 <span class="hours-chip__label">TCW Hrs</span>
@@ -318,7 +349,8 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                 <tr>
                   <td>Advanced Amount</td>
                   <td class="text-right ${moneyClass(totals?.advanced_amount, 'red')}">${fmtMoney(totals?.advanced_amount)}</td>
-                  <td></td><td></td>
+                  <td>Outage Amount</td>
+                  <td class="text-right ${moneyClass(totals?.outage_amount, 'red')}">${fmtMoney(totals?.outage_amount)}</td>
                 </tr>
               </tbody>
             </table>
@@ -364,11 +396,9 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                       totalTcwH       += tcwH;
                       const typeTag = day?.is_holiday
                         ? '<span class="tag tag-holiday">' + esc(day?.holiday_name || 'Holiday') + '</span>'
-                        : day?.season
-                          ? '<span class="tag tag-season">Seasonal</span>'
-                          : '<span class="tag tag-office">Office</span>';
+                        : rateTag(day);
                       return `
-                        <tr class="${day?.is_holiday ? 'holiday-row' : day?.season ? 'season-row' : ''}">
+                        <tr class="${day?.is_holiday ? 'holiday-row' : day?.has_rate === false ? 'no-rate-row' : ''}">
                           <td class="nowrap">${esc(day?.date)}</td>
                           <td>${typeTag}</td>
                           <td class="text-right nowrap">${novaSchedH > 0 ? fmtHours(novaSchedH) : '—'}</td>
@@ -403,12 +433,12 @@ export function buildSummaryEmployeeHtml(emp: any): string {
               <div class="box-subtitle">${esc(emp?.time_off?.total_requests ?? 0)} requests · ${fmtHours(emp?.time_off?.total_hours)}</div>
               ${timeOffDetails.length ? `
                 <table>
-                  <thead><tr><th>Date</th><th>Season</th><th>Status</th><th class="text-right">Hrs</th><th class="text-right">Deducted</th></tr></thead>
+                  <thead><tr><th>Date</th><th>Rate</th><th>Status</th><th class="text-right">Hrs</th><th class="text-right">Deducted</th></tr></thead>
                   <tbody>
                     ${timeOffDetails.map((d: any) => `
                       <tr>
                         <td class="nowrap">${esc(d?.date)}</td>
-                        <td>${d?.season ? '<span class="tag tag-season">Seasonal</span>' : '<span class="tag tag-office">Office</span>'}</td>
+                        <td>${rateTag(d)}</td>
                         <td>${d?.will_make_up_hours ? '<span class="tag" style="background:#f0fdf4;color:#166534;border-color:#bbf7d0">Recovery</span>' : '<span class="tag" style="background:#fff7f7;color:#b91c1c;border-color:#fecaca">Deducted</span>'}</td>
                         <td class="text-right">${fmtHours(d?.total_hours)}</td>
                         <td class="text-right ${d?.will_make_up_hours ? '' : moneyClass(d?.calculated_total, 'red')}">${d?.will_make_up_hours ? '—' : fmtMoney(d?.calculated_total)}</td>
@@ -425,12 +455,12 @@ export function buildSummaryEmployeeHtml(emp: any): string {
               <div class="box-subtitle">${esc(emp?.extra_hours?.total_requests ?? 0)} requests · ${fmtHours(emp?.extra_hours?.total_hours)}</div>
               ${extraHoursDetails.length ? `
                 <table>
-                  <thead><tr><th>Date</th><th>Season</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
+                  <thead><tr><th>Date</th><th>Rate</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
                   <tbody>
                     ${extraHoursDetails.map((d: any) => `
                       <tr>
                         <td class="nowrap">${esc(d?.date)}</td>
-                        <td>${d?.season ? '<span class="tag tag-season">Seasonal</span>' : '<span class="tag tag-office">Office</span>'}</td>
+                        <td>${rateTag(d)}</td>
                         <td class="text-right">${fmtHours(d?.total_hours)}</td>
                         <td class="text-right ${moneyClass(d?.calculated_total, 'green')}">${fmtMoney(d?.calculated_total)}</td>
                       </tr>
@@ -441,6 +471,29 @@ export function buildSummaryEmployeeHtml(emp: any): string {
               <div class="box-amount ${moneyClass(totals?.extra_hours_amount, 'green')}">${fmtMoney(totals?.extra_hours_amount)}</div>
             </div>
           </div>
+
+          <!-- OUTAGE -->
+          ${outageDetails.length ? `
+            <div class="box box-orange mt-12">
+              <div class="box-title">⚡ Outage</div>
+              <div class="box-subtitle">${esc(emp?.outage?.total_requests ?? 0)} events · ${fmtHours(emp?.outage?.total_hours)}</div>
+              <table>
+                <thead><tr><th>Date</th><th>Reason</th><th>Rate</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
+                <tbody>
+                  ${outageDetails.map((d: any) => `
+                    <tr>
+                      <td class="nowrap">${esc(d?.date)}</td>
+                      <td>${esc(d?.reason || '—')}</td>
+                      <td>${rateTag(d)}</td>
+                      <td class="text-right">${fmtHours(d?.total_hours)}</td>
+                      <td class="text-right ${moneyClass(d?.calculated_total, 'red')}">${fmtMoney(d?.calculated_total)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+              <div class="box-amount ${moneyClass(totals?.outage_amount, 'red')}">${fmtMoney(totals?.outage_amount)}</div>
+            </div>
+          ` : ''}
 
           <!-- HOLIDAYS -->
           ${holidaysInRange.length ? `

@@ -1,6 +1,6 @@
 import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, Repository } from 'typeorm';
+import { Brackets, QueryRunner, Repository } from 'typeorm';
 import * as moment from 'moment-timezone';
 import { Logger } from '@nestjs/common';
 import axios from 'axios';
@@ -18,6 +18,7 @@ import { HrRejectICareDto } from './dto/hr-reject-i-care.dto';
 import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
 import { ReviewCreationICareDto } from './dto/review-creation-i-care.dto';
 import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
+import { ICareAnalyticsQueryDto } from './dto/analytics-query-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
 
@@ -1101,6 +1102,7 @@ export class ICareService {
       const pendingHrReviewStatusCount = statusMap[ICareStatus.PENDING_HR_REVIEW] || 0;
       const rejectionUnderReviewStatusCount = statusMap[ICareStatus.REJECTION_UNDER_REVIEW] || 0;
       const pendingCreationReviewStatusCount = statusMap[ICareStatus.PENDING_CREATION_REVIEW] || 0;
+      const pendingHrJustifyStatusCount = statusMap[ICareStatus.PENDING_HR_JUSTIFY] || 0;
 
       // -- monthlyTrend (últimos 6 meses) ----------------------------------------
       const sixMonthsAgo = new Date();
@@ -1169,6 +1171,7 @@ export class ICareService {
         pendingHrReviewStatusCount,
         rejectionUnderReviewStatusCount,
         pendingCreationReviewStatusCount,
+        pendingHrJustifyStatusCount,
         statusDistribution,
         // tendencia
         monthlyTrend,
@@ -1203,16 +1206,23 @@ export class ICareService {
       throw new ForbiddenException('This record still needs HR/Management to approve its creation before it can be justified');
     }
 
-    // HR/Mgmt ya revisó este caso (downgrade de H/C a Low/Medium) y decidió tanto su
-    // legitimidad como su urgency final — el coordinator ya no puede rechazarlo ni
-    // cambiar la urgency, solo justificarlo/aceptarlo tal cual quedó. Ver stage
-    // "Downgrade" (columnas downgraded_*) y approveJustification() acción 'downgrade'.
-    if (record.downgraded) {
+    // justify() solo aplica a records en 'pending' (flujo normal / post-downgrade / post-override
+    // L/M, actuado por el coordinator) o 'pending_hr_justify' (post-override H/C, actuado por HR/Mgmt).
+    if (record.status !== ICareStatus.PENDING && record.status !== ICareStatus.PENDING_HR_JUSTIFY) {
+      throw new BadRequestException('Record is not in a justifiable state');
+    }
+
+    // HR/Mgmt ya revisó este caso (downgrade de H/C a Low/Medium, o override de un rejected
+    // del coordinator) y decidió tanto su legitimidad como su urgency final — quien lo justifique
+    // (coordinator o HR/Mgmt según el caso) ya no puede rechazarlo ni cambiar la urgency, solo
+    // justificarlo/aceptarlo tal cual quedó. Ver stage "Downgrade" (columnas downgraded_*),
+    // approveJustification() acción 'downgrade', y reviewRejection() override (rejection_override).
+    if (record.downgraded || record.rejection_override) {
       if (dto.justified === false) {
-        throw new ForbiddenException('This case was already reviewed and downgraded by HR/Management — it cannot be rejected by the coordinator, only justified');
+        throw new ForbiddenException('This case was already reviewed by HR/Management — it cannot be rejected, only justified');
       }
       if (dto.urgency && dto.urgency !== record.urgency) {
-        throw new ForbiddenException('Urgency was already decided by HR/Management during the downgrade and cannot be changed by the coordinator');
+        throw new ForbiddenException('Urgency was already decided by HR/Management and cannot be changed');
       }
     }
 
@@ -1224,8 +1234,8 @@ export class ICareService {
     record.justified_time = now.format('HH:mm');
 
     // Guardar la urgency seleccionada (coordinator L/M → in_progress; coordinator H/C → pending_hr_review; HR/Mgmt → in_progress).
-    // Si el caso fue downgraded, la urgency ya quedó fija por HR/Mgmt — no se vuelve a tocar.
-    if (dto.urgency && dto.justified && !record.downgraded) record.urgency = dto.urgency;
+    // Si el caso fue downgraded u override de un rejected, la urgency ya quedó fija por HR/Mgmt — no se vuelve a tocar.
+    if (dto.urgency && dto.justified && !record.downgraded && !record.rejection_override) record.urgency = dto.urgency;
 
     if (dto.comment) {
       record.justified_comments = [
@@ -1729,7 +1739,13 @@ export class ICareService {
   /**
    * HR / Management revisa el rejected del coordinator.
    * accept=true  -> status REJECTED (final).
-   * accept=false -> override: status va a IN_PROGRESS, rejection_override=true.
+   * accept=false -> override: HR/Mgmt asigna la urgency final (dto.urgency, requerida).
+   *   - Low/Medium  -> status PENDING, vuelve al coordinator. rejection_override=true bloquea
+   *                    que lo vuelva a rechazar o cambie la urgency (ver guard en justify());
+   *                    el coordinator solo puede justificarlo para que avance a staff.
+   *   - High/Critical -> status PENDING_HR_JUSTIFY, se queda con HR/Mgmt (el coordinator no
+   *                    puede actuar sobre H/C). HR/Mgmt lo justifica luego con el mismo
+   *                    endpoint /justify (urgency ya bloqueada) y avanza directo a IN_PROGRESS.
    */
   async reviewRejection(id: string, dto: ReviewRejectionICareDto): Promise<ICare> {
     const record = await this.iCareRepository.findOne({ where: { id } });
@@ -1753,14 +1769,19 @@ export class ICareService {
       // Aceptar el rejected -> queda rechazado de forma definitiva
       record.status = ICareStatus.REJECTED;
     } else {
-      // Override -> va directo a IN_PROGRESS, coordinator no puede rechazar de nuevo
-      record.status = ICareStatus.IN_PROGRESS;
+      // Override -> HR/Mgmt decide la urgency final; es obligatoria para saber a quién
+      // regresa el caso (coordinator en L/M, HR/Mgmt mismos en H/C).
+      if (!dto.urgency) {
+        throw new BadRequestException('Urgency is required when overriding a rejection');
+      }
+      record.urgency = dto.urgency;
       record.rejection_override = true;
-      // Marcar como justified para que el staff lo vea en MyICare y pueda hacer commit
-      record.justified = true;
-      record.justified_date = now.format('YYYY-MM-DD');
-      record.justified_time = now.format('HH:mm');
-      record.justified_approved_by = dto.reviewed_by;
+
+      if (dto.urgency === ICareUrgency.HIGH || dto.urgency === ICareUrgency.CRITICAL) {
+        record.status = ICareStatus.PENDING_HR_JUSTIFY;
+      } else {
+        record.status = ICareStatus.PENDING;
+      }
     }
 
     const saved = await this.iCareRepository.save(record);
@@ -1954,6 +1975,357 @@ export class ICareService {
     } catch (error) {
       this.logger.error('Error in batch delete:', error);
       throw error;
+    }
+  }
+
+  // ============================================================================
+  // -- Analytics ----------------------------------------------------------------
+  // Powers GET /i-care/analytics — el dashboard de KPIs/gráficas que se muestra
+  // debajo de la tabla en la vista de HR/Coordinator/Management. Toda la
+  // agregación corre en Postgres (this.iCareRepository.query) para que el
+  // payload sea chico sin importar cuántos registros existan. Mismo patrón que
+  // ITTicketsService.analytics() (it_backend/src/it_tickets/it_tickets.service.ts).
+  //
+  // Rango: from/to son fechas de calendario inclusivas sobre la columna `date`
+  // (fecha del reporte — mismo campo que usa getStatistics()), EXCEPTO la
+  // serie "solved" del trend, que filtra sobre resolved_date (responde
+  // "cuánto se resolvió en el período", no "de lo creado, cuánto se resolvió").
+  // department/staffPositions aplican el mismo scoping ILIKE/jsonb que ya usa
+  // el resto del módulo para coordinators restringidos.
+  // ============================================================================
+
+  private static round1(v: unknown): number | null {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+  }
+
+  /** Wrapper con tipo de retorno explícito sobre un QueryRunner ya conectado.
+   *  analytics() corre TODAS sus queries en serie sobre un único QueryRunner
+   *  (una sola conexión del pool) — ver nota en analytics(). */
+  private rawQuery(queryRunner: QueryRunner, sql: string, params: any[] = []): Promise<any[]> {
+    return queryRunner.query(sql, params);
+  }
+
+  /** Elige una granularidad de trend que mantenga el gráfico legible. */
+  private static autoAnalyticsBucket(from?: string, to?: string): 'day' | 'week' | 'month' {
+    if (!from) return 'month';
+    const start = new Date(`${from}T00:00:00Z`).getTime();
+    const end = to ? new Date(`${to}T00:00:00Z`).getTime() : Date.now();
+    const days = Math.max(1, (end - start) / 86_400_000);
+    if (days <= 62) return 'day';
+    if (days <= 366) return 'week';
+    return 'month';
+  }
+
+  async analytics(query: ICareAnalyticsQueryDto) {
+    const { from, to } = query;
+    if (from && to && from > to) {
+      throw new BadRequestException('"from" must be before or equal to "to"');
+    }
+    const bucket = query.bucket ?? ICareService.autoAnalyticsBucket(from, to);
+    const r1 = ICareService.round1;
+
+    // $1=from $2=to — mismas posiciones en todas las queries para poder
+    // reusar los fragmentos RANGE/RANGE_RESOLVED tal cual.
+    const P: (string | null)[] = [from ?? null, to ?? null];
+
+    const depts = (query.department ?? '').split(',').map(d => d.trim()).filter(Boolean);
+    const deptConds: string[] = [];
+    for (const d of depts) {
+      P.push(`%${d}%`);
+      deptConds.push(`i.department ILIKE $${P.length}`);
+    }
+    const DEPT_SCOPE = deptConds.length ? `AND (${deptConds.join(' OR ')})` : '';
+
+    const positions = (query.staffPositions ?? '').split(',').map(p => p.trim()).filter(Boolean);
+    let POS_SCOPE = '';
+    if (positions.length) {
+      P.push(positions as any);
+      POS_SCOPE = `AND i.multi_position::jsonb ?| $${P.length}::text[]`;
+    }
+
+    // Inclusive [from, to] sobre `date` (fecha de creación del reporte).
+    // `date` es varchar (YYYY-MM-DD), no un tipo date nativo — se compara como
+    // string, igual que el resto del módulo (ver applyDeptFilter/dateFrom-dateTo
+    // en getStatistics()). Los strings ISO ordenan igual lexicográficamente.
+    const RANGE = `
+      ($1::text IS NULL OR i.date >= $1::text)
+      AND ($2::text IS NULL OR i.date <= $2::text)
+      ${DEPT_SCOPE} ${POS_SCOPE}`;
+
+    // Mismo rango pero sobre resolved_date (varchar también) — para la serie
+    // "solved" del trend.
+    const RANGE_RESOLVED = `
+      i.resolved_date IS NOT NULL
+      AND ($1::text IS NULL OR i.resolved_date >= $1::text)
+      AND ($2::text IS NULL OR i.resolved_date <= $2::text)
+      ${DEPT_SCOPE} ${POS_SCOPE}`;
+
+    // resolved_date/resolved_time y justified_date/justified_time son varchar
+    // (no timestamptz) — se guardan ya en business timezone (America/Chicago),
+    // así que hay que llevar createdAt a esa misma zona antes de restar.
+    const RES_HOURS = `EXTRACT(EPOCH FROM (
+      (i.resolved_date || ' ' || COALESCE(i.resolved_time, '00:00'))::timestamp
+      - (i."createdAt" AT TIME ZONE 'America/Chicago')
+    )) / 3600.0`;
+    const JUSTIFY_HOURS = `EXTRACT(EPOCH FROM (
+      (i.justified_date || ' ' || COALESCE(i.justified_time, '00:00'))::timestamp
+      - (i."createdAt" AT TIME ZONE 'America/Chicago')
+    )) / 3600.0`;
+
+    const bucketParamIdx = P.length + 1;
+    const PB = [...P, bucket];
+
+    this.logger.log(`[analytics] from=${from ?? '-'} to=${to ?? '-'} bucket=${bucket}`);
+
+    // Antes estas ~11 queries se disparaban en paralelo con Promise.all, y
+    // cada this.iCareRepository.query() sin QueryRunner explícito toma su
+    // propia conexión del pool de forma independiente — una sola carga del
+    // dashboard llegaba a pedir hasta 11 conexiones simultáneas. En un
+    // Postgres administrado con max_connections compartido entre todos los
+    // backends del monorepo (hr_backend, it_backend, etc.), eso agotaba el
+    // pool ("remaining connection slots are reserved for roles with the
+    // SUPERUSER attribute"). Corriendo todo en serie sobre un único
+    // QueryRunner, este endpoint nunca usa más de 1 conexión a la vez.
+    const queryRunner = this.iCareRepository.manager.connection.createQueryRunner();
+    let connected = false;
+
+    try {
+      await queryRunner.connect();
+      connected = true;
+
+      // 1. Volumen + status mix + tiempos de resolución/justificación
+      const [summary] = await this.rawQuery(
+        queryRunner,
+        `SELECT
+             COUNT(*)::int AS total,
+             COUNT(*) FILTER (WHERE i.status = 'solved')::int AS solved,
+             COUNT(*) FILTER (WHERE i.status = 'rejected')::int AS rejected,
+             COUNT(*) FILTER (WHERE i.status = 'in_progress')::int AS in_progress,
+             COUNT(*) FILTER (WHERE i.status = 'pending')::int AS pending,
+             COUNT(*) FILTER (WHERE i.status = 'following_up')::int AS following_up,
+             COUNT(*) FILTER (WHERE i.status = 'commit_fulfilled')::int AS commit_fulfilled,
+             COUNT(*) FILTER (WHERE i.status = 'pending_hr_review')::int AS pending_hr_review,
+             COUNT(*) FILTER (WHERE i.status = 'pending_hr_justify')::int AS pending_hr_justify,
+             COUNT(*) FILTER (WHERE i.status = 'rejection_under_review')::int AS rejection_under_review,
+             COUNT(*) FILTER (WHERE i.status = 'pending_creation_review')::int AS pending_creation_review,
+             COUNT(*) FILTER (WHERE i.committed)::int AS committed,
+             COUNT(*) FILTER (WHERE i.urgency IN ('High','Critical') AND i.status NOT IN ('solved','rejected'))::int AS critical_active,
+             AVG(${RES_HOURS}) FILTER (WHERE i.status = 'solved' AND i.resolved_date IS NOT NULL) AS avg_resolution_hours,
+             PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY ${RES_HOURS})
+               FILTER (WHERE i.status = 'solved' AND i.resolved_date IS NOT NULL) AS median_resolution_hours,
+             AVG(${JUSTIFY_HOURS}) FILTER (WHERE i.justified_date IS NOT NULL) AS avg_time_to_justify_hours
+           FROM i_care i
+           WHERE ${RANGE}`,
+        P,
+      );
+
+      // 2. Distribución por urgency
+      const byUrgency = await this.rawQuery(
+        queryRunner,
+        `SELECT COALESCE(i.urgency::text, 'None') AS urgency, COUNT(*)::int AS count
+           FROM i_care i WHERE ${RANGE}
+           GROUP BY 1 ORDER BY count DESC`,
+        P,
+      );
+
+      // 3. Distribución por status
+      const byStatus = await this.rawQuery(
+        queryRunner,
+        `SELECT i.status::text AS status, COUNT(*)::int AS count
+           FROM i_care i WHERE ${RANGE}
+           GROUP BY 1 ORDER BY count DESC`,
+        P,
+      );
+
+      // 4. Por departamento (volumen + tiempo de resolución promedio)
+      const byDepartment = await this.rawQuery(
+        queryRunner,
+        `SELECT COALESCE(NULLIF(i.department, ''), 'Unassigned') AS department,
+                  COUNT(*)::int AS count,
+                  AVG(${RES_HOURS}) FILTER (WHERE i.status = 'solved' AND i.resolved_date IS NOT NULL) AS avg_resolution_hours
+           FROM i_care i WHERE ${RANGE}
+           GROUP BY 1 ORDER BY count DESC LIMIT 15`,
+        P,
+      );
+
+      // 5. Top reasons
+      const byReason = await this.rawQuery(
+        queryRunner,
+        `SELECT i.reason AS reason, COUNT(*)::int AS count
+           FROM i_care i WHERE ${RANGE}
+           GROUP BY 1 ORDER BY count DESC LIMIT 10`,
+        P,
+      );
+
+      // 6. Por posición del staff afectado (Operator/Instructor/Teacher)
+      const byStaffPosition = await this.rawQuery(
+        queryRunner,
+        `SELECT pos AS position, COUNT(*)::int AS count
+           FROM i_care i
+           CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(i.multi_position, '[]'::jsonb)) AS pos
+           WHERE ${RANGE}
+           GROUP BY 1 ORDER BY count DESC`,
+        P,
+      );
+
+      // 7. Funnel de rejection: coordinator reject -> HR review (confirm / override L-M / override H-C).
+      // hr_direct_or_awaiting_review agrupa tanto los hr-direct-reject (que reusan
+      // coordinator_rejected sin pasar por rejection_reviewed) como los que aún
+      // están esperando el review de HR/Mgmt.
+      const [rejectionFunnel] = await this.rawQuery(
+        queryRunner,
+        `SELECT
+             COUNT(*) FILTER (WHERE i.coordinator_rejected)::int AS coordinator_rejected_total,
+             COUNT(*) FILTER (WHERE i.coordinator_rejected AND NOT i.rejection_reviewed)::int AS hr_direct_or_awaiting_review,
+             COUNT(*) FILTER (WHERE i.rejection_reviewed AND i.rejection_review_accepted = true)::int AS hr_confirmed,
+             COUNT(*) FILTER (WHERE i.rejection_reviewed AND i.rejection_review_accepted = false AND i.urgency IN ('Low','Medium'))::int AS hr_overridden_low_medium,
+             COUNT(*) FILTER (WHERE i.rejection_reviewed AND i.rejection_review_accepted = false AND i.urgency IN ('High','Critical'))::int AS hr_overridden_high_critical
+           FROM i_care i WHERE ${RANGE}`,
+        P,
+      );
+
+      // 8. Funnel de escalation: coordinator justifica H/C -> HR decide (accept / downgrade / reject)
+      const [escalationFunnel] = await this.rawQuery(
+        queryRunner,
+        `SELECT
+             COUNT(*) FILTER (WHERE i.escalated)::int AS escalated_total,
+             COUNT(*) FILTER (WHERE i.escalated AND i.status = 'pending_hr_review')::int AS awaiting_hr_decision,
+             COUNT(*) FILTER (WHERE i.escalated AND i.downgraded)::int AS downgraded,
+             COUNT(*) FILTER (WHERE i.escalated AND NOT i.downgraded AND i.status = 'rejected')::int AS rejected_hc,
+             COUNT(*) FILTER (WHERE i.escalated AND NOT i.downgraded AND i.status NOT IN ('pending_hr_review','rejected'))::int AS accepted_hc
+           FROM i_care i WHERE ${RANGE}`,
+        P,
+      );
+
+      // 9a. Trend: creados por bucket
+      const createdTrend = await this.rawQuery(
+        queryRunner,
+        `SELECT to_char(date_trunc($${bucketParamIdx}, i.date::timestamp), 'YYYY-MM-DD') AS bucket,
+                  COUNT(*)::int AS count
+           FROM i_care i WHERE ${RANGE}
+           GROUP BY 1 ORDER BY 1`,
+        PB,
+      );
+
+      // 9b. Trend: solved por bucket (sobre resolved_date, no sobre date)
+      const solvedTrend = await this.rawQuery(
+        queryRunner,
+        `SELECT to_char(date_trunc($${bucketParamIdx}, i.resolved_date::timestamp), 'YYYY-MM-DD') AS bucket,
+                  COUNT(*)::int AS count
+           FROM i_care i WHERE ${RANGE_RESOLVED}
+           GROUP BY 1 ORDER BY 1`,
+        PB,
+      );
+
+      // 10. Top coordinators/HR — quién justifica más casos y qué tan rápido
+      const topCoordinators = await this.rawQuery(
+        queryRunner,
+        `SELECT
+             i.justified_approved_by->>'employee_number' AS employee_number,
+             MAX(TRIM(CONCAT(i.justified_approved_by->>'name', ' ', i.justified_approved_by->>'last_name'))) AS name,
+             COUNT(*)::int AS justified_count,
+             AVG(${JUSTIFY_HOURS}) AS avg_time_to_justify_hours
+           FROM i_care i
+           WHERE ${RANGE} AND i.justified_approved_by IS NOT NULL AND i.justified_date IS NOT NULL
+           GROUP BY 1
+           ORDER BY justified_count DESC
+           LIMIT 10`,
+        P,
+      );
+
+      // 11. Top staff reportado — quién acumula más iCares en su contra
+      const topReportedStaff = await this.rawQuery(
+        queryRunner,
+        `SELECT
+             i.staff_name->>'employee_number' AS employee_number,
+             MAX(TRIM(CONCAT(i.staff_name->>'name', ' ', i.staff_name->>'last_name'))) AS name,
+             COUNT(*)::int AS count
+           FROM i_care i
+           WHERE ${RANGE} AND i.staff_name IS NOT NULL
+           GROUP BY 1
+           ORDER BY count DESC
+           LIMIT 10`,
+        P,
+      );
+
+      const total = Number(summary?.total ?? 0);
+      const coordRejectedTotal = Number(rejectionFunnel?.coordinator_rejected_total ?? 0);
+      const hrConfirmed = Number(rejectionFunnel?.hr_confirmed ?? 0);
+      const hrOverriddenLM = Number(rejectionFunnel?.hr_overridden_low_medium ?? 0);
+      const hrOverriddenHC = Number(rejectionFunnel?.hr_overridden_high_critical ?? 0);
+      const reviewedRejections = hrConfirmed + hrOverriddenLM + hrOverriddenHC;
+      const escalatedTotal = Number(escalationFunnel?.escalated_total ?? 0);
+
+      return {
+        range: { from: from ?? null, to: to ?? null, bucket },
+        summary: {
+          total,
+          solved: Number(summary?.solved ?? 0),
+          rejected: Number(summary?.rejected ?? 0),
+          in_progress: Number(summary?.in_progress ?? 0),
+          pending: Number(summary?.pending ?? 0),
+          following_up: Number(summary?.following_up ?? 0),
+          commit_fulfilled: Number(summary?.commit_fulfilled ?? 0),
+          pending_hr_review: Number(summary?.pending_hr_review ?? 0),
+          pending_hr_justify: Number(summary?.pending_hr_justify ?? 0),
+          rejection_under_review: Number(summary?.rejection_under_review ?? 0),
+          pending_creation_review: Number(summary?.pending_creation_review ?? 0),
+          committed: Number(summary?.committed ?? 0),
+          committed_rate_pct: total > 0 ? r1((Number(summary?.committed ?? 0) / total) * 100) : null,
+          critical_active: Number(summary?.critical_active ?? 0),
+          resolution_rate_pct: total > 0 ? r1((Number(summary?.solved ?? 0) / total) * 100) : null,
+          avg_resolution_hours: r1(summary?.avg_resolution_hours),
+          median_resolution_hours: r1(summary?.median_resolution_hours),
+          avg_time_to_justify_hours: r1(summary?.avg_time_to_justify_hours),
+          coordinator_rejection_rate_pct: total > 0 ? r1((coordRejectedTotal / total) * 100) : null,
+          hr_override_rate_pct: reviewedRejections > 0 ? r1(((hrOverriddenLM + hrOverriddenHC) / reviewedRejections) * 100) : null,
+          escalation_rate_pct: total > 0 ? r1((escalatedTotal / total) * 100) : null,
+        },
+        byUrgency: (byUrgency as any[]).map(x => ({ urgency: x.urgency, count: Number(x.count) })),
+        byStatus: (byStatus as any[]).map(x => ({ status: x.status, count: Number(x.count) })),
+        byDepartment: (byDepartment as any[]).map(x => ({
+          department: x.department,
+          count: Number(x.count),
+          avg_resolution_hours: r1(x.avg_resolution_hours),
+        })),
+        byReason: (byReason as any[]).map(x => ({ reason: x.reason, count: Number(x.count) })),
+        byStaffPosition: (byStaffPosition as any[]).map(x => ({ position: x.position, count: Number(x.count) })),
+        rejectionFunnel: {
+          pending_review: Number(rejectionFunnel?.hr_direct_or_awaiting_review ?? 0),
+          hr_confirmed: hrConfirmed,
+          hr_overridden_low_medium: hrOverriddenLM,
+          hr_overridden_high_critical: hrOverriddenHC,
+          coordinator_rejected_total: coordRejectedTotal,
+        },
+        escalationFunnel: {
+          escalated_total: escalatedTotal,
+          awaiting_hr_decision: Number(escalationFunnel?.awaiting_hr_decision ?? 0),
+          downgraded: Number(escalationFunnel?.downgraded ?? 0),
+          accepted_hc: Number(escalationFunnel?.accepted_hc ?? 0),
+          rejected_hc: Number(escalationFunnel?.rejected_hc ?? 0),
+        },
+        trend: {
+          created: (createdTrend as any[]).map(x => ({ bucket: x.bucket, count: Number(x.count) })),
+          solved: (solvedTrend as any[]).map(x => ({ bucket: x.bucket, count: Number(x.count) })),
+        },
+        topCoordinators: (topCoordinators as any[]).map(x => ({
+          employee_number: x.employee_number,
+          name: x.name || x.employee_number,
+          justified_count: Number(x.justified_count),
+          avg_time_to_justify_hours: r1(x.avg_time_to_justify_hours),
+        })),
+        topReportedStaff: (topReportedStaff as any[]).map(x => ({
+          employee_number: x.employee_number,
+          name: x.name || x.employee_number,
+          count: Number(x.count),
+        })),
+      };
+    } catch (error) {
+      this.logger.error('Error computing ICare analytics:', error);
+      throw error;
+    } finally {
+      if (connected) await queryRunner.release();
     }
   }
 

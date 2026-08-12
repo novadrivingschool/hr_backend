@@ -877,6 +877,96 @@ export class PayrollService {
     }
   }
 
+  /**
+   * One-off matching triggered manually from the Employees admin view (see
+   * POST /employees/sync-tcw-nicknames in nova-one-backend): for every
+   * system employee, finds the single Time Clock Wizard name — as it has
+   * ever appeared, across all uploads, in payroll_timesheets — that clearly
+   * identifies them. Reuses the same order/variant-tolerant algorithm as
+   * getClockComparisonDetail (buildTcwNameVariants + matchScoreDetail,
+   * threshold 0.75), not the cruder single-variant one in fetchTcwHours.
+   *
+   * Two situations are deliberately treated as "no match", not a guess:
+   *   - an employee's own best score ties between 2+ TCW names, or
+   *   - the SAME TCW name is the best match for 2+ different employees.
+   * Better to leave the nickname blank than write the wrong one.
+   */
+  async matchEmployeesToTcwNames(
+    employees: Array<{ employee_number: string; name: string; last_name: string }>,
+  ): Promise<{
+    matches: Array<{ employee_number: string; tcw_name: string; score: number }>;
+    unmatched: string[];
+    ambiguous: Array<{ tcw_name: string; employee_numbers: string[] }>;
+  }> {
+    const rows = await this.timesheetRepository
+      .createQueryBuilder('t')
+      .select('DISTINCT t.employee', 'employee')
+      .where(`t.employee IS NOT NULL AND t.employee <> ''`)
+      .getRawMany<{ employee: string }>();
+
+    const tcwNames = rows.map((r) => r.employee).filter(Boolean);
+
+    // employee_number -> best (tcwName, score); only entries whose OWN
+    // top score is unambiguous (no tie for #1) make it in here.
+    const bestByEmployee = new Map<string, { tcwName: string; score: number }>();
+    const unmatched: string[] = [];
+
+    for (const emp of employees) {
+      let bestName: string | null = null;
+      let bestScore = 0;
+      let tie = false;
+
+      for (const tcwName of tcwNames) {
+        const score = this.matchScoreDetail(tcwName, `${emp.name} ${emp.last_name}`);
+        if (score > bestScore) {
+          bestScore = score;
+          bestName = tcwName;
+          tie = false;
+        } else if (score === bestScore && bestScore > 0 && tcwName !== bestName) {
+          tie = true;
+        }
+      }
+
+      if (bestName && bestScore >= 0.75 && !tie) {
+        bestByEmployee.set(emp.employee_number, { tcwName: bestName, score: bestScore });
+      } else {
+        unmatched.push(emp.employee_number);
+      }
+    }
+
+    // Reverse-group by tcw_name to catch the OTHER kind of ambiguity: two
+    // different employees both clearly best-matching the same TCW name.
+    const byTcwName = new Map<string, string[]>();
+    for (const [employeeNumber, { tcwName }] of bestByEmployee) {
+      if (!byTcwName.has(tcwName)) byTcwName.set(tcwName, []);
+      byTcwName.get(tcwName)!.push(employeeNumber);
+    }
+
+    const matches: Array<{ employee_number: string; tcw_name: string; score: number }> = [];
+    const ambiguous: Array<{ tcw_name: string; employee_numbers: string[] }> = [];
+
+    for (const [tcwName, employeeNumbers] of byTcwName) {
+      if (employeeNumbers.length === 1) {
+        const employeeNumber = employeeNumbers[0];
+        matches.push({
+          employee_number: employeeNumber,
+          tcw_name: tcwName,
+          score: bestByEmployee.get(employeeNumber)!.score,
+        });
+      } else {
+        ambiguous.push({ tcw_name: tcwName, employee_numbers: employeeNumbers });
+        unmatched.push(...employeeNumbers);
+      }
+    }
+
+    console.log(
+      `matchEmployeesToTcwNames() employees=${employees.length} tcwNames=${tcwNames.length} `
+      + `matches=${matches.length} unmatched=${unmatched.length} ambiguous=${ambiguous.length}`,
+    );
+
+    return { matches, unmatched, ambiguous };
+  }
+
   async getPayrollData(
     work_schedule: WorkSchedule,
     start_date: string,
@@ -2127,6 +2217,23 @@ export class PayrollService {
   // FUNCIONES PRIVADAS DE APOYO (Agrega estas debajo de getPayrollData)
   // ---------------------------------------------------------
 
+  // Devuelve, de una lista de horas "HH:mm[:ss]", la más tardía (o null si ninguna es parseable).
+  // Se usa como fallback del end de un Outage "abierto" (sin end — ver RegisterEnum.OUTAGE /
+  // OUTAGE_END_OPTIONAL_REASONS): en ese caso el fin del Outage es el fin del último Work Shift
+  // del día.
+  private latestEndTime(times: Array<string | null | undefined>): string | null {
+    let best: string | null = null;
+    let bestMin = -1;
+    for (const t of times) {
+      const m = this.timeToMinutes(t);
+      if (m !== null && m > bestMin) {
+        bestMin = m;
+        best = t as string;
+      }
+    }
+    return best;
+  }
+
   private calculateMasterMetrics(schedule: EmployeeSchedule | undefined, start: string, end: string) {
     let totalHours = 0;
     let daysWorked = 0;
@@ -2140,7 +2247,18 @@ export class PayrollService {
       lunch_start?: string | null;
       lunch_end?: string | null;
       lunch_hours: number;
+      outage_hours: number;
       total_hours: number;
+    }> = [];
+
+    // Un registro por evento de Outage (no por día) — es lo que alimenta el box de detalle
+    // "Outage" del PDF, igual que time_off_details/extra_hours_details.
+    const outageDetails: Array<{
+      date: string;
+      start: string;
+      end: string;
+      total_hours: number;
+      reason: string | null;
     }> = [];
 
     if (!schedule) {
@@ -2148,6 +2266,7 @@ export class PayrollService {
         total_authorized_hours: 0,
         days_worked_count: 0,
         daily_details: [],
+        outage_details: [],
       };
     }
 
@@ -2166,6 +2285,7 @@ export class PayrollService {
 
       let hoursToday = 0;
       let lunchDeducted = 0;
+      let outageHours = 0;
       let source = '';
       let shiftStart = '';
       let shiftEnd = '';
@@ -2179,8 +2299,16 @@ export class PayrollService {
       const eventLunch = schedule.events?.find(
         (e) => e.date === dateStr && e.register === RegisterEnum.LUNCH,
       );
+      // Outage del día: es una DEDUCCIÓN INDEPENDIENTE (mismo tratamiento que Time Off
+      // Request) — NO se resta de las horas de Work Shift, se descuenta aparte a nivel de
+      // Total/Payroll. Solo necesita el Work Shift del día como fallback de `end` cuando el
+      // Outage está "abierto" (sin end — razones 'No Internet'/'Power Outage').
+      const dayOutages = (schedule.events ?? []).filter(
+        (e) => e.date === dateStr && e.register === RegisterEnum.OUTAGE && e.start,
+      );
 
       let dayShifts: Array<{ customer: string | null; hours: number }> = [];
+      let fallbackOutageEnd: string | null = null;
 
       if (eventShifts.length > 0) {
         const hasEventLunch = Boolean(eventLunch?.start && eventLunch?.end);
@@ -2200,6 +2328,9 @@ export class PayrollService {
         lunchEnd = hasEventLunch ? this.formatToChicago(dateStr, eventLunch!.end) : null;
         source = 'Event';
         strict = null;
+        fallbackOutageEnd = this.latestEndTime(
+          eventShifts.map((es) => this.formatToChicago(dateStr, es.end)),
+        );
 
         dayShifts = eventShifts.map((es) => {
           const rawH = this.calculateHours(es.start, es.end);
@@ -2240,6 +2371,7 @@ export class PayrollService {
           lunchEnd = fixedLunch?.end ?? null;
           source = 'Fixed';
           strict = fixedShifts[0].strict ?? null;
+          fallbackOutageEnd = this.latestEndTime(fixedShifts.map((fs) => fs.end));
 
           dayShifts = fixedShifts.map((fs) => {
             const rawH = this.calculateTimeDiff(fs.start, fs.end);
@@ -2254,9 +2386,28 @@ export class PayrollService {
         }
       }
 
-      if (source !== '') {
-        totalHours += hoursToday;
-        daysWorked++;
+      // Outage: duración = end - start (end propio, o fallback del último Work Shift del
+      // día si vino abierto). Si no hay Work Shift ese día Y el Outage tampoco tiene su
+      // propio end, no es resoluble → 0h para ese evento puntual. Cada evento resoluble
+      // además se registra en outageDetails (para el box de detalle del PDF).
+      for (const ev of dayOutages) {
+        const s = this.formatToChicago(dateStr, ev.start);
+        const e = ev.end ? this.formatToChicago(dateStr, ev.end) : fallbackOutageEnd;
+        if (!s || !e) continue;
+        const mS = this.timeToMinutes(s);
+        const mE = this.timeToMinutes(e);
+        if (mS === null || mE === null || mE <= mS) continue;
+        const h = Number(((mE - mS) / 60).toFixed(2));
+        outageHours += h;
+        outageDetails.push({ date: dateStr, start: s, end: e, total_hours: h, reason: ev.reason ?? null });
+      }
+      outageHours = Number(outageHours.toFixed(2));
+
+      if (source !== '' || outageHours > 0) {
+        if (source !== '') {
+          totalHours += hoursToday;
+          daysWorked++;
+        }
 
         (dailyDetails as any[]).push({
           date: dateStr,
@@ -2267,6 +2418,7 @@ export class PayrollService {
           lunch_start: lunchStart,
           lunch_end: lunchEnd,
           lunch_hours: Number(lunchDeducted.toFixed(2)),
+          outage_hours: outageHours,
           total_hours: Number(hoursToday.toFixed(2)),
           shifts: dayShifts,
         });
@@ -2277,6 +2429,7 @@ export class PayrollService {
       total_authorized_hours: Number(totalHours.toFixed(2)),
       days_worked_count: daysWorked,
       daily_details: dailyDetails,
+      outage_details: outageDetails,
     };
   }
 
@@ -2467,6 +2620,52 @@ export class PayrollService {
     }
   }
 
+  /**
+   * Trae, para un lote de employees y UN rate_field puntual, los tramos de
+   * employee_rate_history (rate ya desencriptado) que solapan [start_date,
+   * end_date] — a diferencia de fetchDecryptedRates() (un solo valor
+   * "actual", leído de la columna plana employees.<field>, desactualizada
+   * desde que existe este historial), acá vienen TODOS los tramos que
+   * aplican al rango filtrado, para prorratear el pago cuando el rate
+   * cambió a mitad de un período de payroll.
+   *
+   * Sin ratesToken, o si nova-one-backend rechaza/no responde, devuelve {}
+   * — el caller debe tratar cada día sin tramo como "sin rate configurado"
+   * ($0 + advertencia visible), nunca inventar un monto.
+   */
+  private async fetchRateHistoryPeriods(
+    employeeNumbers: string[],
+    rateField: string,
+    startDate: string,
+    endDate: string,
+    ratesToken?: string,
+  ): Promise<Record<string, { rate: number; start_date: string; end_date: string | null }[]>> {
+    if (!ratesToken || !employeeNumbers.length) return {};
+
+    const nova = (process.env.NOVA_ONE_API ?? '').trim().replace(/\/+$/, '');
+    if (!nova) {
+      console.error('NOVA_ONE_API no está configurado — no se pueden obtener los tramos de rate history.');
+      return {};
+    }
+
+    try {
+      const { data } = await axios.post(
+        `${nova}/employees/rate-history-batch`,
+        {
+          employee_numbers: employeeNumbers,
+          rate_field: rateField,
+          start_date: startDate,
+          end_date: endDate,
+        },
+        { headers: { 'X-Rates-Token': ratesToken }, timeout: 10000 },
+      );
+      return data?.periods ?? {};
+    } catch (e) {
+      console.error('No se pudieron obtener los tramos de rate history de nova-one-backend:', e?.message ?? e);
+      return {};
+    }
+  }
+
   async hasTimesheetDataForRange(start_date: string, end_date: string): Promise<boolean> {
     const count = await this.timesheetRepository
       .createQueryBuilder('t')
@@ -2524,31 +2723,27 @@ export class PayrollService {
     // Sin un X-Rates-Token vigente (el usuario no tiene payroll_total o no
     // desbloqueó Rates), quedan explícitamente en null — nunca se calcula
     // un monto a partir del texto cifrado.
-    const decryptedRates = await this.fetchDecryptedRates(employeeNumbers, ratesToken);
+    //
+    // rate_office_staff YA NO se trae acá: la columna plana
+    // employees.rate_office_staff quedó desactualizada desde que existe
+    // employee_rate_history (nadie la escribe desde entonces — ver
+    // employees_repository.py). Usarla pagaría con un rate viejo a
+    // cualquier empleado a quien se le haya actualizado el rate desde
+    // Rates.vue. En su lugar se resuelve por tramo real más abajo
+    // (officeRatePeriods, vía fetchRateHistoryPeriods).
     const RATE_KEYS = [
       'assignment_rate', 'btw_rate', 'class_c_rate', 'cr_rate', 'ss_rate',
-      'corporate_rate', 'mechanics_rate', 'rate_office_staff',
+      'corporate_rate', 'mechanics_rate',
     ] as const;
+    const [decryptedRates, officeRatePeriods] = await Promise.all([
+      this.fetchDecryptedRates(employeeNumbers, ratesToken),
+      this.fetchRateHistoryPeriods(employeeNumbers, 'rate_office_staff', start_date, end_date, ratesToken),
+    ]);
     for (const emp of employees) {
       const rates = decryptedRates[emp.employee_number];
       for (const key of RATE_KEYS) {
         (emp as any)[key] = rates ? rates[key] ?? null : null;
       }
-    }
-
-    // 2. Rate history de todos los empleados en paralelo
-    const rateHistoryRecords = await this.rateHistoryRepository
-      .createQueryBuilder('rh')
-      .where('rh.employee_number IN (:...nums)', { nums: employeeNumbers })
-      .orderBy('rh.start_date', 'ASC')
-      .getMany();
-
-    const rateHistoryMap = new Map<string, EmployeeRateHistory[]>();
-    for (const r of rateHistoryRecords) {
-      if (!rateHistoryMap.has(r.employee_number)) {
-        rateHistoryMap.set(r.employee_number, []);
-      }
-      rateHistoryMap.get(r.employee_number)!.push(r);
     }
 
     // 3. Resto de datos necesarios para los totales
@@ -2651,14 +2846,30 @@ export class PayrollService {
 
       const totalAuthorizedHoursForPeriod = Number(metrics.total_authorized_hours ?? 0);
 
-      // Seasonal rates del empleado que aplican al período
-      const history = rateHistoryMap.get(employeeNumber) ?? [];
-      const matchingSeasonals = history
-        .filter((r) => r.start_date && r.end_date && r.start_date <= end_date && r.end_date >= start_date)
+      // Tramos reales de rate_office_staff (employee_rate_history, ya
+      // desencriptados por nova-one-backend) que solapan el rango filtrado.
+      // Puede haber 0, 1 o varios tramos si el rate cambió a mitad del
+      // período de payroll que se está calculando.
+      const officePeriods = (officeRatePeriods[employeeNumber] ?? [])
+        .slice()
         .sort((a, b) => (a.start_date > b.start_date ? 1 : -1));
 
-      const isSeasonDay = (date: string): boolean =>
-        matchingSeasonals.some((s) => date >= s.start_date && date <= (s.end_date ?? date));
+      const findOfficePeriod = (date: string) =>
+        officePeriods.find((p) => date >= p.start_date && (p.end_date === null || date <= p.end_date));
+
+      // true = el día cae dentro de un tramo con rate configurado.
+      // false = hueco en el historial (nadie cargó un rate para esa fecha)
+      // -> se paga $0 y se marca como advertencia; nunca se inventa un
+      // rate de reemplazo ni se cae a un valor "actual" desactualizado.
+      const hasRateForDay = (date: string): boolean => findOfficePeriod(date) !== undefined;
+
+      // Tramo completo (fechas + rate) aplicado a un día puntual, o null si
+      // no hay ninguno — para que time_off/extra_hours/outage/schedule_details
+      // puedan mostrar EXACTAMENTE qué rate se usó, no solo un $/hora derivado.
+      const periodInfoForDay = (date: string) => {
+        const p = findOfficePeriod(date);
+        return p ? { start_date: p.start_date, end_date: p.end_date, rate: p.rate } : null;
+      };
 
       // Build schedule_details con cálculo correcto por día (igual que getPayrollData)
       const enrichedDetails = this.enrichScheduleDetailsWithRate(
@@ -2670,19 +2881,16 @@ export class PayrollService {
         holidaysNormalized,
       );
 
-      // Rate por día según employee_rate_history (seasonal o office)
-      const officeRate = (emp as any).rate_office_staff ?? 0;
-      const getRateForDay = (date: string): number => {
-        const seasonal = matchingSeasonals.find(
-          (s) => date >= s.start_date && date <= (s.end_date ?? date),
-        );
-        return seasonal ? seasonal.rate : officeRate;
-      };
+      // Rate por día resuelto contra el tramo real de employee_rate_history
+      // que cubre esa fecha. Sin tramo que la cubra -> 0 (ver hasRateForDay
+      // para distinguir esto de "el rate configurado es $0").
+      const getRateForDay = (date: string): number => findOfficePeriod(date)?.rate ?? 0;
 
       let scheduleDetails = detailsWithHolidays.map((day) => {
         const d: any = day;
-        const authorizedHours      = round(d.total_hours ?? 0);
-        const authorizedLunchHours = round(d.lunch_hours ?? 0);
+        const authorizedHours       = round(d.total_hours ?? 0);
+        const authorizedLunchHours  = round(d.lunch_hours ?? 0);
+        const authorizedOutageHours = round(d.outage_hours ?? 0);
 
         const internalRate = totalAuthorizedHoursForPeriod > 0
           ? getRateForDay(d.date) / totalAuthorizedHoursForPeriod
@@ -2706,7 +2914,8 @@ export class PayrollService {
         return {
           date: d.date,
           is_holiday: d.is_holiday ?? false,
-          season: isSeasonDay(d.date),
+          has_rate: hasRateForDay(d.date),
+          rate_period: periodInfoForDay(d.date),
           nova_shifts: novaShifts,
           vout_shifts: voutShifts,
           tcw_hours: round(Number(tcwDayData?.worked_hours ?? 0)),
@@ -2715,6 +2924,8 @@ export class PayrollService {
           payroll_day: {
             authorized_hours: authorizedHours,
             authorized_lunch_hours: authorizedLunchHours,
+            authorized_outage_hours: authorizedOutageHours,
+            outage_day_amount: round(-(authorizedOutageHours * internalRate)),
             payable_hours: payableHours,
             day_payable_amount: round(payableHours * internalRate),
           },
@@ -2737,7 +2948,8 @@ export class PayrollService {
         return {
           date: d.date,
           is_holiday: true,
-          season: isSeasonDay(d.date),
+          has_rate: hasRateForDay(d.date),
+          rate_period: periodInfoForDay(d.date),
           nova_shifts: [] as Array<{ customer: string | null; hours: number }>,
           vout_shifts: [] as Array<{ customer: string | null; hours: number }>,
           tcw_hours: 0,
@@ -2746,6 +2958,8 @@ export class PayrollService {
           payroll_day: {
             authorized_hours: authorizedHours,
             authorized_lunch_hours: round(d.lunch_hours ?? 0),
+            authorized_outage_hours: round(d.outage_hours ?? 0),
+            outage_day_amount: round(-((d.outage_hours ?? 0) * internalRate)),
             payable_hours: authorizedHours,
             day_payable_amount: round(authorizedHours * internalRate),
           },
@@ -2757,13 +2971,15 @@ export class PayrollService {
       );
 
       // authorized_hours summary
-      let authWork = 0, authLunch = 0;
+      let authWork = 0, authLunch = 0, authOutage = 0;
       for (const d of scheduleDetails) {
-        authWork  += d.payroll_day.authorized_hours;
-        authLunch += d.payroll_day.authorized_lunch_hours;
+        authWork   += d.payroll_day.authorized_hours;
+        authLunch  += d.payroll_day.authorized_lunch_hours;
+        authOutage += d.payroll_day.authorized_outage_hours ?? 0;
       }
-      authWork  = round(authWork);
-      authLunch = round(authLunch);
+      authWork   = round(authWork);
+      authLunch  = round(authLunch);
+      authOutage = round(authOutage);
 
       // TCW hours summary — usar el total pre-computado (raw, sin redondeo por día)
       // para que coincida con el frontend que también acumula sin redondear cada día
@@ -2774,10 +2990,61 @@ export class PayrollService {
         ),
       );
 
-      // days_amount correcto: suma de day_payable_amount
-      const daysAmount = round(
+      // payable_hours: la fuente real de cuántas horas de Work Shift se pagan — el menor
+      // entre TCW y las horas autorizadas ajustadas (Time Off/Extra/Outage). Antes este
+      // valor se calculaba pero nunca se usaba para el dinero; ahora sí escala
+      // Work Shift Amount.
+      const timeOffHours       = round(eventsByEmployee[employeeNumber]?.timeOffHours ?? 0);
+      const extraHoursHrs      = round(eventsByEmployee[employeeNumber]?.extraHours ?? 0);
+      const adjustedHours      = round(authWork - timeOffHours + extraHoursHrs - authOutage);
+      const payableHours       = tcwWork > 0 && tcwWork < adjustedHours ? tcwWork : adjustedHours;
+      const payableHoursSource = tcwWork > 0 && tcwWork < adjustedHours ? 'tcw' : 'authorized_hours_with_adjustments';
+
+      // days_amount: suma de day_payable_amount (a rate por hora / día, respeta tramos de
+      // employee_rate_history), escalada por payable_hours / authWork para reflejar el
+      // techo de payable_hours.
+      const daysAmountUncapped = round(
         scheduleDetails.reduce((s, d) => s + d.payroll_day.day_payable_amount, 0),
       );
+      const workShiftScale = authWork > 0 ? (payableHours / authWork) : 1;
+      const daysAmount = round(daysAmountUncapped * workShiftScale);
+
+      // Desglose real de cuánto se ganó (y cuántas horas payable) en cada tramo
+      // de rate_office_staff dentro del rango filtrado. Se aplica el MISMO
+      // factor de escala que Work Shift Amount (payable_hours / authWork) tanto
+      // al monto como a las horas, para que la suma de los tramos mostrados en
+      // el PDF cuadre con lo realmente pagado (daysAmount / payableHours), no
+      // con el bruto antes del techo de payable_hours. También registra qué
+      // días quedaron sin ningún tramo que los cubra (hueco en el historial,
+      // se pagan $0).
+      const officePeriodBreakdown = officePeriods.map((p) => ({
+        start_date: p.start_date,
+        end_date: p.end_date,
+        rate: p.rate,
+        amount_earned: 0,
+        hours_paid: 0,
+        days_paid: 0,
+      }));
+      const noRateDates: string[] = [];
+      for (const d of scheduleDetails) {
+        const period = findOfficePeriod(d.date);
+        if (period) {
+          const bucket = officePeriodBreakdown.find(
+            (b) => b.start_date === period.start_date && b.end_date === period.end_date,
+          );
+          if (bucket) {
+            bucket.amount_earned += d.payroll_day.day_payable_amount;
+            bucket.hours_paid += d.payroll_day.authorized_hours ?? 0;
+            bucket.days_paid += 1;
+          }
+        } else if ((d.payroll_day.authorized_hours ?? 0) > 0) {
+          noRateDates.push(d.date);
+        }
+      }
+      for (const bucket of officePeriodBreakdown) {
+        bucket.amount_earned = round(bucket.amount_earned * workShiftScale);
+        bucket.hours_paid = round(bucket.hours_paid * workShiftScale);
+      }
 
       // time_off y extra_hours: calculamos con getRateForDay directamente (no rawRates)
       const enrichedTimeOff = (eventsByEmployee[employeeNumber]?.timeOffDetails ?? []).map((detail) => {
@@ -2787,7 +3054,8 @@ export class PayrollService {
         const deductedHours = detail.deducted_hours ?? detail.total_hours;
         return {
           ...detail,
-          season: isSeasonDay(detail.date),
+          has_rate: hasRateForDay(detail.date),
+          rate_period: periodInfoForDay(detail.date),
           internal_rate_per_hour: internalRate,
           calculated_total: round(deductedHours * internalRate),
         };
@@ -2799,7 +3067,23 @@ export class PayrollService {
           : 0;
         return {
           ...detail,
-          season: isSeasonDay(detail.date),
+          has_rate: hasRateForDay(detail.date),
+          rate_period: periodInfoForDay(detail.date),
+          internal_rate_per_hour: internalRate,
+          calculated_total: round(detail.total_hours * internalRate),
+        };
+      });
+
+      // Outage: deducción independiente, mismo criterio que Time Off — un registro por
+      // evento (con reason), enriquecido con el rate del día.
+      const enrichedOutage = (metrics.outage_details ?? []).map((detail: any) => {
+        const internalRate = totalAuthorizedHoursForPeriod > 0
+          ? getRateForDay(detail.date) / totalAuthorizedHoursForPeriod
+          : 0;
+        return {
+          ...detail,
+          has_rate: hasRateForDay(detail.date),
+          rate_period: periodInfoForDay(detail.date),
           internal_rate_per_hour: internalRate,
           calculated_total: round(detail.total_hours * internalRate),
         };
@@ -2807,12 +3091,13 @@ export class PayrollService {
 
       const timeOffAmount    = round(-(enrichedTimeOff.reduce((s, d) => s + d.calculated_total, 0)));
       const extraHoursAmount = round(enrichedExtraHours.reduce((s, d) => s + d.calculated_total, 0));
+      const outageAmount     = round(-(enrichedOutage.reduce((s, d) => s + d.calculated_total, 0)));
       const compensationsInFavor   = this.sumCompensations(compensationMap[employeeNumber]?.in_favor ?? []);
       const compensationsToDeduct  = round(-this.sumCompensations(compensationMap[employeeNumber]?.to_deduct ?? []));
       const commissionsAmount      = this.sumCommissions(commissionsMap[employeeNumber] ?? []);
       const advancedAmount         = round(-(advancedByEmployee[employeeNumber]?.total_advanced ?? 0));
       const totalPayroll           = round(
-        daysAmount + timeOffAmount + extraHoursAmount +
+        daysAmount + timeOffAmount + extraHoursAmount + outageAmount +
         compensationsInFavor + compensationsToDeduct +
         commissionsAmount + advancedAmount,
       );
@@ -2837,6 +3122,11 @@ export class PayrollService {
           total_hours: round(eventsByEmployee[employeeNumber]?.extraHours ?? 0),
           details: enrichedExtraHours,
         },
+        outage: {
+          total_requests: enrichedOutage.length,
+          total_hours: authOutage,
+          details: enrichedOutage,
+        },
         advanced_requests: {
           total_requests: advancedByEmployee[employeeNumber]?.requests_count ?? 0,
           total_amount: round(advancedByEmployee[employeeNumber]?.total_advanced ?? 0),
@@ -2849,15 +3139,14 @@ export class PayrollService {
         },
         commissions_summary: commissionsMap[employeeNumber] ?? [],
         payroll_totals: (() => {
-          const timeOffHours   = round(eventsByEmployee[employeeNumber]?.timeOffHours ?? 0);
-          const extraHoursHrs  = round(eventsByEmployee[employeeNumber]?.extraHours ?? 0);
-          const adjustedHours  = round(authWork - timeOffHours + extraHoursHrs);
-          const payableHours   = tcwWork > 0 && tcwWork < adjustedHours ? tcwWork : adjustedHours;
-          const payableSource  = tcwWork > 0 && tcwWork < adjustedHours ? 'tcw' : 'authorized_hours_with_adjustments';
+          // timeOffHours/extraHoursHrs/adjustedHours/payableHours/payableHoursSource ya se
+          // calcularon arriba (se necesitan antes, para escalar daysAmount) — se reusan acá
+          // tal cual, sin recalcular, para que no haya dos fuentes de verdad.
           return {
             authorized_hours: {
               work_hours: authWork,
               lunch_hours: authLunch,
+              outage_hours: authOutage,
               total_hours: round(authWork + authLunch),
             },
             time_clock_wizard_hours: tcwWork,
@@ -2865,10 +3154,11 @@ export class PayrollService {
             extra_hours_hours: extraHoursHrs,
             authorized_hours_with_adjustments: adjustedHours,
             payable_hours: payableHours,
-            payable_hours_source: payableSource,
+            payable_hours_source: payableHoursSource,
             authorized_work_shift_amount: daysAmount,
             time_off_amount: timeOffAmount,
             extra_hours_amount: extraHoursAmount,
+            outage_amount: outageAmount,
             compensations_in_favor_amount: compensationsInFavor,
             compensations_to_deduct_amount: compensationsToDeduct,
             commissions_amount: commissionsAmount,
@@ -2890,14 +3180,18 @@ export class PayrollService {
           mechanics_rate: emp.mechanics_rate,
           office_maintenance: emp.office_maintenance,
           valid_rate: {
-            seasonal_rates: matchingSeasonals.map((r) => ({
-              amount: r.rate,
-              start_date: r.start_date,
-              end_date: r.end_date,
-              season: r.season,
-            })),
-            office_rate: {
-              amount: (emp as any).rate_office_staff ?? 0,
+            // Tramos reales de employee_rate_history (rate_field=rate_office_staff)
+            // aplicados en el rango filtrado, con el monto efectivamente
+            // ganado en cada uno. 1 elemento = un solo rate en todo el rango
+            // (caso normal); 2+ = el rate cambió a mitad de período.
+            office_rate_periods: officePeriodBreakdown,
+            // Días dentro del rango con horas autorizadas pero sin ningún
+            // tramo de rate_office_staff que los cubra — se pagaron $0.
+            // Debe estar siempre vacío en un historial bien cargado; si no,
+            // hay que completar el rate en Rates.vue para esas fechas.
+            no_rate_days: {
+              count: noRateDates.length,
+              dates: noRateDates,
             },
           },
         },

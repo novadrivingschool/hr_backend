@@ -44,6 +44,9 @@ import { AssignmentRateTypesModule } from './assignment-rate-types/assignment-ra
 import { IpSummaryModule } from './ip-summary/ip-summary.module';
 import { HrsAutorizadasModule } from './hrs-autorizadas/hrs-autorizadas.module';
 import { AbsenceModule } from './absence/absence.module';
+import { DanubenetHistoryModule } from './danubenet-history/danubenet-history.module';
+import { HrWhatsappUpdatesModule } from './hr-whatsapp-updates/hr-whatsapp-updates.module';
+import { LeaveOfAbsenceModule } from './leave_of_absence/leave_of_absence.module';
 
 
 dotenv.config();
@@ -111,6 +114,8 @@ dotenv.config();
         __dirname + '/bank-deposits/entities/*.entity.{ts,js}',
         __dirname + '/instructor-payroll/entities/*.entity.{ts,js}',
         __dirname + '/absence/entities/*.entity.{ts,js}',
+        __dirname + '/danubenet-history/entities/*.entity.{ts,js}', // <-- Tabla la crea/administra nova-one-backend, hr_backend solo lee
+        __dirname + '/leave_of_absence/entities/*.entity.{ts,js}',
       ],
     }),
     TimeOffRequestModule,
@@ -154,6 +159,9 @@ dotenv.config();
     AssignmentRateTypesModule,
     IpSummaryModule,
     HrsAutorizadasModule,
+    DanubenetHistoryModule,
+    HrWhatsappUpdatesModule,
+    LeaveOfAbsenceModule,
   ],
 })
 export class AppModule { }

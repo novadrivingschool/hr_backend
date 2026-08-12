@@ -16,8 +16,9 @@ class EmployeeRefDto {
 /**
  * DTO para que HR / Management revise el rejected del coordinator.
  * accept = true  → el iCare queda como rejected final.
- * accept = false → se hace override: HR/Mgmt asigna urgency y el record vuelve a IN_PROGRESS.
- *                  Low/Med → flujo coordinator normal. High/Critical → HR/Mgmt.
+ * accept = false → override: HR/Mgmt asigna la urgency final (requerida).
+ *                  Low/Medium    → status vuelve a PENDING (coordinator solo puede justificar).
+ *                  High/Critical → status pasa a PENDING_HR_JUSTIFY (se queda con HR/Mgmt).
  */
 export class ReviewRejectionICareDto {
   @IsObject()

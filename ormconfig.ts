@@ -44,6 +44,9 @@ import { AssignmentPayroll } from 'src/assignment-payroll/entities/assignment-pa
 import { NoShowPayroll } from 'src/no-show-payroll/entities/no-show-payroll.entity';
 import { AssignmentRateType } from 'src/assignment-rate-types/entities/assignment-rate-type.entity';
 import { Absence } from 'src/absence/entities/absence.entity';
+import { LeaveOfAbsence } from 'src/leave_of_absence/entities/leave-of-absence.entity';
+import { HrWhatsappUpdate } from 'src/hr-whatsapp-updates/entities/hr-whatsapp-update.entity';
+import { HrWhatsappUpdateStatusHistory } from 'src/hr-whatsapp-updates/entities/hr-whatsapp-update-status-history.entity';
 
 dotenv.config();
 
@@ -109,6 +112,9 @@ export const AppDataSource = new DataSource({
     NoShowPayroll,
     AssignmentRateType,
     Absence,
+    HrWhatsappUpdate,
+    HrWhatsappUpdateStatusHistory,
+    LeaveOfAbsence,
   ],
   migrations: [path.join(__dirname, 'src/migrations/*.{ts,js}')],
   synchronize: false,

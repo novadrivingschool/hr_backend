@@ -24,7 +24,7 @@ async function bootstrap() {
       res.header('Access-Control-Allow-Origin', origin); // Configura el encabezado según el origen de la solicitud
     }
     res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE'); // Métodos permitidos
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization'); // Encabezados permitidos
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Rates-Token'); // Encabezados permitidos
     res.header('Access-Control-Allow-Credentials', 'true'); // Si necesitas enviar cookies o autenticación
     next();
   });
@@ -42,6 +42,10 @@ async function bootstrap() {
     origin: ['https://novadrivingone.net', 'https://www.novadrivingone.net', 'https://dev.novadrivingone.net', 'https://www.dev.novadrivingone.net', 'http://localhost:8080', 'http://127.0.0.1:8080', 'http://localhost:8090', 'http://127.0.0.1:8090', 'https://dev.go-nova.novadrivingone.net', 'https://go-nova.novadrivingone.net'],
     //origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    // Explícito (no reflejado) para que no dependa de qué middleware de CORS
+    // "gane" — X-Rates-Token lo manda el frontend en /payroll/records/summary
+    // y /payroll/records/summary/pdf (Nova y V-Out) desde que existe Rates.
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Rates-Token'],
     credentials: true,
     exposedHeaders: ['Content-Disposition'],
   });

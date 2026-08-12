@@ -3,12 +3,14 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, Between } from 'typeorm'
 import * as ExcelJS from 'exceljs'
 import { NoShowPayroll } from './entities/no-show-payroll.entity'
+import { DanubenetHistoryService } from '../danubenet-history/danubenet-history.service'
 
 @Injectable()
 export class NoShowPayrollService {
   constructor(
     @InjectRepository(NoShowPayroll)
     private readonly repo: Repository<NoShowPayroll>,
+    private readonly danubenetHistory: DanubenetHistoryService,
   ) {}
 
   async uploadExcel(buffer: Buffer): Promise<{ inserted: number; updated: number; skipped: number }> {
@@ -247,6 +249,16 @@ export class NoShowPayrollService {
     qb.skip((page - 1) * limit).take(limit)
 
     const [data, total] = await qb.getManyAndCount()
-    return { total, page, limit, data }
+
+    // Resuelve employee_number por (instructor, date_of_btw) contra el
+    // historial de danubenet_history — no se usa danubanet_name_1/2 del
+    // empleado. Sin registro de historial que contenga la fecha = sin match.
+    const danubenetIndex = await this.danubenetHistory.buildIndex()
+    const dataWithMatch = data.map((row) => ({
+      ...row,
+      employee_number: this.danubenetHistory.resolveEmployeeNumber(danubenetIndex, row.instructor, row.date_of_btw),
+    }))
+
+    return { total, page, limit, data: dataWithMatch }
   }
 }

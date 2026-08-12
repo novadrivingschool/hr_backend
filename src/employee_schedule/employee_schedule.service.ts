@@ -1734,11 +1734,25 @@ export class EmployeeScheduleService {
       }).formatToParts(probe);
 
       const pMap = Object.fromEntries(parts.map(p => [p.type, p.value])) as Record<string, string>;
-      const chicagoHour = parseInt(pMap.hour, 10);
-      const chicagoMinute = parseInt(pMap.minute, 10);
 
-      // How many minutes off are we?
-      const diffMinutes = (hour - chicagoHour) * 60 + (minute - chicagoMinute);
+      // Compare the FULL Chicago date+time against the requested one — not just
+      // HH:MM. Comparing only hour/minute lets the loop converge on the right
+      // wall-clock time of the WRONG day: for times earlier than the UTC offset
+      // (00:00–04:59 CDT / 00:00–05:59 CST) the first UTC guess renders as the
+      // *previous* Chicago day, and a minute-only correction lands exactly 24h
+      // behind (e.g. 2026-08-04 02:00 → 2026-08-03T07:00Z instead of 08-04).
+      const probeLocalMs = Date.UTC(
+        parseInt(pMap.year, 10),
+        parseInt(pMap.month, 10) - 1,
+        parseInt(pMap.day, 10),
+        parseInt(pMap.hour, 10),
+        parseInt(pMap.minute, 10),
+        0,
+      );
+      const desiredLocalMs = Date.UTC(year, month - 1, day, hour, minute, 0);
+
+      // How many minutes off are we (date included)?
+      const diffMinutes = (desiredLocalMs - probeLocalMs) / 60_000;
       if (diffMinutes === 0) break;
 
       // Correct and try again
@@ -1755,7 +1769,10 @@ export class EmployeeScheduleService {
 
     if (value instanceof Date) {
       if (Number.isNaN(value.getTime())) return null;
-      return value.toISOString().slice(0, 10);
+      // pg hydrates `date` columns as a Date at server-local midnight.
+      // Re-reading it with toISOString() (UTC) shifts the day ±1 on any server
+      // whose TZ is not UTC, so extract the LOCAL components instead.
+      return this.toLocalDateString(value);
     }
 
     const raw = String(value).trim();
@@ -1776,7 +1793,15 @@ export class EmployeeScheduleService {
       return null;
     }
 
-    return parsed.toISOString().slice(0, 10);
+    return this.toLocalDateString(parsed);
+  }
+
+  /** YYYY-MM-DD a partir de los componentes LOCALES del Date (inverso exacto de cómo pg hidrata columnas `date`). */
+  private toLocalDateString(value: Date): string {
+    const y = value.getFullYear();
+    const m = `${value.getMonth() + 1}`.padStart(2, '0');
+    const d = `${value.getDate()}`.padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
 
   private extractTimeLabel(value: string | Date | null | undefined): string | null {

@@ -614,6 +614,39 @@ export class AbsenceService {
   }
 
   /**
+   * Actualiza únicamente recovery_required (hour recovery authorized).
+   * Espejo de TimeOffRequestService.updateRecoveryAuthorization.
+   *
+   * No toca el evento de Outage: la reposición de horas es un dato de HR,
+   * no cambia nada del master schedule. Cancelled no se autoriza — no tiene
+   * sentido reponer horas de una absence que ya no existe operativamente.
+   */
+  async updateRecoveryAuthorization(id: string, recovery_required: boolean): Promise<Absence> {
+    try {
+      const absence = await this.findOne(id);
+
+      if (absence.status === AbsenceStatusEnum.Cancelled) {
+        throw new BadRequestException('Cannot authorize hour recovery on a cancelled absence');
+      }
+
+      absence.recovery_required = recovery_required === true;
+      const saved = await this.absenceRepo.save(absence);
+
+      this.logger.log(
+        `[updateRecoveryAuthorization] Absence ${id} → recovery_required=${saved.recovery_required}`,
+      );
+      return saved;
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+        throw error;
+      }
+
+      this.logger.error(`[updateRecoveryAuthorization] Failed for absence ID ${id}`, error.stack);
+      throw new InternalServerErrorException('Error updating hour recovery authorization');
+    }
+  }
+
+  /**
    * Borrado duro: elimina los eventos de Outage y el registro.
    * Solo para admin (HR / Management). No deja rastro — a diferencia de
    * cancel(), que conserva el renglón con cancellation_info.
