@@ -70,6 +70,14 @@ export class ScheduleEvent {
   @Column({ type: 'boolean', default: false })
   strict: boolean;
 
+  /**
+   * Indica si a este turno se le descuenta lunch.
+   * false = no descuenta nada aunque exista un evento Lunch en el rango.
+   * Default false para no alterar el histórico existente.
+   */
+  @Column({ type: 'boolean', default: false })
+  includes_lunch: boolean;
+
   @Column({ type: 'boolean', nullable: true, default: null })
   is_paid: boolean | null;
 

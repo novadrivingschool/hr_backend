@@ -53,6 +53,11 @@ export class CreateFixedScheduleDto {
   @IsBoolean()
   strict?: boolean;
 
+  /** Si el turno descuenta lunch. Ver FixedSchedule.includes_lunch */
+  @IsOptional()
+  @IsBoolean()
+  includes_lunch?: boolean;
+
   @IsOptional()
   @IsString()
   notes?: string;
@@ -99,6 +104,11 @@ export class CreateTimeOffRecoverySlotDto {
   @IsOptional()
   @IsBoolean()
   strict?: boolean;
+
+  /** Si el turno descuenta lunch. Ver FixedSchedule.includes_lunch */
+  @IsOptional()
+  @IsBoolean()
+  includes_lunch?: boolean;
 
   @IsOptional()
   @IsString()
@@ -158,6 +168,11 @@ export class CreateScheduleEventDto {
   @IsOptional()
   @IsBoolean()
   strict?: boolean;
+
+  /** Si el turno descuenta lunch. Ver FixedSchedule.includes_lunch */
+  @IsOptional()
+  @IsBoolean()
+  includes_lunch?: boolean;
 
   @IsOptional()
   @IsBoolean()

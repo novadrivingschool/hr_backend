@@ -87,6 +87,11 @@ export class EmployeeScheduleService {
               vehicle_drop: f.vehicle_drop ?? null,
               notes: f.notes ?? null,
               strict: f.strict ?? false,
+              // Si el caller no manda el campo (p.ej. nova-one-backend, que
+              // crea el horario por defecto al dar de alta un empleado), un
+              // Work Shift descuenta lunch. Los demás registers, no.
+              includes_lunch:
+                f.includes_lunch ?? f.register === RegisterEnum.WORK_SHIFT,
               start_date: f.start_date,
               end_date: f.end_date ?? null,
               customer: fixedHasCustomer ? (f.customer ?? CustomerEnum.NOVA) : null,
@@ -258,6 +263,7 @@ export class EmployeeScheduleService {
             vehicle_drop: f.vehicle_drop,
             notes: f.notes,
             strict: f.strict,
+            includes_lunch: !!f.includes_lunch,
           })),
           events: schedule.events.map(e => ({
             id: e.id,
@@ -273,6 +279,7 @@ export class EmployeeScheduleService {
             uuid_tor: e.uuid_tor,
             uuid_extra_hours: e.uuid_extra_hours,
             strict: e.strict,
+            includes_lunch: !!e.includes_lunch,
             is_paid: e.is_paid,
             will_make_up_hours: e.will_make_up_hours,
             make_up_schedule: e.make_up_schedule,
@@ -395,6 +402,7 @@ export class EmployeeScheduleService {
         uuid_tor: e.uuid_tor,
         uuid_extra_hours: e.uuid_extra_hours,
         strict: e.strict,
+        includes_lunch: !!e.includes_lunch,
         is_paid: e.is_paid,
         will_make_up_hours: e.will_make_up_hours,
         make_up_schedule: e.make_up_schedule,
@@ -476,6 +484,7 @@ export class EmployeeScheduleService {
       vehicle_drop: f.vehicle_drop,
       notes: f.notes,
       strict: f.strict,
+      includes_lunch: !!f.includes_lunch,
       start_date: f.start_date ?? null,
       end_date: f.end_date ?? null,
     }));
@@ -573,12 +582,14 @@ export class EmployeeScheduleService {
         {
           work_shift_minutes: number;
           lunch_minutes: number;
+          lunch_effective_minutes: number;
           extra_hours_minutes: number;
           time_off_minutes: number;
           time_off_recovery_minutes: number;
           work_shift_real_minutes: number;
           work_shift_label: string;
           lunch_label: string;
+          lunch_effective_label: string;
           extra_hours_label: string;
           time_off_label: string;
           time_off_recovery_label: string;
@@ -783,6 +794,7 @@ export class EmployeeScheduleService {
           uuid_tor: e.uuid_tor,
           uuid_extra_hours: e.uuid_extra_hours,
           strict: e.strict,
+          includes_lunch: !!e.includes_lunch,
           is_paid: e.is_paid,
           will_make_up_hours: e.will_make_up_hours,
           make_up_schedule: e.make_up_schedule,
@@ -806,6 +818,7 @@ export class EmployeeScheduleService {
         vehicle_drop: string | null;
         notes: string | null;
         strict: boolean;
+        includes_lunch: boolean;
         start_date: string;
         end_date: string | null;
         isFixed: true;
@@ -880,6 +893,7 @@ export class EmployeeScheduleService {
             vehicle_drop: f.vehicle_drop,
             notes: f.notes,
             strict: f.strict,
+            includes_lunch: !!f.includes_lunch,
             start_date: f.start_date,
             end_date: f.end_date ?? null,
             customer: f.customer ?? null,
@@ -979,6 +993,11 @@ export class EmployeeScheduleService {
       vehicle_drop: dto.vehicle_drop ?? existing?.vehicle_drop ?? null,
       notes: dto.notes ?? existing?.notes ?? null,
       strict: dto.strict ?? existing?.strict ?? false,
+      // Igual que en los fixed: ausente + Work Shift → descuenta lunch.
+      includes_lunch:
+        dto.includes_lunch ??
+        existing?.includes_lunch ??
+        dto.register === RegisterEnum.WORK_SHIFT,
       customer: hasCustomer ? (dto.customer ?? existing?.customer ?? CustomerEnum.NOVA) : null,
 
       reason: isOutage
@@ -1973,12 +1992,14 @@ export class EmployeeScheduleService {
         {
           work_shift_minutes: number;
           lunch_minutes: number;
+          lunch_effective_minutes: number;
           extra_hours_minutes: number;
           time_off_minutes: number;
           time_off_recovery_minutes: number;
           work_shift_real_minutes: number;
           work_shift_label: string;
           lunch_label: string;
+          lunch_effective_label: string;
           extra_hours_label: string;
           time_off_label: string;
           time_off_recovery_label: string;
@@ -1994,12 +2015,14 @@ export class EmployeeScheduleService {
         {
           work_shift_minutes: number;
           lunch_minutes: number;
+          lunch_effective_minutes: number;
           extra_hours_minutes: number;
           time_off_minutes: number;
           time_off_recovery_minutes: number;
           work_shift_real_minutes: number;
           work_shift_label: string;
           lunch_label: string;
+          lunch_effective_label: string;
           extra_hours_label: string;
           time_off_label: string;
           time_off_recovery_label: string;
@@ -2014,12 +2037,14 @@ export class EmployeeScheduleService {
         summary[employeeNumber][date] = {
           work_shift_minutes: 0,
           lunch_minutes: 0,
+          lunch_effective_minutes: 0,
           extra_hours_minutes: 0,
           time_off_minutes: 0,
           time_off_recovery_minutes: 0,
           work_shift_real_minutes: 0,
           work_shift_label: this.formatMinutes(0),
           lunch_label: this.formatMinutes(0),
+          lunch_effective_label: this.formatMinutes(0),
           extra_hours_label: this.formatMinutes(0),
           time_off_label: this.formatMinutes(0),
           time_off_recovery_label: this.formatMinutes(0),
@@ -2027,6 +2052,21 @@ export class EmployeeScheduleService {
         };
       }
       return summary[employeeNumber][date];
+    };
+
+    // Intervalos reales por (empleado|fecha) para poder recortar el lunch
+    // contra la jornada efectiva en lugar de restarlo a ciegas.
+    const intervals: Record<
+      string,
+      {
+        ws: Array<{ range: [number, number]; includesLunch: boolean }>;
+        lunch: Array<[number, number]>;
+      }
+    > = {};
+    const ensureIntervals = (employeeNumber: string, date: string) => {
+      const key = `${employeeNumber}|${date}`;
+      if (!intervals[key]) intervals[key] = { ws: [], lunch: [] };
+      return intervals[key];
     };
 
     const rawEvents = await this.eventRepo
@@ -2050,8 +2090,17 @@ export class EmployeeScheduleService {
 
       if (event.register === RegisterEnum.WORK_SHIFT) {
         bucket.work_shift_minutes += minutes;
+        const range = this.toEpochRange(event.start, event.end);
+        if (range) {
+          ensureIntervals(employeeNumber, event.date).ws.push({
+            range,
+            includesLunch: !!event.includes_lunch,
+          });
+        }
       } else if (event.register === RegisterEnum.LUNCH) {
         bucket.lunch_minutes += minutes;
+        const range = this.toEpochRange(event.start, event.end);
+        if (range) ensureIntervals(employeeNumber, event.date).lunch.push(range);
       } else if (event.register === RegisterEnum.EXTRA_HOURS) {
         bucket.extra_hours_minutes += minutes;
       } else if (event.register === RegisterEnum.TIME_OFF_REQUEST) {
@@ -2059,6 +2108,19 @@ export class EmployeeScheduleService {
       } else if (event.register === RegisterEnum.TIME_OFF_RECOVERY) {
         bucket.time_off_recovery_minutes += minutes;
       }
+    }
+
+    // (employee | date | register) que ya tienen un evento variable ese día.
+    // El evento variable SIEMPRE gana sobre la regla recurrente: la ocurrencia
+    // del fixed no se contabiliza. La supresión es por register, así un
+    // Extra Hours puntual no anula el Work Shift fijo del mismo día.
+    // Se incluye customer porque un empleado puede tener Work Shift de Nova y
+    // de Vout el mismo día: el variable de Nova solo anula al fijo de Nova.
+    const overriddenKeys = new Set<string>();
+    for (const event of rawEvents) {
+      overriddenKeys.add(
+        `${event.schedule.employee_number}|${event.date}|${event.register}|${String(event.customer || '').toLowerCase()}`,
+      );
     }
 
     const rawFixed = await this.fixedRepo
@@ -2070,27 +2132,63 @@ export class EmployeeScheduleService {
       .orderBy('fixed.id', 'ASC')
       .getMany();
 
-    const expandedFixed = this.expandFixedForSummary(rawFixed, startDate, endDate);
+    const expandedFixed = this.expandFixedForSummary(
+      rawFixed,
+      startDate,
+      endDate,
+      overriddenKeys,
+    );
 
     for (const item of expandedFixed) {
       const bucket = ensureBucket(item.employee_number, item.date);
 
       if (item.register === RegisterEnum.WORK_SHIFT) {
         bucket.work_shift_minutes += item.minutes;
+        const range = this.timeStringsToEpochRange(item.date, item.start, item.end);
+        if (range) {
+          ensureIntervals(item.employee_number, item.date).ws.push({
+            range,
+            includesLunch: !!item.includes_lunch,
+          });
+        }
       } else if (item.register === RegisterEnum.LUNCH) {
         bucket.lunch_minutes += item.minutes;
+        const range = this.timeStringsToEpochRange(item.date, item.start, item.end);
+        if (range) ensureIntervals(item.employee_number, item.date).lunch.push(range);
       }
     }
 
     for (const employeeNumber of Object.keys(summary)) {
       for (const date of Object.keys(summary[employeeNumber])) {
         const bucket = summary[employeeNumber][date];
+
+        // Descuento de lunch, turno por turno:
+        //   includes_lunch = false → no descuenta nada, aunque haya Lunch.
+        //   includes_lunch = true  → descuenta el Lunch registrado que caiga
+        //     DENTRO del turno, con su duración real.
+        // Ejemplos con includes_lunch = true:
+        //   9-18 + lunch 14-16    → 120 min (el lunch dura 2 hrs)
+        //   9-12 + lunch 14-15    → 0 (el lunch quedó fuera del turno)
+        //   9-14:30 + lunch 14-15 → 30 min (solo la parte solapada)
+        //   9-18 sin lunch        → 0 (no hay nada registrado)
+        const iv = intervals[`${employeeNumber}|${date}`];
+        bucket.lunch_effective_minutes = iv
+          ? this.calculateLunchDeduction(iv.ws, iv.lunch)
+          : 0;
+
+        // Un lunch que quedó fuera de la jornada no se descuenta NI se reporta:
+        // el grid tampoco lo pinta, así la fila queda coherente.
+        bucket.lunch_minutes = bucket.lunch_effective_minutes;
+
         bucket.work_shift_real_minutes = Math.max(
-          bucket.work_shift_minutes - bucket.lunch_minutes,
+          bucket.work_shift_minutes - bucket.lunch_effective_minutes,
           0,
         );
         bucket.work_shift_label = this.formatMinutes(bucket.work_shift_minutes);
         bucket.lunch_label = this.formatMinutes(bucket.lunch_minutes);
+        bucket.lunch_effective_label = this.formatMinutes(
+          bucket.lunch_effective_minutes,
+        );
         bucket.extra_hours_label = this.formatMinutes(bucket.extra_hours_minutes);
         bucket.time_off_label = this.formatMinutes(bucket.time_off_minutes);
         bucket.time_off_recovery_label = this.formatMinutes(
@@ -2109,17 +2207,24 @@ export class EmployeeScheduleService {
     fixedSchedules: FixedSchedule[],
     startDate: string,
     endDate: string,
+    overriddenKeys: Set<string> = new Set<string>(),
   ): Array<{
     employee_number: string;
     date: string;
     register: string;
     minutes: number;
+    start: string;
+    end: string;
+    includes_lunch: boolean;
   }> {
     const result: Array<{
       employee_number: string;
       date: string;
       register: string;
       minutes: number;
+      start: string;
+      end: string;
+      includes_lunch: boolean;
     }> = [];
 
     const current = new Date(`${startDate}T00:00:00.000Z`);
@@ -2135,11 +2240,26 @@ export class EmployeeScheduleService {
           continue;
         }
 
+        // Vigencia de la regla: fuera de [start_date, end_date] no aplica.
+        if (fixed.start_date && fixed.start_date > date) continue;
+        if (fixed.end_date && fixed.end_date < date) continue;
+
+        const employeeNumber = fixed.schedule.employee_number;
+
+        // Suprimido por un evento variable del mismo register + customer
+        const key = `${employeeNumber}|${date}|${fixed.register}|${String(fixed.customer || '').toLowerCase()}`;
+        if (overriddenKeys.has(key)) {
+          continue;
+        }
+
         result.push({
-          employee_number: fixed.schedule.employee_number,
+          employee_number: employeeNumber,
           date,
           register: fixed.register,
           minutes: this.diffTimeStringMinutes(fixed.start, fixed.end),
+          start: (fixed.start || '').substring(0, 5),
+          end: (fixed.end || '').substring(0, 5),
+          includes_lunch: !!fixed.includes_lunch,
         });
       }
 
@@ -2147,6 +2267,125 @@ export class EmployeeScheduleService {
     }
 
     return result;
+  }
+
+  /**
+   * Convierte un par start/end (timestamp) a un rango [epochMs, epochMs].
+   * Devuelve null si el rango es inválido o de duración cero.
+   */
+  private toEpochRange(
+    start: string | Date | null | undefined,
+    end: string | Date | null | undefined,
+  ): [number, number] | null {
+    if (!start || !end) return null;
+
+    const startMs = new Date(start).getTime();
+    const endMs = new Date(end).getTime();
+
+    if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+      return null;
+    }
+
+    return [startMs, endMs];
+  }
+
+  /**
+   * Convierte una ocurrencia de horario fijo (fecha + 'HH:mm') al mismo eje
+   * temporal que los timestamps de schedule_event. Ambos se construyen sin
+   * sufijo de zona, por lo que quedan en el mismo marco y son comparables.
+   * Si end <= start se asume cruce de medianoche y se suma un día.
+   */
+  private timeStringsToEpochRange(
+    date: string,
+    start: string,
+    end: string,
+  ): [number, number] | null {
+    if (!date || !start || !end) return null;
+
+    const startMs = new Date(`${date}T${start.substring(0, 5)}:00`).getTime();
+    let endMs = new Date(`${date}T${end.substring(0, 5)}:00`).getTime();
+
+    if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null;
+
+    if (endMs <= startMs) {
+      endMs += 24 * 60 * 60 * 1000;
+    }
+
+    return [startMs, endMs];
+  }
+
+  /** Une intervalos solapados para no contar dos veces el mismo minuto. */
+  private mergeIntervals(list: Array<[number, number]>): Array<[number, number]> {
+    if (!list.length) return [];
+
+    const sorted = list
+      .map(([s, e]) => [s, e] as [number, number])
+      .sort((a, b) => a[0] - b[0]);
+
+    const merged: Array<[number, number]> = [sorted[0]];
+
+    for (let i = 1; i < sorted.length; i++) {
+      const last = merged[merged.length - 1];
+      if (sorted[i][0] <= last[1]) {
+        last[1] = Math.max(last[1], sorted[i][1]);
+      } else {
+        merged.push(sorted[i]);
+      }
+    }
+
+    return merged;
+  }
+
+  /**
+   * Minutos de lunch a descontar de la jornada de un día.
+   *
+   * Se evalúa turno por turno porque el flag `includes_lunch` vive en el
+   * turno, no en el día: un empleado puede tener un turno que descuenta lunch
+   * y otro que no (por ejemplo Nova y Vout el mismo día).
+   *
+   * @param shifts turnos del día con su flag
+   * @param lunches rangos de eventos Lunch registrados ese día
+   */
+  private calculateLunchDeduction(
+    shifts: Array<{ range: [number, number]; includesLunch: boolean }>,
+    lunches: Array<[number, number]>,
+  ): number {
+    if (!shifts.length) return 0;
+
+    let total = 0;
+
+    for (const shift of shifts) {
+      if (!shift.includesLunch) continue;
+
+      // Solo se descuenta el Lunch REALMENTE registrado dentro del turno, con
+      // su duración real. Sin evento Lunch no hay nada que descontar: el
+      // master schedule son las horas autorizadas, no se inventan.
+      total += this.overlapMinutes(lunches, [shift.range]);
+    }
+
+    return total;
+  }
+
+  /** Minutos de `targets` que caen dentro de `windows` (ya fusionadas). */
+  private overlapMinutes(
+    targets: Array<[number, number]>,
+    windows: Array<[number, number]>,
+  ): number {
+    if (!targets.length || !windows.length) return 0;
+
+    let totalMs = 0;
+
+    for (const [targetStart, targetEnd] of targets) {
+      for (const [windowStart, windowEnd] of windows) {
+        const overlapStart = Math.max(targetStart, windowStart);
+        const overlapEnd = Math.min(targetEnd, windowEnd);
+        if (overlapEnd > overlapStart) {
+          totalMs += overlapEnd - overlapStart;
+        }
+      }
+    }
+
+    return Math.round(totalMs / 60000);
   }
 
   private diffDateTimeMinutes(

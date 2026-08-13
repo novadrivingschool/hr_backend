@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Between, Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
 import { HrWhatsappUpdate } from './entities/hr-whatsapp-update.entity';
 import { HrWhatsappUpdateStatusHistory } from './entities/hr-whatsapp-update-status-history.entity';
@@ -18,6 +18,9 @@ export interface FindAllHrWhatsappUpdatesFilters {
   date_to?: string;
   status?: string;
   asignacion?: string;
+  // Filtro independiente de "search": solo contra reported_* (columna
+  // "Name" del Excel), no toca responsable/question/observations.
+  reported?: string;
   responsable?: string;
   search?: string;
   page?: number;
@@ -40,6 +43,36 @@ export class HrWhatsappUpdatesService {
     `[${String.fromCharCode(0x0300)}-${String.fromCharCode(0x036f)}]`,
     'g',
   );
+
+  // ── Dedupe de import ────────────────────────────────────────────────
+  // Clave para detectar "esta fila del Excel ya existe en la BD":
+  // entry_date + Name (normalizado, sin importar orden/acentos/mayúsculas)
+  // + Question (normalizado). Si coincide, se ACTUALIZA el registro
+  // existente en vez de crear uno duplicado — recalculando Asignación,
+  // Status, Observations, Seguimiento, Asana Link Y el matching de
+  // Name/Responsable con el índice de empleados actual (así una mejora al
+  // matcher corrige registros ya importados con solo re-subir el Excel).
+  private static dedupeNameKey(value: string | null | undefined): string {
+    return String(value ?? '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(HrWhatsappUpdatesService.DIACRITICS_REGEX, '')
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean)
+      .sort()
+      .join(' ');
+  }
+
+  private static dedupeQuestionKey(value: string | null | undefined): string {
+    return String(value ?? '').trim().toLowerCase();
+  }
+
+  // Nombre "efectivo" de un registro ya guardado — el texto libre si no
+  // matcheó, o nombre+apellido del empleado si sí matcheó. Es contra lo que
+  // se compara `dedupeNameKey(rawName)` de la fila del Excel.
+  private static effectiveReportedName(row: Pick<HrWhatsappUpdate, 'reported_other' | 'reported_name' | 'reported_last_name'>): string {
+    return row.reported_other || `${row.reported_name || ''} ${row.reported_last_name || ''}`.trim();
+  }
 
   constructor(
     @InjectRepository(HrWhatsappUpdate)
@@ -97,6 +130,11 @@ export class HrWhatsappUpdatesService {
       const entity = this.repo.create({
         ...rest,
         status: dto.status ?? HR_WHATSAPP_DEFAULT_STATUS,
+        // Explícito, no depender del default de columna: este es el único
+        // punto de entrada de creación manual (form -> POST). El default de
+        // columna ('import') es solo un fallback conservador para filas que
+        // no pasen por acá.
+        source: 'manual',
       });
       const saved = await this.repo.save(entity);
       await this.recordStatusChange(saved.id, null, saved.status, changed_by);
@@ -114,6 +152,7 @@ export class HrWhatsappUpdatesService {
       date_to,
       status,
       asignacion,
+      reported,
       responsable,
       search,
       page = 1,
@@ -129,6 +168,13 @@ export class HrWhatsappUpdatesService {
     if (date_to) qb.andWhere('u.entry_date <= :date_to', { date_to });
     if (status) qb.andWhere('u.status = :status', { status });
     if (asignacion) qb.andWhere('u.asignacion = :asignacion', { asignacion });
+
+    if (reported) {
+      qb.andWhere(
+        '(u.reported_name ILIKE :reported OR u.reported_last_name ILIKE :reported OR u.reported_other ILIKE :reported)',
+        { reported: `%${reported}%` },
+      );
+    }
 
     if (responsable) {
       qb.andWhere(
@@ -223,6 +269,9 @@ export class HrWhatsappUpdatesService {
   async uploadExcel(buffer: Buffer): Promise<{
     totalRows: number;
     importedRows: number;
+    // Filas que ya existían (mismo entry_date + Name + Question) y se
+    // actualizaron en vez de duplicarse. Ver dedupeNameKey/dedupeQuestionKey.
+    updatedRows: number;
     skippedRows: number;
     unmatchedReported: number;
     unmatchedResponsable: number;
@@ -323,7 +372,13 @@ export class HrWhatsappUpdatesService {
       this.logger.warn('No se pudo obtener la lista de empleados — todas las filas caerán a *_other sin matchear');
     }
 
-    const entities: Partial<HrWhatsappUpdate>[] = [];
+    interface ParsedRow {
+      rawName: string;
+      question: string;
+      entryDate: string;
+      data: Omit<Partial<HrWhatsappUpdate>, 'source'>;
+    }
+    const parsedRows: ParsedRow[] = [];
     const errors: ImportRowError[] = [];
     let skipped = 0;
     let unmatchedReported = 0;
@@ -387,38 +442,76 @@ export class HrWhatsappUpdatesService {
         unmatchedResponsableNames.add(rawResponsable);
       }
 
-      entities.push({
-        entry_date: entryDate,
-        reported_employee_number: reportedMatch?.employee_number ?? null,
-        reported_name: reportedMatch?.name ?? null,
-        reported_last_name: reportedMatch?.last_name ?? null,
-        reported_other: reportedMatch ? null : rawName,
+      parsedRows.push({
+        rawName,
         question,
-        responsable_employee_number: responsableMatch?.employee_number ?? null,
-        responsable_name: responsableMatch?.name ?? null,
-        responsable_last_name: responsableMatch?.last_name ?? null,
-        responsable_other: !responsableMatch && rawResponsable ? rawResponsable : null,
-        asignacion,
-        status,
-        observations: getCellValue(row, colObservations) || null,
-        seguimiento: getCellValue(row, colSeguimiento) || null,
-        asana_link: getCellValue(row, colAsanaLink) || null,
+        entryDate,
+        data: {
+          entry_date: entryDate,
+          reported_employee_number: reportedMatch?.employee_number ?? null,
+          reported_name: reportedMatch?.name ?? null,
+          reported_last_name: reportedMatch?.last_name ?? null,
+          reported_other: reportedMatch ? null : rawName,
+          question,
+          responsable_employee_number: responsableMatch?.employee_number ?? null,
+          responsable_name: responsableMatch?.name ?? null,
+          responsable_last_name: responsableMatch?.last_name ?? null,
+          responsable_other: !responsableMatch && rawResponsable ? rawResponsable : null,
+          asignacion,
+          status,
+          observations: getCellValue(row, colObservations) || null,
+          seguimiento: getCellValue(row, colSeguimiento) || null,
+          asana_link: getCellValue(row, colAsanaLink) || null,
+        },
       });
     }
 
-    if (!entities.length) {
+    if (!parsedRows.length) {
       throw new BadRequestException('No se encontraron filas válidas para importar');
     }
 
-    // Nota: el historial de status de las filas importadas arranca en el
-    // momento de la importación (changed_at = ahora), no en la fecha real del
-    // Excel (que no se conoce) — el dashboard de analytics debe tratar estas
-    // filas como "sin historial confiable" para métricas de tiempo de
+    // ── Dedupe: prefetch de lo que YA existe en el rango de fechas del ────
+    // Excel, para no pegarle a la BD fila por fila. Clave: entry_date +
+    // Name + Question (ver dedupeNameKey/dedupeQuestionKey).
+    const dates = parsedRows.map((r) => r.entryDate).sort();
+    const existingInRange = await this.repo.find({
+      where: { entry_date: Between(dates[0], dates[dates.length - 1]) },
+    });
+    const existingByKey = new Map<string, HrWhatsappUpdate[]>();
+    for (const row of existingInRange) {
+      const key = `${row.entry_date}|${HrWhatsappUpdatesService.dedupeQuestionKey(row.question)}`;
+      const arr = existingByKey.get(key) ?? [];
+      arr.push(row);
+      existingByKey.set(key, arr);
+    }
+
+    const toInsert: Partial<HrWhatsappUpdate>[] = [];
+    const toUpdate: { existing: HrWhatsappUpdate; changes: ParsedRow['data'] }[] = [];
+
+    for (const parsed of parsedRows) {
+      const key = `${parsed.entryDate}|${HrWhatsappUpdatesService.dedupeQuestionKey(parsed.question)}`;
+      const candidates = existingByKey.get(key) ?? [];
+      const targetNameKey = HrWhatsappUpdatesService.dedupeNameKey(parsed.rawName);
+      const existing = candidates.find(
+        (c) => HrWhatsappUpdatesService.dedupeNameKey(HrWhatsappUpdatesService.effectiveReportedName(c)) === targetNameKey,
+      );
+
+      if (existing) {
+        toUpdate.push({ existing, changes: parsed.data });
+      } else {
+        toInsert.push({ ...parsed.data, source: 'import' });
+      }
+    }
+
+    // Nota: el historial de status de las filas NUEVAS importadas arranca en
+    // el momento de la importación (changed_at = ahora), no en la fecha real
+    // del Excel (que no se conoce) — el dashboard de analytics debe tratar
+    // estas filas como "sin historial confiable" para métricas de tiempo de
     // resolución, no solo para conteos/distribuciones.
     const CHUNK = 200;
     let importedRows = 0;
-    for (let i = 0; i < entities.length; i += CHUNK) {
-      const chunk = entities.slice(i, i + CHUNK).map((e) => this.repo.create(e));
+    for (let i = 0; i < toInsert.length; i += CHUNK) {
+      const chunk = toInsert.slice(i, i + CHUNK).map((e) => this.repo.create(e));
       const saved = await this.repo.save(chunk);
       importedRows += saved.length;
 
@@ -438,14 +531,36 @@ export class HrWhatsappUpdatesService {
       }
     }
 
+    // ── Filas que ya existían: se ACTUALIZAN (no se tocan id/created_at/
+    // source — source sigue reflejando cómo nació el registro originalmente).
+    // Si el status cambió respecto al que tenía guardado, se registra en el
+    // historial igual que en update() — así una reimportación que trae un
+    // status distinto también queda auditada.
+    let updatedRows = 0;
+    for (const { existing, changes } of toUpdate) {
+      const previousStatus = existing.status;
+      try {
+        const merged = this.repo.merge(existing, changes);
+        const saved = await this.repo.save(merged);
+        updatedRows++;
+        if (changes.status !== undefined && changes.status !== previousStatus) {
+          await this.recordStatusChange(saved.id, previousStatus, saved.status);
+        }
+      } catch (error) {
+        this.logger.error(`No se pudo actualizar el registro ${existing.id} durante el import: ${error.message}`, error.stack);
+        errors.push({ row: 0, reason: `No se pudo actualizar un registro existente (${existing.id}): ${error.message}` });
+      }
+    }
+
     this.logger.log(
-      `Excel importado: ${importedRows} filas creadas, ${skipped} omitidas, ` +
+      `Excel importado: ${importedRows} filas creadas, ${updatedRows} actualizadas, ${skipped} omitidas, ` +
         `${unmatchedReported} "Name" sin matchear, ${unmatchedResponsable} "Responsable" sin matchear`,
     );
 
     return {
       totalRows: sheet.rowCount - 1,
       importedRows,
+      updatedRows,
       skippedRows: skipped,
       unmatchedReported,
       unmatchedResponsable,

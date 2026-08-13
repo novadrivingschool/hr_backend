@@ -527,6 +527,14 @@ export class IpSummaryService {
         // sub-fila (no solo por nombre) al armar el PDF. null para orphans.
         period_start: unmatched ? null : c.min_date,
         period_end: unmatched ? null : c.max_date,
+        // segment_period_start/end: límites SIN formatear del TRAMO
+        // completo (igual para todas las sub-filas de un mismo segment_id)
+        // — el PDF los usa para renderizar "Período" con su propio formato
+        // (M/D/Y + separador ASCII), en vez de parsear la flecha "→" del
+        // string ya formateado (esa flecha no existe en la fuente estándar
+        // de jsPDF y se veía como caracteres corruptos). null para orphans.
+        segment_period_start: unmatched ? null : c.segment_period_start,
+        segment_period_end: unmatched ? null : c.segment_period_end,
         matched_employee_number: empNum,
         matched_full_name: emp ? `${emp.name || ''} ${emp.last_name || ''}`.trim() : empNum,
         unmatched, // true = no se encontró tramo en danubenet_history para este nombre/fecha — revisar el historial

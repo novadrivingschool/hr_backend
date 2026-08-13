@@ -206,10 +206,17 @@ function candidatesWithAllTokens(tokens: string[], index: EmployeeIndex): NovaOn
  * last_name — ningún otro campo). Lo único "inteligente" acá es que no
  * importa el ORDEN de las palabras ni que el empleado tenga más palabras de
  * las que trajo el Excel — nunca se adivina una palabra que no está.
+ *
+ * REQUIERE MÍNIMO 2 PALABRAS (nombre+apellido o apellido+nombre). Un solo
+ * nombre o apellido NUNCA matchea, aunque hoy sea "único" entre los
+ * empleados activos — un segundo nombre común (ej. "Raquel") puede ser
+ * único por casualidad en este momento y dejar de serlo mañana, o peor,
+ * matchear con confianza a la persona equivocada porque nadie más lo tiene
+ * TODAVÍA. Con una sola palabra no hay suficiente señal para confiar.
  */
 export function matchEmployee(rawText: string, index: EmployeeIndex): EmployeeMatch | null {
   const tokens = tokenize(rawText);
-  if (!tokens.length) return null;
+  if (tokens.length < 2) return null;
 
   // Tier 1: empleados cuyo nombre+apellido contiene TODAS las palabras del
   // texto (en cualquier orden, sin importar cuántas palabras más tenga el
@@ -259,14 +266,8 @@ export function matchEmployee(rawText: string, index: EmployeeIndex): EmployeeMa
     return null;
   }
 
-  // Tier 2: ninguna coincidencia con TODAS las palabras — si el texto es una
-  // sola palabra (ej. "Jen"), aceptar solo si esa palabra es única entre
-  // TODOS los nombres/apellidos de la empresa (sin ambigüedad).
-  if (tokens.length === 1) {
-    const single = index.employeesByToken.get(tokens[0]) ?? [];
-    if (single.length === 1) return toMatch(single[0]);
-  }
-
+  // 0 candidatos con las 2+ palabras completas -> no matchea. Ya NO hay
+  // fallback de una sola palabra (ver comentario del JSDoc de esta función).
   return null;
 }
 
@@ -274,13 +275,12 @@ export interface MatchDebugInfo {
   rawText: string;
   tokens: string[];
   totalEmployeesInIndex: number;
-  // Empleados que YA fueron descartados a nivel de índice porque no tienen
-  // NINGUNA palabra en común (útil para ver si el problema es que el
-  // empleado ni siquiera llegó al índice — ver totalEmployeesInIndex).
+  // Si tokens.length < 2, ni siquiera se intenta matchear — ver
+  // rejectedSingleWord.
+  rejectedSingleWord: boolean;
   tier1Candidates: EmployeeMatch[];
   adjacentCandidates: EmployeeMatch[];
   tightestCandidates: EmployeeMatch[];
-  tier2SingleTokenCandidates: EmployeeMatch[];
   result: EmployeeMatch | null;
 }
 
@@ -294,11 +294,11 @@ export interface MatchDebugInfo {
  */
 export function debugMatchEmployee(rawText: string, index: EmployeeIndex): MatchDebugInfo {
   const tokens = tokenize(rawText);
-  const tier1Candidates = candidatesWithAllTokens(tokens, index);
+  const rejectedSingleWord = tokens.length < 2;
+  const tier1Candidates = rejectedSingleWord ? [] : candidatesWithAllTokens(tokens, index);
 
   let adjacentCandidates: NovaOneEmployee[] = [];
   let tightestCandidates: NovaOneEmployee[] = [];
-  let tier2SingleTokenCandidates: NovaOneEmployee[] = [];
 
   if (tier1Candidates.length > 1) {
     const reversedTokens = [...tokens].reverse();
@@ -318,18 +318,14 @@ export function debugMatchEmployee(rawText: string, index: EmployeeIndex): Match
     tightestCandidates = scored.filter((c) => c.extra === minExtra).map((c) => c.emp);
   }
 
-  if (tier1Candidates.length === 0 && tokens.length === 1) {
-    tier2SingleTokenCandidates = index.employeesByToken.get(tokens[0]) ?? [];
-  }
-
   return {
     rawText,
     tokens,
     totalEmployeesInIndex: index.employees.length,
+    rejectedSingleWord,
     tier1Candidates: tier1Candidates.map(toMatch),
     adjacentCandidates: adjacentCandidates.map(toMatch),
     tightestCandidates: tightestCandidates.map(toMatch),
-    tier2SingleTokenCandidates: tier2SingleTokenCandidates.map(toMatch),
     result: matchEmployee(rawText, index),
   };
 }

@@ -13,6 +13,7 @@ import { buildSummaryEmployeeHtml } from './templates/payroll-summary-report.tem
 import axios from 'axios';
 import * as ExcelJS from 'exceljs';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
+import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
 import { PDFDocument } from 'pdf-lib';
 import archiver from 'archiver';
 import { PassThrough } from 'stream';
@@ -371,6 +372,28 @@ export class PayrollService {
       provider: null,
       day: null,
     };
+  }
+
+  /**
+   * Horas de lunch a descontar de UN turno, respetando su flag includes_lunch.
+   *
+   * Misma regla que EmployeeScheduleService.calculateLunchDeduction:
+   *   includes_lunch = false → 0, aunque exista un Lunch registrado.
+   *   includes_lunch = true  → el Lunch registrado que caiga dentro del turno,
+   *                            con su duración real. Sin Lunch, 0.
+   *
+   * Todas las horas vienen ya normalizadas a 'HH:mm' de Chicago.
+   */
+  private lunchHoursForShift(
+    shiftStart: string | null | undefined,
+    shiftEnd: string | null | undefined,
+    includesLunch: boolean,
+    lunchStart: string | null | undefined,
+    lunchEnd: string | null | undefined,
+  ): number {
+    if (!includesLunch) return 0;
+
+    return this.overlapMinutes(shiftStart, shiftEnd, lunchStart, lunchEnd) / 60;
   }
 
   private overlapMinutes(
@@ -2281,7 +2304,11 @@ export class PayrollService {
       currentDay.setDate(currentDay.getDate() + i);
 
       const dateStr = currentDay.toISOString().split('T')[0];
-      const dayOfWeek = currentDay.getDay();
+      // fixed_schedule.weekdays se guarda en ISO (1=Lun … 7=Dom), mientras que
+      // getDay() devuelve 0=Dom … 6=Sáb. Sin convertir, los horarios fijos de
+      // domingo nunca hacían match y no se pagaban.
+      const jsDay = currentDay.getDay();
+      const dayOfWeek = jsDay === 0 ? 7 : jsDay;
 
       let hoursToday = 0;
       let lunchDeducted = 0;
@@ -2299,6 +2326,31 @@ export class PayrollService {
       const eventLunch = schedule.events?.find(
         (e) => e.date === dateStr && e.register === RegisterEnum.LUNCH,
       );
+
+      // Una regla recurrente solo aplica dentro de su vigencia. Si venció el
+      // 10 de mayo, del 11 en adelante ya no existe y no debe pagarse.
+      const isActiveOn = (f: FixedSchedule) =>
+        (!f.start_date || f.start_date <= dateStr) &&
+        (!f.end_date || f.end_date >= dateStr);
+
+      const fixedLunchRule = schedule.fixed?.find(
+        (f) =>
+          f.weekdays.includes(dayOfWeek) &&
+          f.register === 'Lunch' &&
+          isActiveOn(f),
+      );
+
+      // Lunch efectivo del día. Gana el evento puntual; si no hay, se usa la
+      // regla recurrente. Esto importa porque el setup por defecto crea el
+      // Lunch como RECURRENTE: un Work Shift variable ese día igual tiene que
+      // descontarlo.
+      const hasEventLunchRaw = Boolean(eventLunch?.start && eventLunch?.end);
+      const dayLunchStart = hasEventLunchRaw
+        ? this.formatToChicago(dateStr, eventLunch!.start)
+        : (fixedLunchRule?.start ?? null);
+      const dayLunchEnd = hasEventLunchRaw
+        ? this.formatToChicago(dateStr, eventLunch!.end)
+        : (fixedLunchRule?.end ?? null);
       // Outage del día: es una DEDUCCIÓN INDEPENDIENTE (mismo tratamiento que Time Off
       // Request) — NO se resta de las horas de Work Shift, se descuenta aparte a nivel de
       // Total/Payroll. Solo necesita el Work Shift del día como fallback de `end` cuando el
@@ -2311,11 +2363,24 @@ export class PayrollService {
       let fallbackOutageEnd: string | null = null;
 
       if (eventShifts.length > 0) {
-        const hasEventLunch = Boolean(eventLunch?.start && eventLunch?.end);
-
-        lunchDeducted = hasEventLunch
-          ? Number(this.calculateHours(eventLunch!.start, eventLunch!.end).toFixed(2))
-          : 0;
+        // El descuento se evalúa turno por turno: el flag includes_lunch vive
+        // en el turno, no en el día.
+        lunchDeducted = Number(
+          eventShifts
+            .reduce(
+              (sum, es) =>
+                sum +
+                this.lunchHoursForShift(
+                  this.formatToChicago(dateStr, es.start),
+                  this.formatToChicago(dateStr, es.end),
+                  !!es.includes_lunch,
+                  dayLunchStart,
+                  dayLunchEnd,
+                ),
+              0,
+            )
+            .toFixed(2),
+        );
 
         const totalRaw = eventShifts.reduce(
           (sum, es) => sum + this.calculateHours(es.start, es.end), 0,
@@ -2324,8 +2389,9 @@ export class PayrollService {
         hoursToday = Math.max(0, totalRaw - lunchDeducted);
         shiftStart = this.formatToChicago(dateStr, eventShifts[0].start);
         shiftEnd = this.formatToChicago(dateStr, eventShifts[eventShifts.length - 1].end);
-        lunchStart = hasEventLunch ? this.formatToChicago(dateStr, eventLunch!.start) : null;
-        lunchEnd = hasEventLunch ? this.formatToChicago(dateStr, eventLunch!.end) : null;
+        // Si no se descontó nada, tampoco se muestra el lunch en el PDF.
+        lunchStart = lunchDeducted > 0 ? dayLunchStart : null;
+        lunchEnd = lunchDeducted > 0 ? dayLunchEnd : null;
         source = 'Event';
         strict = null;
         fallbackOutageEnd = this.latestEndTime(
@@ -2334,31 +2400,42 @@ export class PayrollService {
 
         dayShifts = eventShifts.map((es) => {
           const rawH = this.calculateHours(es.start, es.end);
-          const lunchOverlapH = hasEventLunch
-            ? this.overlapMinutes(
-                this.formatToChicago(dateStr, es.start),
-                this.formatToChicago(dateStr, es.end),
-                this.formatToChicago(dateStr, eventLunch!.start),
-                this.formatToChicago(dateStr, eventLunch!.end),
-              ) / 60
-            : 0;
+          const lunchH = this.lunchHoursForShift(
+            this.formatToChicago(dateStr, es.start),
+            this.formatToChicago(dateStr, es.end),
+            !!es.includes_lunch,
+            dayLunchStart,
+            dayLunchEnd,
+          );
           return {
             customer: es.customer ?? null,
-            hours: Number(Math.max(0, rawH - lunchOverlapH).toFixed(2)),
+            hours: Number(Math.max(0, rawH - lunchH).toFixed(2)),
           };
         });
       } else {
         const fixedShifts = (schedule.fixed ?? []).filter(
-          (f) => f.weekdays.includes(dayOfWeek) && f.register === 'Work Shift',
+          (f) =>
+            f.weekdays.includes(dayOfWeek) &&
+            f.register === 'Work Shift' &&
+            isActiveOn(f),
         );
-        const fixedLunch = schedule.fixed?.find(
-          (f) => f.weekdays.includes(dayOfWeek) && f.register === 'Lunch',
-        );
-
         if (fixedShifts.length > 0) {
-          lunchDeducted = fixedLunch
-            ? Number(this.calculateTimeDiff(fixedLunch.start, fixedLunch.end).toFixed(2))
-            : 0;
+          lunchDeducted = Number(
+            fixedShifts
+              .reduce(
+                (sum, fs) =>
+                  sum +
+                  this.lunchHoursForShift(
+                    fs.start,
+                    fs.end,
+                    !!fs.includes_lunch,
+                    dayLunchStart,
+                    dayLunchEnd,
+                  ),
+                0,
+              )
+              .toFixed(2),
+          );
 
           const totalRaw = fixedShifts.reduce(
             (sum, fs) => sum + this.calculateTimeDiff(fs.start, fs.end), 0,
@@ -2367,20 +2444,25 @@ export class PayrollService {
           hoursToday = Math.max(0, totalRaw - lunchDeducted);
           shiftStart = fixedShifts[0].start;
           shiftEnd = fixedShifts[fixedShifts.length - 1].end;
-          lunchStart = fixedLunch?.start ?? null;
-          lunchEnd = fixedLunch?.end ?? null;
+          // Si no se descontó nada, tampoco se muestra el lunch en el PDF.
+          lunchStart = lunchDeducted > 0 ? dayLunchStart : null;
+          lunchEnd = lunchDeducted > 0 ? dayLunchEnd : null;
           source = 'Fixed';
           strict = fixedShifts[0].strict ?? null;
           fallbackOutageEnd = this.latestEndTime(fixedShifts.map((fs) => fs.end));
 
           dayShifts = fixedShifts.map((fs) => {
             const rawH = this.calculateTimeDiff(fs.start, fs.end);
-            const lunchOverlapH = fixedLunch
-              ? this.overlapMinutes(fs.start, fs.end, fixedLunch.start, fixedLunch.end) / 60
-              : 0;
+            const lunchH = this.lunchHoursForShift(
+              fs.start,
+              fs.end,
+              !!fs.includes_lunch,
+              dayLunchStart,
+              dayLunchEnd,
+            );
             return {
               customer: fs.customer ?? null,
-              hours: Number(Math.max(0, rawH - lunchOverlapH).toFixed(2)),
+              hours: Number(Math.max(0, rawH - lunchH).toFixed(2)),
             };
           });
         }

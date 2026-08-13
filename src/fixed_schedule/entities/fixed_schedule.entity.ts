@@ -44,6 +44,14 @@ export class FixedSchedule {
   @Column({ type: 'boolean', default: false })
   strict: boolean;
 
+  /**
+   * Indica si a este turno se le descuenta lunch.
+   * false = no descuenta nada aunque exista un evento Lunch en el rango.
+   * Default false para no alterar el histórico existente.
+   */
+  @Column({ type: 'boolean', default: false })
+  includes_lunch: boolean;
+
   @CreateDateColumn({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
   created_at: Date;
 

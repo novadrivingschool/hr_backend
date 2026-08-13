@@ -79,6 +79,25 @@ export class HrWhatsappUpdate {
   @Column({ type: 'varchar', length: 500, nullable: true })
   asana_link: string | null;
 
+  // Cómo nació el registro: 'manual' (creado desde el form, un caso a la
+  // vez) o 'import' (carga masiva de Excel). Es la diferencia clave para el
+  // dashboard de analytics: si un registro "nace" ya en status terminal
+  // (OK/Not Resolved) porque source='manual', es un hecho real — HR lo
+  // resolvió al instante y esa duración cuenta. Si source='import', ese
+  // mismo "ya nació resuelto" es un artefacto del import masivo (decenas de
+  // filas comparten la misma marca de tiempo falsa) y NO debe contar como
+  // tiempo de resolución real. Ver WhatsappAnalyticsDashboard.vue.
+  //
+  // El código SIEMPRE lo asigna explícitamente (create() -> 'manual',
+  // uploadExcel() -> 'import' para filas nuevas); nunca depende de este
+  // default de columna para una inserción real. El default es 'import' (no
+  // 'manual') a propósito: es el valor conservador para cualquier fila que
+  // termine sin source explícito (ej. backfill de la migración sobre datos
+  // que ya existían antes de esta columna) — tratarla como "no confiable
+  // para resolución instantánea" es más seguro que asumir que fue manual.
+  @Column({ type: 'varchar', length: 20, default: 'import' })
+  source: string;
+
   @CreateDateColumn({ type: 'timestamp with time zone' })
   created_at: Date;
 
