@@ -31,11 +31,10 @@ export const LOA_DEPARTMENTS: readonly LoaDepartmentEnum[] = [
 ];
 
 /**
- * Un LOA tiene dos rondas de atención por departamento: desactivar accesos
- * mientras el empleado está de baja, y reactivarlos cuando HR confirma que
- * regresó. `phase` en cada entry de la bitácora dice a cuál ronda pertenece.
+ * Legacy — el modelo de dos rondas (deactivation/reactivation) ya no existe.
+ * Se conserva solo para tipar `phase` en entries viejas de `LoaDepartmentLogEntry`
+ * (dato histórico congelado, no se generan entries nuevas con este campo).
  */
 export enum LoaLogPhaseEnum {
     Deactivation = 'deactivation',
-    Reactivation = 'reactivation',
 }

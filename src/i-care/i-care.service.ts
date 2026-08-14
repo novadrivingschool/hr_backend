@@ -37,6 +37,14 @@ export interface PaginatedResult<T> {
  * Cada evento mapea a un endpoint del email service:
  *   POST /mailer-send/i-care/:id/:event  →  body: { recipients: string[] }
  *
+ * REGLA Management: todo destinatario "role 'management'" listado abajo está
+ * gateado por ICareService.isHighCriticalUrgency(record) — Management SOLO
+ * recibe correos de un iCare mientras su urgency vigente sea High o Critical.
+ * El gate se evalúa con la urgency ACTUAL en cada evento (no "una vez H/C,
+ * para siempre"): si el caso se baja a Low/Medium, Management deja de recibir
+ * correos de ese caso desde ese punto en adelante, sin excepción (incluye
+ * incluso creation_review, que es un caso de conflicto de interés).
+ *
  * Matriz de destinatarios por evento:
  *   created_staff       → staff_name (quien creó el registro)
  *   created_coordinator → coordinator(s) (assigned coordinators, no submitter identity)
@@ -159,6 +167,19 @@ export class ICareService {
   }
 
   /**
+   * Gate único para decidir si Management debe ser notificado de un evento.
+   * Regla de negocio: Management SOLO recibe correos de un iCare mientras su
+   * urgency vigente sea High o Critical — se evalúa con la urgency ACTUAL del
+   * record en cada evento (no "una vez H/C, para siempre"), así que si el caso
+   * se baja a Low/Medium (downgrade), Management deja de recibir correos de ese
+   * caso a partir de ese momento, incluyendo el aviso de creación (creation_review)
+   * y cualquier otro evento del flujo. Se usa en TODOS los triggerXxxEmails().
+   */
+  private static isHighCriticalUrgency(record: ICare): boolean {
+    return record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+  }
+
+  /**
    * Dispara el email al servicio externo con la lista de destinatarios ya resuelta.
    * El email service recibe el id del iCare, el evento y los recipients en el body,
    * por lo que no necesita hacer consultas adicionales para saber a quiénes enviar.
@@ -265,7 +286,8 @@ export class ICareService {
     if (allHrEmails.length > 0 && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_hr', allHrEmails));
     }
-    if (managementEmails.length > 0 && !isCreationReviewCase) {
+    // Management solo entra en el loop de correos si el caso ya es High/Critical.
+    if (managementEmails.length > 0 && !isCreationReviewCase && isHighCritical) {
       sends.push(this.triggerEmail(id, 'created_management', managementEmails));
     }
     // Notificación específica pidiendo a HR/Management que revisen la CREACIÓN
@@ -275,7 +297,9 @@ export class ICareService {
       // aunque el caso quede oculto para el resto (coordinator/HR genérico) hasta la revisión.
       if (staffEmail) sends.push(this.triggerEmail(id, 'creation_review_submitter', [staffEmail]));
       if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_review_hr', allHrEmails));
-      if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_review_management', managementEmails));
+      // Management también gateado por High/Critical, aunque sea un caso de
+      // conflicto de interés (confirmado explícitamente — no es excepción).
+      if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'creation_review_management', managementEmails));
     }
 
     // Position-based emails: Operator / Instructor / Teacher (skip if High/Critical, coordinator-as-staff, or creation-review)
@@ -330,7 +354,7 @@ export class ICareService {
     if (staffEmail) sends.push(this.triggerEmail(id, 'justified_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'justified_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'justified_management', managementEmails));
+    if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'justified_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -360,7 +384,7 @@ export class ICareService {
     if (staffEmail) sends.push(this.triggerEmail(id, 'committed_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'committed_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'committed_management', managementEmails));
+    if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'committed_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -379,7 +403,7 @@ export class ICareService {
     if (staffEmail) sends.push(this.triggerEmail(id, 'resolved_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'resolved_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'resolved_management', managementEmails));
+    if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'resolved_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -398,7 +422,7 @@ export class ICareService {
     if (staffEmail) sends.push(this.triggerEmail(id, 'seguimiento_added_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'seguimiento_added_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'seguimiento_added_management', managementEmails));
+    if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'seguimiento_added_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -417,7 +441,7 @@ export class ICareService {
     if (staffEmail) sends.push(this.triggerEmail(id, 'commit_fulfilled_staff', [staffEmail]));
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'commit_fulfilled_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_management', managementEmails));
+    if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'commit_fulfilled_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -435,7 +459,7 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_management', managementEmails));
+    if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'coordinator_rejected_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -454,7 +478,7 @@ export class ICareService {
       if (reviewerEmail) sends.push(this.triggerEmail(id, 'rejection_review_accepted_reviewer', [reviewerEmail]));
       if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_coordinator', coordinatorEmails));
       if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_hr', allHrEmails));
-      if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_accepted_management', managementEmails));
+      if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'rejection_review_accepted_management', managementEmails));
     } else {
       const staffEmail = record.staff_name?.nova_email;
       // Confirmación personal al reviewer
@@ -462,7 +486,7 @@ export class ICareService {
       if (staffEmail) sends.push(this.triggerEmail(id, 'rejection_review_overridden_staff', [staffEmail]));
       if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_coordinator', coordinatorEmails));
       if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_hr', allHrEmails));
-      if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'rejection_review_overridden_management', managementEmails));
+      if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'rejection_review_overridden_management', managementEmails));
     }
     await Promise.all(sends);
   }
@@ -476,7 +500,7 @@ export class ICareService {
     const allHrEmails = [...hrEmails, ...hrAssistantEmails];
     const sends: Promise<void>[] = [];
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_management', managementEmails));
+    if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'hr_rejected_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -493,7 +517,7 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'pending_hr_review_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'pending_hr_review_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'pending_hr_review_management', managementEmails));
+    if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'pending_hr_review_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -508,7 +532,7 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (staffEmail) sends.push(this.triggerEmail(id, 'hc_accepted_staff', [staffEmail]));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'hc_accepted_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'hc_accepted_management', managementEmails));
+    if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'hc_accepted_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -531,7 +555,10 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (responsibleEmails.length > 0) sends.push(this.triggerEmail(id, 'downgrade_returned_coordinator', responsibleEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'downgrade_returned_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'downgrade_returned_management', managementEmails));
+    // record.urgency ya quedó en Low/Medium a esta altura (downgrade recién aplicado),
+    // así que este gate en la práctica siempre apaga a Management — es el resultado
+    // esperado: al bajar a L/M, Management deja de recibir correos de este caso.
+    if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'downgrade_returned_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -1869,7 +1896,7 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_approved_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_approved_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_approved_management', managementEmails));
+    if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'creation_approved_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -1891,7 +1918,7 @@ export class ICareService {
     if (submitterEmail) sends.push(this.triggerEmail(id, 'creation_rejected_staff', [submitterEmail]));
     if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_rejected_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_rejected_hr', allHrEmails));
-    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'creation_rejected_management', managementEmails));
+    if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'creation_rejected_management', managementEmails));
     await Promise.all(sends);
   }
 

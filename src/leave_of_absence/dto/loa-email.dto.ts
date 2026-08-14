@@ -44,7 +44,6 @@ export type LoaTemplateName =
     | 'loa_created_department'
     | 'loa_department_attended'
     | 'loa_returned_to_work'
-    | 'loa_department_reactivated'
     | 'loa_returned_to_work_undo';
 
 export interface SendLoaTemplateDto {

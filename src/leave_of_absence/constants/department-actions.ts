@@ -11,10 +11,12 @@ export const LOA_DEPARTMENT_LABELS: Record<LoaDepartmentEnum, string> = {
 };
 
 /**
- * Qué debe hacer cada depto al CREARSE un LOA (fase de desactivación) y al
- * marcarse RETURNED TO WORK (fase de reactivación) — contenido de
- * ACTION_ITEMS en los correos de loa_created_department / loa_returned_to_work.
- * Puramente informativo para el destinatario; no dispara nada en el sistema.
+ * Contenido de los correos de creación (loa_created_department) — describe en
+ * términos GENÉRICOS qué debe atender cada depto al desactivar accesos.
+ * INDEPENDIENTE de las subtareas reales: las subtareas las registra cada
+ * depto libremente por caso (ver LeaveOfAbsenceService.createSubtask) y no
+ * existen todavía al momento de crear el LOA, así que no hay de dónde
+ * derivar este texto dinámicamente.
  */
 export const LOA_DEPARTMENT_DISABLE_ACTIONS: Record<LoaDepartmentEnum, string[]> = {
     [LoaDepartmentEnum.It]: [
@@ -36,24 +38,11 @@ export const LOA_DEPARTMENT_DISABLE_ACTIONS: Record<LoaDepartmentEnum, string[]>
     ],
 };
 
-export const LOA_DEPARTMENT_ENABLE_ACTIONS: Record<LoaDepartmentEnum, string[]> = {
-    [LoaDepartmentEnum.It]: [
-        'Restore system/network access and device credentials.',
-    ],
-    [LoaDepartmentEnum.Sales]: [
-        'Reassign leads/deals back to this employee if applicable.',
-        'Resume commission tracking.',
-    ],
-    [LoaDepartmentEnum.Education]: [
-        'Resume courses/students previously reassigned or paused.',
-    ],
-    [LoaDepartmentEnum.Calendar]: [
-        "Reopen this employee's scheduling slots.",
-    ],
-    [LoaDepartmentEnum.Fleet]: [
-        'Reassign a vehicle back to this employee if needed.',
-    ],
-};
-
-/** Genérico — usado en el correo de returned_to_work que va a HR/submitter (no a un depto específico). */
-export const LOA_GENERIC_ENABLE_NOTICE = ['All departments have been notified to restore whatever applies to them.'];
+/**
+ * Correo único combinado de returned_to_work (a los 5 deptos + loa-hr + actor)
+ * — ya no hay checklist de reactivación por depto, es solo un aviso de que la
+ * bitácora de ese depto queda bloqueada para este LOA.
+ */
+export const LOA_RETURN_TO_WORK_NOTICE = [
+    'The employee has returned to work. This department\'s bitácora for this LOA is now locked — no further entries can be added.',
+];

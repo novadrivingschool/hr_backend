@@ -24,7 +24,12 @@ export interface LoaActor {
     nova_email?: string;
 }
 
-/** Una entrada de bitácora de departamento — comentario + evidencia + quién/cuándo. */
+/**
+ * Una entrada de bitácora general de departamento — legacy, previo a las
+ * subtareas. Ya no recibe entries nuevas (ver LeaveOfAbsenceService), se
+ * conserva solo para mostrar histórico de LOAs viejos. `phase` queda como
+ * campo congelado de esos registros — el módulo ya no tiene dos fases.
+ */
 export interface LoaDepartmentLogEntry {
     id: string;
     comment: string;
@@ -35,34 +40,96 @@ export interface LoaDepartmentLogEntry {
     phase: LoaLogPhaseEnum;
 }
 
-/** Estado de un departamento sobre este LOA: su bitácora + sus dos checkboxes. */
+/** Comentario + evidencia dentro de UNA subtarea (su propio mini historial), o en la bitácora de HR. */
+export interface LoaSubtaskEntry {
+    id: string;
+    comment: string;
+    /** Keys de S3, máx. 5 por comentario (enforced en el DTO). */
+    attachments: string[];
+    added_by: LoaActor;
+    created_at: string;
+}
+
+/**
+ * Una subtarea del checklist de "Temporary Offboarding" de un depto. Se
+ * registra libremente (CRUD completo: create/update label/delete, ver
+ * LeaveOfAbsenceService) — `key` es un uuid propio de ESTE LOA. `template_id`
+ * enlaza a la LoaSubtaskTemplate que la originó (null si por algún motivo no
+ * se pudo resolver/crear el template — best effort, ver ensureTemplateExists)
+ * y es lo que usa syncMissingTemplateSubtasks para no duplicarla cuando se
+ * re-sincroniza en cada lectura. Un solo stage — ya no existe "reactivation".
+ */
+export interface LoaSubtask {
+    key: string;
+    label: string;
+    template_id: string | null;
+    completed: boolean;
+    completed_by: LoaActor | null;
+    completed_at: string | null;
+    entries: LoaSubtaskEntry[];
+}
+
+/**
+ * Estado de un departamento sobre este LOA: su checklist de subtareas de
+ * Temporary Offboarding + su checkbox "done". Ya no existe reactivated — esa
+ * etapa la reemplaza returned_to_work (a nivel LOA) + la bitácora de HR.
+ */
 export interface LoaDepartmentLogStatus {
     attended: boolean;
     attended_by: LoaActor | null;
     attended_at: string | null;
-    reactivated: boolean;
-    reactivated_by: LoaActor | null;
-    reactivated_at: string | null;
+    /** Histórico general previo a las subtareas — se conserva por compatibilidad, ya no se le agregan entries nuevas. */
     entries: LoaDepartmentLogEntry[];
+    /**
+     * Subtareas de Temporary Offboarding de ESTE LOA. Se auto-sincronizan con
+     * los templates del depto en cada lectura (ver
+     * LeaveOfAbsenceService.syncMissingTemplateSubtasks) — cualquier template
+     * nuevo aparece acá solo, sin tener que re-registrarlo por LOA.
+     */
+    subtasks: LoaSubtask[];
+    /**
+     * template_id de subtareas que el depto borró explícitamente de ESTE LOA
+     * — evita que syncMissingTemplateSubtasks las vuelva a agregar en la
+     * próxima lectura (si no se trackeara esto, un template borrado de la
+     * bitácora "resucitaría" solo al reabrir).
+     */
+    removed_template_ids: string[];
 }
 
 export type LoaDepartmentLogs = Record<LoaDepartmentEnum, LoaDepartmentLogStatus>;
 
-/** Estado inicial de los 5 departamentos — se siembra al crear el LOA. */
+/**
+ * Bitácora exclusiva de HR — NO tiene subtareas (no se registran ahí), solo
+ * comentarios/evidencia libres + un checkbox "done" propio. "done" solo se
+ * puede marcar cuando los 5 deptos ya marcaron su "Temporary Offboarding
+ * done" (ver LeaveOfAbsenceService.setHrDone). A diferencia de los 5 deptos,
+ * esta bitácora NUNCA se bloquea cuando HR marca returned_to_work.
+ */
+export interface LoaHrLogStatus {
+    done: boolean;
+    done_by: LoaActor | null;
+    done_at: string | null;
+    entries: LoaSubtaskEntry[];
+}
+
+/** Estado inicial de los 5 departamentos — se siembra al crear el LOA. Subtareas arrancan vacías: cada depto las registra por su cuenta. */
 export function emptyDepartmentLogs(): LoaDepartmentLogs {
     const empty = (): LoaDepartmentLogStatus => ({
         attended: false,
         attended_by: null,
         attended_at: null,
-        reactivated: false,
-        reactivated_by: null,
-        reactivated_at: null,
         entries: [],
+        subtasks: [],
+        removed_template_ids: [],
     });
     return LOA_DEPARTMENTS.reduce((acc, dept) => {
         acc[dept] = empty();
         return acc;
     }, {} as LoaDepartmentLogs);
+}
+
+export function emptyHrLog(): LoaHrLogStatus {
+    return { done: false, done_by: null, done_at: null, entries: [] };
 }
 
 @Entity('leave_of_absence_requests')
@@ -125,15 +192,23 @@ export class LeaveOfAbsence {
     updated_by: LoaActor | null;
 
     /**
-     * Bitácoras de los 5 departamentos que atienden un LOA (desactivar/
-     * reactivar accesos). Sembrado vacío al crear — ver emptyDepartmentLogs().
-     * Cada departamento se muta por su propio endpoint (no por el PATCH
-     * genérico) para que dos departamentos editando a la vez no se pisen.
+     * Bitácoras de los 5 departamentos que atienden un LOA (checklist de
+     * Temporary Offboarding). Sembrado vacío al crear — ver
+     * emptyDepartmentLogs(). Cada departamento se muta por su propio endpoint
+     * (no por el PATCH genérico) para que dos departamentos editando a la vez
+     * no se pisen. Se bloquean por completo cuando returned_to_work=true.
      */
     @Column({ type: 'jsonb', default: () => "'{}'" })
     department_logs: LoaDepartmentLogs;
 
-    /** HR marca esto cuando el empleado ya regresó a trabajar — dispara la fase de reactivación. */
+    /**
+     * Bitácora exclusiva de HR — ver LoaHrLogStatus. Nunca se bloquea por
+     * returned_to_work (a diferencia de department_logs).
+     */
+    @Column({ type: 'jsonb', default: () => "'{}'" })
+    hr_log: LoaHrLogStatus;
+
+    /** HR marca esto cuando el empleado ya regresó a trabajar — bloquea las 5 bitácoras de depto. */
     @Column({ type: 'boolean', default: false })
     returned_to_work: boolean;
 
