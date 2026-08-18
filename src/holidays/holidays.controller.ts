@@ -27,6 +27,13 @@ export class HolidaysController {
     return this.holidaysService.findOne(id);
   }
 
+  // Historial del holiday a través de los años (fechas + horas autorizadas),
+  // distinto del audit-log general. Ver HolidaysService.findHistory().
+  @Get(':id/history')
+  findHistory(@Param('id') id: string) {
+    return this.holidaysService.findHistory(id);
+  }
+
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateHolidayDto: UpdateHolidayDto) {
     return this.holidaysService.update(id, updateHolidayDto);

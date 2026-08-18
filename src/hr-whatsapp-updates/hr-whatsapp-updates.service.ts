@@ -12,6 +12,7 @@ import {
   HR_WHATSAPP_STATUS_OPTIONS,
 } from './constants/hr-whatsapp-update.constants';
 import { buildEmployeeIndex, debugMatchEmployee, fetchNovaOneEmployees, matchEmployee } from './utils/employee-matcher.util';
+import { deleteHrWhatsappS3File } from '../common/aws-services.client';
 
 export interface FindAllHrWhatsappUpdatesFilters {
   date_from?: string;
@@ -250,9 +251,33 @@ export class HrWhatsappUpdatesService {
 
   async remove(id: string) {
     const current = await this.findOne(id);
+    const attachmentKeys = Array.isArray(current.attachments) ? [...current.attachments] : [];
+
     await this.repo.remove(current);
     this.logger.log(`HR WhatsApp update ${id} deleted`);
+
+    // Limpieza de S3 server-side: no depende de que el cliente que llamó al
+    // DELETE haya borrado los adjuntos primero (a diferencia de ICare, donde
+    // esto solo pasa si se borra desde un componente frontend puntual — acá
+    // queda garantizado sin importar quién llame al endpoint). Best-effort:
+    // un fallo acá nunca debe revertir ni bloquear el borrado del registro,
+    // que ya se completó arriba.
+    if (attachmentKeys.length) {
+      await Promise.allSettled(attachmentKeys.map((key) => this.deleteAttachmentFromS3(id, key)));
+    }
+
     return { message: 'Registro eliminado correctamente', id };
+  }
+
+  // Borra vía el recurso dedicado hr-whatsapp-updates/files en
+  // aws_services_backend (ver deleteHrWhatsappS3File). Nunca lanza — solo
+  // loguea, para no afectar al caller (ver comentario en remove()).
+  private async deleteAttachmentFromS3(updateId: string, key: string): Promise<void> {
+    try {
+      await deleteHrWhatsappS3File(updateId, key);
+    } catch (error) {
+      this.logger.error(`No se pudo borrar el adjunto "${key}" en S3: ${error.message}`, error.stack);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────

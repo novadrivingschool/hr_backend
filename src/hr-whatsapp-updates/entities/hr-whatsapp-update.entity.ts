@@ -79,6 +79,14 @@ export class HrWhatsappUpdate {
   @Column({ type: 'varchar', length: 500, nullable: true })
   asana_link: string | null;
 
+  // Adjuntos (imágenes/PDF). NO son bytes ni rutas en disco: son "keys" de
+  // S3 (ej. "hr-whatsapp-updates/<id>/attachments/foto.png"), subidos por el
+  // frontend directo a aws_services_backend — mismo patrón que ICare. Este
+  // backend nunca toca el archivo en sí, solo guarda/lee este array de
+  // strings. Ver WhatsappUpdateForm.vue.
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  attachments: string[];
+
   // Cómo nació el registro: 'manual' (creado desde el form, un caso a la
   // vez) o 'import' (carga masiva de Excel). Es la diferencia clave para el
   // dashboard de analytics: si un registro "nace" ya en status terminal

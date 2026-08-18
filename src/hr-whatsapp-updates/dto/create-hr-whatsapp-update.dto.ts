@@ -1,4 +1,4 @@
-import { IsDateString, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsArray, IsDateString, IsIn, IsNotEmpty, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 import {
   HR_WHATSAPP_ASIGNACION_OPTIONS,
   HR_WHATSAPP_STATUS_OPTIONS,
@@ -103,6 +103,14 @@ export class CreateHrWhatsappUpdateDto {
   @IsOptional()
   @MaxLength(500)
   asana_link?: string;
+
+  // Keys de S3 (no bytes ni URLs) — ver hr-whatsapp-update.entity.ts. El
+  // frontend sube el archivo directo a aws_services_backend y solo manda acá
+  // el string resultante.
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  attachments?: string[];
 
   @IsOptional()
   @IsObject()

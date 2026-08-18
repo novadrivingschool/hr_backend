@@ -150,7 +150,11 @@ export function buildSummaryEmployeeHtml(emp: any): string {
         .nowrap { white-space: nowrap; }
         .amount-green { color: #15803d; font-weight: 700; }
         .amount-red { color: #b91c1c; font-weight: 700; }
-        .holiday-row { background: #faf5ff; }
+        .holiday-row { background: #ede9fe; }
+        .holiday-date-label {
+          margin-top: 2px; font-size: 9px; font-weight: 700;
+          color: #6d28d9; text-transform: uppercase; letter-spacing: 0.3px;
+        }
         .season-row { background: #fffbeb; }
         .no-rate-row { background: #fef2f2; }
         .empty-inline { color: #64748b; font-style: italic; padding: 6px 0; }
@@ -394,13 +398,15 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                       totalArNova     += arNova;
                       totalArVout     += arVout;
                       totalTcwH       += tcwH;
-                      const typeTag = day?.is_holiday
-                        ? '<span class="tag tag-holiday">' + esc(day?.holiday_name || 'Holiday') + '</span>'
-                        : rateTag(day);
+                      // El rate SIEMPRE se muestra (rateTag) — el holiday no lo reemplaza,
+                      // solo se marca aparte (debajo de la fecha) que ese día es holiday.
+                      const holidayLabel = day?.is_holiday
+                        ? '<div class="holiday-date-label">' + esc(day?.holiday_name || 'Holiday') + '</div>'
+                        : '';
                       return `
                         <tr class="${day?.is_holiday ? 'holiday-row' : day?.has_rate === false ? 'no-rate-row' : ''}">
-                          <td class="nowrap">${esc(day?.date)}</td>
-                          <td>${typeTag}</td>
+                          <td class="nowrap">${esc(day?.date)}${holidayLabel}</td>
+                          <td>${rateTag(day)}</td>
                           <td class="text-right nowrap">${novaSchedH > 0 ? fmtHours(novaSchedH) : '—'}</td>
                           <td class="text-right nowrap">${voutSchedH > 0 ? fmtHours(voutSchedH) : '—'}</td>
                           <td class="text-right nowrap">${arNova > 0 ? fmtHours(arNova) : '—'}</td>
@@ -500,13 +506,13 @@ export function buildSummaryEmployeeHtml(emp: any): string {
             <div class="box box-gray mt-12">
               <div class="box-title">🎉 Holidays in Range</div>
               <table>
-                <thead><tr><th>Date</th><th>Name</th><th>Season</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
+                <thead><tr><th>Date</th><th>Name</th><th>Rate</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
                 <tbody>
                   ${holidaysInRange.map((h: any) => `
                     <tr class="holiday-row">
                       <td class="nowrap">${esc(h?.date)}</td>
                       <td>${esc(h?.name || 'Holiday')}</td>
-                      <td>${h?.season ? '<span class="tag tag-season">Seasonal</span>' : '<span class="tag tag-office">Office</span>'}</td>
+                      <td>${rateTag(h)}</td>
                       <td class="text-right">${fmtHoursMaybe(h?.total_hours)}</td>
                       <td class="text-right">${fmtMoneyMaybe(h?.calculated_total)}</td>
                     </tr>

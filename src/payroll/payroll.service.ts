@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, In, Repository } from 'typeorm';
 import { Employee } from '../employees/entities/employee.entity';
@@ -235,6 +235,7 @@ export class PayrollService {
       id: string;
       name: string;
       date: string;
+      authorized_hours?: number | null;
     }>;
     existingScheduleDetails: Array<{
       date: string;
@@ -258,7 +259,10 @@ export class PayrollService {
       (params.existingScheduleDetails || []).map((day) => day.date),
     );
 
-    const defaultHolidayHours = 8;
+    // Red de seguridad: solo aplica a holidays creados antes de que este
+    // campo existiera (authorized_hours = NULL en DB). Desde el frontend el
+    // campo es obligatorio, así que en la práctica esto no debería usarse.
+    const legacyDefaultHolidayHours = 8;
 
     return (params.holidays || [])
       .filter((holiday) => holiday?.date && !existingDates.has(holiday.date))
@@ -272,7 +276,10 @@ export class PayrollService {
         const periodRate = this.roundPayroll(rateInfo?.period_rate ?? 0);
         const internalRatePerHour = Number(rateInfo?.internal_rate_per_hour ?? 0);
         const ratePerHour = this.roundPayroll(rateInfo?.rate_per_hour ?? 0);
-        const payableHours = defaultHolidayHours;
+        const payableHours =
+          holiday.authorized_hours != null
+            ? Number(holiday.authorized_hours)
+            : legacyDefaultHolidayHours;
         const dayPayableAmount = this.roundPayroll(
           payableHours * internalRatePerHour,
         );
@@ -1293,6 +1300,7 @@ export class PayrollService {
         id: holiday.id,
         name: holiday.name,
         date: holiday.date,
+        authorized_hours: holiday.authorized_hours,
       }));
 
       const result = employees.map((emp) => {
@@ -2722,12 +2730,26 @@ export class PayrollService {
     endDate: string,
     ratesToken?: string,
   ): Promise<Record<string, { rate: number; start_date: string; end_date: string | null }[]>> {
-    if (!ratesToken || !employeeNumbers.length) return {};
+    // SIN fallback silencioso: si esto falla, el payroll se paga sobre datos
+    // incompletos ($0 en días con rate real configurado) sin que nadie se
+    // entere — antes se tragaba cualquier error (token vencido, timeout,
+    // NOVA_ONE_API mal configurado) y devolvía {} como si simplemente no
+    // hubiera rate. Ahora se propaga el error real para que el caller (PDF/
+    // records/summary) falle explícitamente en vez de generar un reporte
+    // con montos incorrectos.
+    if (!employeeNumbers.length) return {};
+
+    if (!ratesToken) {
+      throw new BadRequestException(
+        'No hay una sesión de Rates activa (X-Rates-Token faltante) — no se pueden calcular los tramos de rate_office_staff.',
+      );
+    }
 
     const nova = (process.env.NOVA_ONE_API ?? '').trim().replace(/\/+$/, '');
     if (!nova) {
-      console.error('NOVA_ONE_API no está configurado — no se pueden obtener los tramos de rate history.');
-      return {};
+      throw new InternalServerErrorException(
+        'NOVA_ONE_API no está configurado — no se pueden obtener los tramos de rate history.',
+      );
     }
 
     try {
@@ -2742,9 +2764,20 @@ export class PayrollService {
         { headers: { 'X-Rates-Token': ratesToken }, timeout: 10000 },
       );
       return data?.periods ?? {};
-    } catch (e) {
-      console.error('No se pudieron obtener los tramos de rate history de nova-one-backend:', e?.message ?? e);
-      return {};
+    } catch (e: any) {
+      // Reenviamos el status real (401/403 → UnauthorizedException) en vez de
+      // dejar que se propague el error crudo de axios: sin esto, NestJS lo
+      // envuelve como 500 genérico y el frontend nunca detecta que fue el
+      // token de Rates el que venció — no puede reabrir el diálogo de
+      // passphrase (reopenRatesUnlock) porque no ve el 401.
+      const status = e?.response?.status;
+      const message = e?.response?.data?.error
+        || e?.message
+        || 'Error al obtener los tramos de rate history de nova-one-backend';
+      if (status === 401 || status === 403) {
+        throw new UnauthorizedException(message);
+      }
+      throw new InternalServerErrorException(message);
     }
   }
 
@@ -2861,6 +2894,7 @@ export class PayrollService {
       id: h.id,
       name: h.name,
       date: h.date,
+      authorized_hours: h.authorized_hours,
     }));
 
     const masterSchedules = await this.scheduleRepo.find({
@@ -2926,7 +2960,16 @@ export class PayrollService {
       const metrics = this.calculateMasterMetrics(master, start_date, end_date);
       const rawRates = ratesMap.get(employeeNumber) || [];
 
-      const totalAuthorizedHoursForPeriod = Number(metrics.total_authorized_hours ?? 0);
+      // OJO: metrics.total_authorized_hours (calculateMasterMetrics) es un total
+      // CRUDO de Work Shift — no sabe nada de Holidays. Usarlo como denominador
+      // de internalRate desincroniza el $/hr: el numerador (horas realmente
+      // pagadas por día) SÍ queda ajustado por el override de Holiday más abajo,
+      // pero el denominador se quedaría con el total viejo (ej. 152 en vez de
+      // 148 si un holiday bajó un día de 8 a 4 hrs), inflando/desinflando el
+      // rate/hr de TODO el período. Por eso se recalcula el total corregido
+      // (correctedTotalAuthorizedHours, más abajo) ANTES de convertir ningún
+      // rate de período a $/hora, y se usa como único denominador en todo este
+      // método (schedule days, Time Off, Extra Hours, Outage, Holidays in Range).
 
       // Tramos reales de rate_office_staff (employee_rate_history, ya
       // desencriptados por nova-one-backend) que solapan el rango filtrado.
@@ -2968,14 +3011,52 @@ export class PayrollService {
       // para distinguir esto de "el rate configurado es $0").
       const getRateForDay = (date: string): number => findOfficePeriod(date)?.rate ?? 0;
 
+      // Holiday CON Work Shift ese día: las horas configuradas en el Holiday mandan
+      // sobre las horas reales del Work Shift (no se suman, se reemplazan). Sin
+      // authorized_hours configurado en el holiday (campo nullable), se mantiene el
+      // comportamiento anterior — horas del Work Shift. Esto no toca Time Off/Extra
+      // Hours/Outage: son deducciones independientes a nivel de período, siguen
+      // aplicando igual sobre el resultado.
+      const holidayHoursByDate = new Map(
+        holidaysNormalized
+          .filter((h) => h.authorized_hours !== null && h.authorized_hours !== undefined)
+          .map((h) => [h.date, Number(h.authorized_hours)]),
+      );
+
+      // PASE 1 — horas autorizadas por día (Work Shift o el override del
+      // Holiday), sin calcular internalRate todavía. buildHolidayFallbackScheduleDetails
+      // solo necesita las fechas ya cubiertas (detailsWithHolidays) para filtrar
+      // holidays sin schedule ese día, así que se puede construir acá, antes de
+      // saber el total corregido.
+      const holidayFallback = this.buildHolidayFallbackScheduleDetails({
+        holidays: holidaysNormalized,
+        existingScheduleDetails: detailsWithHolidays as any,
+        baseScheduleDetailsForRate: metrics.daily_details || [],
+        rates: rawRates,
+      });
+
+      const mainAuthorizedHoursByDate = new Map(
+        detailsWithHolidays.map((day: any) => {
+          const holidayOverrideHours = day.is_holiday ? holidayHoursByDate.get(day.date) : undefined;
+          return [day.date, round(holidayOverrideHours ?? (day.total_hours ?? 0))];
+        }),
+      );
+
+      const correctedTotalAuthorizedHours = round(
+        Array.from(mainAuthorizedHoursByDate.values()).reduce((s, h) => s + h, 0) +
+        (holidayFallback as any[]).reduce((s, d) => s + round(d.total_hours ?? 0), 0),
+      );
+
+      // PASE 2 — internalRate/day_payable_amount ya con el total corregido.
       let scheduleDetails = detailsWithHolidays.map((day) => {
         const d: any = day;
-        const authorizedHours       = round(d.total_hours ?? 0);
+        const holidayOverrideHours  = d.is_holiday ? holidayHoursByDate.get(d.date) : undefined;
+        const authorizedHours       = mainAuthorizedHoursByDate.get(d.date)!;
         const authorizedLunchHours  = round(d.lunch_hours ?? 0);
         const authorizedOutageHours = round(d.outage_hours ?? 0);
 
-        const internalRate = totalAuthorizedHoursForPeriod > 0
-          ? getRateForDay(d.date) / totalAuthorizedHoursForPeriod
+        const internalRate = correctedTotalAuthorizedHours > 0
+          ? getRateForDay(d.date) / correctedTotalAuthorizedHours
           : 0;
 
         const payableHours = authorizedHours;
@@ -2989,6 +3070,21 @@ export class PayrollService {
         const voutShifts: Array<{ customer: string | null; hours: number }> =
           voutDayHours > 0 ? [{ customer: 'vout', hours: voutDayHours }] : [];
 
+        // Holiday CON horas configuradas: el Daily Log del PDF tampoco debe mostrar
+        // las horas crudas del Work Shift (Nova/Vout Sched.) — deben reflejar el
+        // holiday, igual que ya hace payroll_day.authorized_hours/payable_hours.
+        // holiday.authorized_hours es UN solo número, sin split por compañía: si el
+        // día tenía shift de un solo lado, se le pone el total ahí; si tenía de los
+        // dos a la vez (raro), se deja todo del lado Nova para no inventar un
+        // reparto arbitrario entre las dos compañías.
+        let displayNovaShifts = novaShifts;
+        let displayVoutShifts = voutShifts;
+        if (holidayOverrideHours != null) {
+          const hadVoutOnly = novaShifts.length === 0 && voutShifts.length > 0;
+          displayNovaShifts = hadVoutOnly ? [] : [{ customer: null, hours: Number(holidayOverrideHours) }];
+          displayVoutShifts = hadVoutOnly ? [{ customer: 'vout', hours: Number(holidayOverrideHours) }] : [];
+        }
+
         const tcwDayData = (tcwDaily.by_employee as any)?.[employeeNumber]?.[d.date];
         const arNovaDayData = (arDaily.one_by_employee as any)?.[employeeNumber]?.[d.date];
         const arVoutDayData = (arDaily.vout_by_employee as any)?.[employeeNumber]?.[d.date];
@@ -2996,10 +3092,11 @@ export class PayrollService {
         return {
           date: d.date,
           is_holiday: d.is_holiday ?? false,
+          holiday_name: d.holiday_name ?? null,
           has_rate: hasRateForDay(d.date),
           rate_period: periodInfoForDay(d.date),
-          nova_shifts: novaShifts,
-          vout_shifts: voutShifts,
+          nova_shifts: displayNovaShifts,
+          vout_shifts: displayVoutShifts,
           tcw_hours: round(Number(tcwDayData?.worked_hours ?? 0)),
           ar_nova_hours: round(Number(arNovaDayData?.worked_hours ?? 0)),
           ar_vout_hours: round(Number(arVoutDayData?.worked_hours ?? 0)),
@@ -3014,22 +3111,17 @@ export class PayrollService {
         };
       });
 
-      const holidayFallback = this.buildHolidayFallbackScheduleDetails({
-        holidays: holidaysNormalized,
-        existingScheduleDetails: scheduleDetails as any,
-        baseScheduleDetailsForRate: metrics.daily_details || [],
-        rates: rawRates,
-      });
-
-      // holidayFallback days también necesitan day_payable_amount
+      // holidayFallback days también necesitan day_payable_amount (holidayFallback
+      // ya se construyó arriba, en el Pase 1, para calcular correctedTotalAuthorizedHours)
       const holidayFallbackMapped = (holidayFallback as any[]).map((d) => {
-        const internalRate = totalAuthorizedHoursForPeriod > 0
-          ? getRateForDay(d.date) / totalAuthorizedHoursForPeriod
+        const internalRate = correctedTotalAuthorizedHours > 0
+          ? getRateForDay(d.date) / correctedTotalAuthorizedHours
           : 0;
         const authorizedHours = round(d.total_hours ?? 0);
         return {
           date: d.date,
           is_holiday: true,
+          holiday_name: d.holiday_name ?? null,
           has_rate: hasRateForDay(d.date),
           rate_period: periodInfoForDay(d.date),
           nova_shifts: [] as Array<{ customer: string | null; hours: number }>,
@@ -3083,22 +3175,24 @@ export class PayrollService {
       const payableHoursSource = tcwWork > 0 && tcwWork < adjustedHours ? 'tcw' : 'authorized_hours_with_adjustments';
 
       // days_amount: suma de day_payable_amount (a rate por hora / día, respeta tramos de
-      // employee_rate_history), escalada por payable_hours / authWork para reflejar el
-      // techo de payable_hours.
-      const daysAmountUncapped = round(
+      // employee_rate_history) — BRUTO, sin escalar por payable_hours/authWork.
+      //
+      // Antes esto se escalaba por (payableHours / authWork), que ya trae metido Time
+      // Off y Outage (adjustedHours = authWork − timeOffHours + extraHours − authOutage).
+      // Eso los restaba DOS VECES: una acá (encogiendo daysAmount) y otra en
+      // totalPayroll, que además suma timeOffAmount/outageAmount como línea propia.
+      // Time Off y Outage ya tienen su línea independiente — daysAmount (y el desglose
+      // por tramo de rate) debe ser el bruto de Work Shift + Holiday, sin tocar eso.
+      // payable_hours/payableHoursSource se siguen calculando y mostrando (Hours
+      // Summary) como referencia, pero ya no escalan el dinero.
+      const daysAmount = round(
         scheduleDetails.reduce((s, d) => s + d.payroll_day.day_payable_amount, 0),
       );
-      const workShiftScale = authWork > 0 ? (payableHours / authWork) : 1;
-      const daysAmount = round(daysAmountUncapped * workShiftScale);
 
-      // Desglose real de cuánto se ganó (y cuántas horas payable) en cada tramo
-      // de rate_office_staff dentro del rango filtrado. Se aplica el MISMO
-      // factor de escala que Work Shift Amount (payable_hours / authWork) tanto
-      // al monto como a las horas, para que la suma de los tramos mostrados en
-      // el PDF cuadre con lo realmente pagado (daysAmount / payableHours), no
-      // con el bruto antes del techo de payable_hours. También registra qué
-      // días quedaron sin ningún tramo que los cubra (hueco en el historial,
-      // se pagan $0).
+      // Desglose real de cuánto se ganó (y cuántas horas) en cada tramo de
+      // rate_office_staff dentro del rango filtrado — bruto, mismo criterio que
+      // daysAmount de arriba. También registra qué días quedaron sin ningún tramo
+      // que los cubra (hueco en el historial, se pagan $0).
       const officePeriodBreakdown = officePeriods.map((p) => ({
         start_date: p.start_date,
         end_date: p.end_date,
@@ -3124,14 +3218,14 @@ export class PayrollService {
         }
       }
       for (const bucket of officePeriodBreakdown) {
-        bucket.amount_earned = round(bucket.amount_earned * workShiftScale);
-        bucket.hours_paid = round(bucket.hours_paid * workShiftScale);
+        bucket.amount_earned = round(bucket.amount_earned);
+        bucket.hours_paid = round(bucket.hours_paid);
       }
 
       // time_off y extra_hours: calculamos con getRateForDay directamente (no rawRates)
       const enrichedTimeOff = (eventsByEmployee[employeeNumber]?.timeOffDetails ?? []).map((detail) => {
-        const internalRate = totalAuthorizedHoursForPeriod > 0
-          ? getRateForDay(detail.date) / totalAuthorizedHoursForPeriod
+        const internalRate = correctedTotalAuthorizedHours > 0
+          ? getRateForDay(detail.date) / correctedTotalAuthorizedHours
           : 0;
         const deductedHours = detail.deducted_hours ?? detail.total_hours;
         return {
@@ -3144,8 +3238,8 @@ export class PayrollService {
       });
 
       const enrichedExtraHours = (eventsByEmployee[employeeNumber]?.extraHoursDetails ?? []).map((detail) => {
-        const internalRate = totalAuthorizedHoursForPeriod > 0
-          ? getRateForDay(detail.date) / totalAuthorizedHoursForPeriod
+        const internalRate = correctedTotalAuthorizedHours > 0
+          ? getRateForDay(detail.date) / correctedTotalAuthorizedHours
           : 0;
         return {
           ...detail,
@@ -3159,8 +3253,8 @@ export class PayrollService {
       // Outage: deducción independiente, mismo criterio que Time Off — un registro por
       // evento (con reason), enriquecido con el rate del día.
       const enrichedOutage = (metrics.outage_details ?? []).map((detail: any) => {
-        const internalRate = totalAuthorizedHoursForPeriod > 0
-          ? getRateForDay(detail.date) / totalAuthorizedHoursForPeriod
+        const internalRate = correctedTotalAuthorizedHours > 0
+          ? getRateForDay(detail.date) / correctedTotalAuthorizedHours
           : 0;
         return {
           ...detail,
@@ -3214,7 +3308,33 @@ export class PayrollService {
           total_amount: round(advancedByEmployee[employeeNumber]?.total_advanced ?? 0),
           details: advancedByEmployee[employeeNumber]?.details ?? [],
         },
-        holidays_in_range: this.enrichHolidaysWithRate(holidaysNormalized, rawRates, metrics.daily_details || []),
+        // NO se usa el enrichHolidaysWithRate() compartido con getPayrollData: ese
+        // saca las horas de metrics.daily_details (Work Shift crudo, sin el override
+        // de holidayHoursByDate de arriba) y el rate de rawRates (ACCOUNTING_API,
+        // un sistema distinto al que usa el resto de este reporte). Acá se arma local
+        // con exactamente lo mismo que ya se pagó en scheduleDetails (holiday override
+        // incluido) y el mismo sistema de rate que Daily Log/Valid Rates
+        // (employee_rate_history vía getRateForDay/hasRateForDay/periodInfoForDay),
+        // para que "Holidays in Range" nunca muestre un número distinto al realmente
+        // pagado.
+        holidays_in_range: holidaysNormalized.map((holiday) => {
+          const matchedDay = scheduleDetails.find((d) => d.date === holiday.date);
+          const hours = holidayHoursByDate.has(holiday.date)
+            ? holidayHoursByDate.get(holiday.date)!
+            : round(matchedDay?.payroll_day?.authorized_hours ?? 0);
+          const internalRate = correctedTotalAuthorizedHours > 0
+            ? getRateForDay(holiday.date) / correctedTotalAuthorizedHours
+            : 0;
+          return {
+            id: holiday.id,
+            name: holiday.name,
+            date: holiday.date,
+            total_hours: hours,
+            has_rate: hasRateForDay(holiday.date),
+            rate_period: periodInfoForDay(holiday.date),
+            calculated_total: round(hours * internalRate),
+          };
+        }),
         compensation_summary: {
           in_favor: compensationMap[employeeNumber]?.in_favor ?? [],
           to_deduct: compensationMap[employeeNumber]?.to_deduct ?? [],

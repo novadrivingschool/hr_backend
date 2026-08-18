@@ -26,3 +26,18 @@ export async function deleteLoaS3File(loaId: string, key: string): Promise<void>
     timeout: 7000,
   });
 }
+
+/**
+ * Borra un adjunto de HR WhatsApp Updates, vía el recurso dedicado
+ * `hr-whatsapp-updates/files` (ver HrWhatsappFilesModule en
+ * aws_services_backend) — NO el endpoint genérico `/s3/delete/no-employee`.
+ * Ese endpoint valida server-side que `key` realmente pertenezca a
+ * `updateId` antes de borrar (ver isKeyOwnedByUpdate), así que un updateId
+ * incorrecto o una key ajena nunca borran el archivo de otro registro.
+ */
+export async function deleteHrWhatsappS3File(updateId: string, key: string): Promise<void> {
+  await axios.delete(`${baseUrl()}/hr-whatsapp-updates/files`, {
+    params: { updateId, key },
+    timeout: 7000,
+  });
+}
