@@ -4,8 +4,13 @@ import { Between, Repository } from 'typeorm';
 import * as ExcelJS from 'exceljs';
 import { HrWhatsappUpdate } from './entities/hr-whatsapp-update.entity';
 import { HrWhatsappUpdateStatusHistory } from './entities/hr-whatsapp-update-status-history.entity';
+import { HrWhatsappUpdateComment } from './entities/hr-whatsapp-update-comment.entity';
 import { ChangedByDto, CreateHrWhatsappUpdateDto } from './dto/create-hr-whatsapp-update.dto';
 import { UpdateHrWhatsappUpdateDto } from './dto/update-hr-whatsapp-update.dto';
+import {
+  CreateHrWhatsappUpdateCommentDto,
+  HrWhatsappCommentAttachmentDto,
+} from './dto/create-hr-whatsapp-update-comment.dto';
 import {
   HR_WHATSAPP_ASIGNACION_OPTIONS,
   HR_WHATSAPP_DEFAULT_STATUS,
@@ -80,6 +85,8 @@ export class HrWhatsappUpdatesService {
     private readonly repo: Repository<HrWhatsappUpdate>,
     @InjectRepository(HrWhatsappUpdateStatusHistory)
     private readonly historyRepo: Repository<HrWhatsappUpdateStatusHistory>,
+    @InjectRepository(HrWhatsappUpdateComment)
+    private readonly commentRepo: Repository<HrWhatsappUpdateComment>,
   ) {}
 
   // Inserta una fila de historial. Nunca lanza — un fallo acá no debe tumbar
@@ -253,6 +260,17 @@ export class HrWhatsappUpdatesService {
     const current = await this.findOne(id);
     const attachmentKeys = Array.isArray(current.attachments) ? [...current.attachments] : [];
 
+    // Los adjuntos de comentarios también hay que limpiarlos en S3 — la fila
+    // de hr_whatsapp_update_comments se borra sola por CASCADE al borrar el
+    // padre, pero eso no toca el bucket. Hay que juntar sus keys ANTES de
+    // borrar (después de repo.remove() ya no queda registro que consultar).
+    const comments = await this.commentRepo.find({ where: { hr_whatsapp_update_id: id } });
+    for (const comment of comments) {
+      if (Array.isArray(comment.attachments)) {
+        attachmentKeys.push(...comment.attachments.map((a) => a.key));
+      }
+    }
+
     await this.repo.remove(current);
     this.logger.log(`HR WhatsApp update ${id} deleted`);
 
@@ -267,6 +285,71 @@ export class HrWhatsappUpdatesService {
     }
 
     return { message: 'Registro eliminado correctamente', id };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  // COMENTARIOS
+  // Historial de comentarios (texto + adjuntos) de un registro. Se puede
+  // usar tanto para el comentario inicial (justo después de crear el
+  // registro, desde WhatsappUpdateForm) como para comentarios de
+  // seguimiento posteriores.
+  // ─────────────────────────────────────────────────────────────────────
+
+  async listComments(updateId: string) {
+    await this.findOne(updateId); // 404 si el registro no existe
+    return this.commentRepo.find({
+      where: { hr_whatsapp_update_id: updateId },
+      order: { created_at: 'ASC' },
+    });
+  }
+
+  async addComment(updateId: string, dto: CreateHrWhatsappUpdateCommentDto) {
+    await this.findOne(updateId); // 404 si el registro no existe
+
+    const body = dto.body?.trim() || null;
+    const attachments = this.normalizeCommentAttachments(dto.attachments, updateId);
+
+    if (!body && !attachments.length) {
+      throw new BadRequestException('Un comentario necesita texto, un archivo, o ambos');
+    }
+
+    const comment = this.commentRepo.create({
+      hr_whatsapp_update_id: updateId,
+      body,
+      attachments,
+      created_by_name: dto.created_by
+        ? `${dto.created_by.name || ''} ${dto.created_by.last_name || ''}`.trim() || null
+        : null,
+      created_by_employee_number: dto.created_by?.employee_number ?? null,
+    });
+
+    const saved = await this.commentRepo.save(comment);
+    this.logger.log(`Comentario agregado a HR WhatsApp Update ${updateId}: ${saved.id}`);
+    return saved;
+  }
+
+  // Nunca confía a ciegas en la key que manda el cliente: valida que
+  // pertenezca a ESTE registro (mismo prefijo que arma
+  // hr-whatsapp-key.util.ts en aws_services_backend), para que un comentario
+  // no pueda "engancharse" al adjunto de otro registro por su key.
+  private normalizeCommentAttachments(
+    attachments: HrWhatsappCommentAttachmentDto[] | undefined,
+    updateId: string,
+  ) {
+    if (!attachments?.length) return [];
+    const expectedPrefix = `hr-whatsapp-updates/${updateId}/`;
+    return attachments.map((attachment) => {
+      const key = String(attachment.key || '').trim();
+      if (!key.startsWith(expectedPrefix) || key.includes('..') || key.includes('//')) {
+        throw new BadRequestException('Un adjunto no pertenece a este registro');
+      }
+      return {
+        key,
+        name: attachment.name,
+        mime_type: attachment.mime_type,
+        size: attachment.size,
+      };
+    });
   }
 
   // Borra vía el recurso dedicado hr-whatsapp-updates/files en

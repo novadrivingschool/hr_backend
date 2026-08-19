@@ -162,6 +162,7 @@ dotenv.config();
     DanubenetHistoryModule,
     HrWhatsappUpdatesModule,
     LeaveOfAbsenceModule,
+    TimesheetRecordsModule,
   ],
 })
 export class AppModule { }

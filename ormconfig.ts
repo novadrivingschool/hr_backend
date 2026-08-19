@@ -48,6 +48,7 @@ import { LeaveOfAbsence } from 'src/leave_of_absence/entities/leave-of-absence.e
 import { LoaSubtaskTemplate } from 'src/leave_of_absence/entities/loa-subtask-template.entity';
 import { HrWhatsappUpdate } from 'src/hr-whatsapp-updates/entities/hr-whatsapp-update.entity';
 import { HrWhatsappUpdateStatusHistory } from 'src/hr-whatsapp-updates/entities/hr-whatsapp-update-status-history.entity';
+import { HrWhatsappUpdateComment } from 'src/hr-whatsapp-updates/entities/hr-whatsapp-update-comment.entity';
 
 dotenv.config();
 
@@ -115,6 +116,7 @@ export const AppDataSource = new DataSource({
     Absence,
     HrWhatsappUpdate,
     HrWhatsappUpdateStatusHistory,
+    HrWhatsappUpdateComment,
     LeaveOfAbsence,
     LoaSubtaskTemplate,
   ],

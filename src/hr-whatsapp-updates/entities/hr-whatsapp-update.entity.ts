@@ -8,6 +8,7 @@ import {
   Index,
 } from 'typeorm';
 import { HrWhatsappUpdateStatusHistory } from './hr-whatsapp-update-status-history.entity';
+import { HrWhatsappUpdateComment } from './hr-whatsapp-update-comment.entity';
 
 @Entity('hr_whatsapp_updates')
 @Index(['entry_date'])
@@ -116,4 +117,10 @@ export class HrWhatsappUpdate {
   // no en los listados normales, para no pagar el join en cada GET.
   @OneToMany(() => HrWhatsappUpdateStatusHistory, (h) => h.update)
   statusHistory: HrWhatsappUpdateStatusHistory[];
+
+  // Historial de comentarios (texto + adjuntos) — igual que statusHistory,
+  // solo se carga explícitamente vía GET /hr-whatsapp-updates/:id/comments,
+  // nunca en el listado principal.
+  @OneToMany(() => HrWhatsappUpdateComment, (c) => c.update)
+  comments: HrWhatsappUpdateComment[];
 }

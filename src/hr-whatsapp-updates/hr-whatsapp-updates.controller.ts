@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { HrWhatsappUpdatesService } from './hr-whatsapp-updates.service';
 import { CreateHrWhatsappUpdateDto } from './dto/create-hr-whatsapp-update.dto';
 import { UpdateHrWhatsappUpdateDto } from './dto/update-hr-whatsapp-update.dto';
+import { CreateHrWhatsappUpdateCommentDto } from './dto/create-hr-whatsapp-update-comment.dto';
 import {
   HR_WHATSAPP_ASIGNACION_OPTIONS,
   HR_WHATSAPP_STATUS_OPTIONS,
@@ -99,6 +100,16 @@ export class HrWhatsappUpdatesController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.service.remove(id);
+  }
+
+  @Get(':id/comments')
+  listComments(@Param('id') id: string) {
+    return this.service.listComments(id);
+  }
+
+  @Post(':id/comments')
+  addComment(@Param('id') id: string, @Body() dto: CreateHrWhatsappUpdateCommentDto) {
+    return this.service.addComment(id, dto);
   }
 
   @Post('upload')
