@@ -55,7 +55,7 @@ export class HrWhatsappUpdatesService {
   // entry_date + Name (normalizado, sin importar orden/acentos/mayúsculas)
   // + Question (normalizado). Si coincide, se ACTUALIZA el registro
   // existente en vez de crear uno duplicado — recalculando Asignación,
-  // Status, Observations, Seguimiento, Asana Link Y el matching de
+  // Status, Observations, Asana Link Y el matching de
   // Name/Responsable con el índice de empleados actual (así una mejora al
   // matcher corrige registros ya importados con solo re-subir el Excel).
   private static dedupeNameKey(value: string | null | undefined): string {
@@ -367,7 +367,7 @@ export class HrWhatsappUpdatesService {
   // IMPORTACIÓN MASIVA DESDE EXCEL
   // Replica el formato de la hoja "HR Whatsapp Updates" (Google Sheets):
   //  Date | Name | Question/ concern | Responsable | Asignación | Status |
-  //  Observations | Seguimiento | Asana Link
+  //  Observations | Asana Link
   //
   // "Name" y "Responsable" vienen como texto plano en el Excel (a veces solo
   // un nombre, a veces nombre+apellido en cualquier orden). Se matchean
@@ -422,7 +422,6 @@ export class HrWhatsappUpdatesService {
     const colAsignacion = col(['asignacion']);
     const colStatus = col(['status']);
     const colObservations = col(['observations']);
-    const colSeguimiento = col(['seguimiento']);
     const colAsanaLink = col(['asana link', 'asana_link']);
 
     if (!colDate || !colName || !colQuestion) {
@@ -568,7 +567,6 @@ export class HrWhatsappUpdatesService {
           asignacion,
           status,
           observations: getCellValue(row, colObservations) || null,
-          seguimiento: getCellValue(row, colSeguimiento) || null,
           asana_link: getCellValue(row, colAsanaLink) || null,
         },
       });

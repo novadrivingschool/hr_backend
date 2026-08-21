@@ -1441,6 +1441,19 @@ export class ICareService {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
+    // 2026-08-19 workflow change ("Coaching Session"): formalizes as a backend
+    // guard what was previously only enforced by the frontend UI (MyICare.vue
+    // only showed the commit action once status was 'in_progress' and
+    // record.justified was true) — the coordinator's part (Justify) must
+    // happen before a commit can be recorded, whoever ends up submitting it.
+    // Only checked when actually setting committed=true; un-committing
+    // (dto.committed === false) is left unguarded as before.
+    if (dto.committed && (record.status !== ICareStatus.IN_PROGRESS || !record.justified)) {
+      throw new BadRequestException(
+        'Record must be justified and In Progress before a commitment can be recorded',
+      );
+    }
+
     const now = moment().tz('America/Chicago');
     record.committed = dto.committed;
 

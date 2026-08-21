@@ -8,7 +8,43 @@ export const LOA_DEPARTMENT_LABELS: Record<LoaDepartmentEnum, string> = {
     [LoaDepartmentEnum.Education]: 'Education',
     [LoaDepartmentEnum.Calendar]: 'Calendar',
     [LoaDepartmentEnum.Fleet]: 'Fleet',
+    [LoaDepartmentEnum.Accounting]: 'Accounting',
 };
+
+/**
+ * Roles que atienden Education desde el split loa-education-teacher /
+ * loa-education-instructor (reemplaza el rol único 'loa-education', que ya
+ * no existe). No se modeló como parte de LoaDepartmentEnum porque Education
+ * sigue siendo UN solo depto/bitácora (una sola key en department_logs) —
+ * lo que cambia es el ROL que la atiende, no el depto en sí.
+ */
+export const LOA_EDUCATION_TEACHER_ROLE = 'loa-education-teacher';
+export const LOA_EDUCATION_INSTRUCTOR_ROLE = 'loa-education-instructor';
+
+/**
+ * Decide qué rol de Education le corresponde a ESTE LOA según el
+ * multi_type_of_job del empleado (snapshot en employee_data — ver
+ * LoaEmployeeSnapshot). Match por substring case-insensitive, no por
+ * catálogo cerrado: multi_type_of_job es un CRUD libre en Employees
+ * (type_of_job), no un enum fijo, así que no hay lista exhaustiva contra la
+ * que matchear exacto.
+ *   - Si algún valor contiene "teacher" (ej. "CR Teacher") → SOLO teacher.
+ *     "Teacher" gana aunque el empleado también tenga un valor con
+ *     "instructor" (ej. "BTW Instructor & CR" + "CR Teacher" → solo
+ *     loa-education-teacher recibe el correo — caso confirmado por HR).
+ *   - Si no hay "teacher" pero algún valor contiene "instructor" (ej. "BTW
+ *     Instructor & CR") → SOLO loa-education-instructor.
+ *   - Si no matchea ninguno (el empleado no tiene type_of_job relacionado a
+ *     educación — ej. un Sales rep de LOA) → devuelve AMBOS roles como
+ *     fallback seguro, para no dejar la bitácora de Education de este LOA
+ *     sin nadie notificado ni con acceso de escritura.
+ */
+export function resolveEducationRoles(multiTypeOfJob: string[] | undefined | null): string[] {
+    const values = (multiTypeOfJob || []).map((v) => (v || '').toLowerCase());
+    if (values.some((v) => v.includes('teacher'))) return [LOA_EDUCATION_TEACHER_ROLE];
+    if (values.some((v) => v.includes('instructor'))) return [LOA_EDUCATION_INSTRUCTOR_ROLE];
+    return [LOA_EDUCATION_TEACHER_ROLE, LOA_EDUCATION_INSTRUCTOR_ROLE];
+}
 
 /**
  * Contenido de los correos de creación (loa_created_department) — describe en
@@ -35,6 +71,10 @@ export const LOA_DEPARTMENT_DISABLE_ACTIONS: Record<LoaDepartmentEnum, string[]>
     ],
     [LoaDepartmentEnum.Fleet]: [
         'Reassign or release any vehicle currently checked out to this employee.',
+    ],
+    [LoaDepartmentEnum.Accounting]: [
+        'Pause payroll runs and reimbursement/expense processing for this employee during the leave.',
+        'Flag any pending invoices, deposits or petty cash tied to this employee.',
     ],
 };
 

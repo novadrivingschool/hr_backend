@@ -5814,4 +5814,495 @@ export class PayrollService {
     const buf = await wb.xlsx.writeBuffer();
     return Buffer.from(buf);
   }
+
+  // ====================================================================
+  // Clock Comparison Detail — variante sobre `payroll_timesheet_records`
+  // ====================================================================
+  //
+  // getClockComparisonDetail()/exportClockComparisonDetailExcel() (arriba)
+  // leen de `payroll_timesheets` (Timesheet), que desde que ese import
+  // consolida cada día en UNA sola fila (time_in más temprano, time_out
+  // más tardío, lunch inventado solo del 1er/2do turno) ya no sirve para
+  // este análisis: esta feature necesita los turnos reales del día para
+  // reconstruir go-lunch / back-lunch por período.
+  //
+  // Estas nuevas funciones hacen exactamente el mismo análisis (mismo
+  // fan-out Activity ONE + VOUT, mismo criterio FINE/ERROR) pero leyendo
+  // de `payroll_timesheet_records` (TimesheetRecord), la tabla que
+  // reutilizamos para "In/Out Auditoría" y que guarda cada línea del CSV
+  // tal cual, sin consolidar.
+  // ====================================================================
+
+  private buildClockComparisonDetailRows(
+    tcwRows: Array<{
+      employee: string;
+      day_date: string;
+      time_in: string | null;
+      time_out: string | null;
+      hours: number;
+      paid_break: number;
+      unpaid_break: number;
+      total_hours: number;
+    }>,
+    oneIndex: Map<string, Map<string, any[]>>,
+    voutIndex: Map<string, Map<string, any[]>>,
+  ) {
+    const toHHMMSS = (value: string | null | undefined): string | null => {
+      if (!value) return null;
+      const raw = String(value).trim();
+      if (!raw || raw === '0' || raw.toLowerCase() === 'null') return null;
+      if (raw.toLowerCase().includes('no clock') || raw.toLowerCase().includes('no lunch')) return null;
+
+      const m24s = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+      if (m24s) return `${m24s[1].padStart(2, '0')}:${m24s[2]}:${m24s[3]}`;
+
+      const m24 = raw.match(/^(\d{1,2}):(\d{2})$/);
+      if (m24) return `${m24[1].padStart(2, '0')}:${m24[2]}:00`;
+
+      const m12 = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
+      if (m12) {
+        let h = parseInt(m12[1]);
+        const min = m12[2];
+        const sec = m12[3] ?? '00';
+        const mer = m12[4].toUpperCase();
+        if (mer === 'PM' && h !== 12) h += 12;
+        if (mer === 'AM' && h === 12) h = 0;
+        return `${h.toString().padStart(2, '0')}:${min}:${sec}`;
+      }
+
+      return null;
+    };
+
+    const diffHours = (inTime: string | null, outTime: string | null): number => {
+      const inMin = this.timeToMinutes(inTime);
+      const outMin = this.timeToMinutes(outTime);
+      if (inMin === null || outMin === null) return 0;
+      let diff = outMin - inMin;
+      if (diff < 0) diff += 24 * 60;
+      return this.round2(diff / 60);
+    };
+
+    const minutesDiff = (a: string | null, b: string | null): number | null => {
+      const aMin = this.timeToMinutes(a);
+      const bMin = this.timeToMinutes(b);
+      if (aMin === null || bMin === null) return null;
+      return Math.abs(aMin - bMin);
+    };
+
+    const tcwGrouped = new Map<string, {
+      employee: string;
+      date: string;
+      intervals: typeof tcwRows;
+    }>();
+
+    for (const row of tcwRows) {
+      const date = String(row.day_date).slice(0, 10);
+      const key = `${row.employee}__${date}`;
+      if (!tcwGrouped.has(key)) {
+        tcwGrouped.set(key, { employee: row.employee, date, intervals: [] });
+      }
+      tcwGrouped.get(key)!.intervals.push(row);
+    }
+
+    type DetailRow = {
+      tcw_employee: string;
+      tcw_date: string;
+      tcw_time_in: string | null;
+      tcw_time_out: string | null;
+      tcw_hours: number;
+      tcw_paid_break: number;
+      tcw_unpaid_break: number;
+      tcw_total_hours: number;
+      activity_in_event: string | null;
+      activity_out_event: string | null;
+      activity_in_time: string | null;
+      activity_out_time: string | null;
+      activity_worked_hours: number;
+      activity_source: string | null;
+      difference_hours: number;
+      status: 'fine' | 'error';
+    };
+
+    const result: DetailRow[] = [];
+
+    for (const [, group] of tcwGrouped) {
+      const { employee, date, intervals } = group;
+
+      intervals.sort((a, b) => {
+        const aMin = this.timeToMinutes(toHHMMSS(a.time_in));
+        const bMin = this.timeToMinutes(toHHMMSS(b.time_in));
+        if (aMin === null && bMin === null) return 0;
+        if (aMin === null) return 1;
+        if (bMin === null) return -1;
+        return aMin - bMin;
+      });
+
+      const voutRows = this.findActivityRowsDetail(voutIndex, employee, date);
+      const oneRows = this.findActivityRowsDetail(oneIndex, employee, date);
+      const activityRows = voutRows.length ? voutRows : oneRows;
+      const activitySource = voutRows.length
+        ? 'Activity VOUT'
+        : oneRows.length
+          ? 'Activity ONE'
+          : null;
+
+      const actClockIn = toHHMMSS(
+        activityRows[0]?.clock_in ?? activityRows[0]?.time_in ?? null,
+      );
+      const actLunchIn = toHHMMSS(
+        activityRows[0]?.lunch_in ?? activityRows[0]?.lunch_start ?? null,
+      );
+      const actLunchOut = toHHMMSS(
+        activityRows[0]?.lunch_out ?? activityRows[0]?.lunch_end ?? null,
+      );
+      const actClockOut = toHHMMSS(
+        activityRows[activityRows.length - 1]?.clock_out ??
+        activityRows[activityRows.length - 1]?.time_out ??
+        null,
+      );
+
+      const tcwTotalHours = this.round2(Number(intervals[0]?.total_hours ?? 0));
+
+      let lunchOutIntervalIndex: number | null = null;
+      let lunchInIntervalIndex: number | null = null;
+
+      if (actLunchIn && actLunchOut) {
+        for (let i = 0; i < intervals.length; i++) {
+          const tcwOut = toHHMMSS(intervals[i].time_out);
+          const tcwIn = toHHMMSS(intervals[i].time_in);
+
+          const diffOut = minutesDiff(tcwOut, actLunchIn);
+          if (diffOut !== null && diffOut <= 5 && lunchOutIntervalIndex === null) {
+            lunchOutIntervalIndex = i;
+          }
+
+          const diffIn = minutesDiff(tcwIn, actLunchOut);
+          if (diffIn !== null && diffIn <= 5 && lunchInIntervalIndex === null) {
+            lunchInIntervalIndex = i;
+          }
+        }
+      }
+
+      const lastIntervalIndex = intervals.length - 1;
+
+      for (let i = 0; i < intervals.length; i++) {
+        const interval = intervals[i];
+        const tcwIn = toHHMMSS(interval.time_in);
+        const tcwOut = toHHMMSS(interval.time_out);
+        const tcwWorked = Number(interval.hours ?? 0);
+
+        let actInEvent: string | null = null;
+        let actOutEvent: string | null = null;
+        let actInTime: string | null = null;
+        let actOutTime: string | null = null;
+
+        // El label del evento (clock in / go lunch / back lunch / clock out)
+        // solo se pinta si REALMENTE hay una hora del Activity Report detrás.
+        // Si no hay match (actXxx === null), no hubo ningún registro en el
+        // Activity Report para ese punto — no se debe inventar el evento.
+        if (i === 0) {
+          actInTime = actClockIn;
+          actInEvent = actInTime ? 'clock in' : null;
+          if (lunchOutIntervalIndex === 0) {
+            actOutTime = actLunchIn;
+            actOutEvent = actOutTime ? 'go lunch' : null;
+          } else if (i === lastIntervalIndex) {
+            actOutTime = actClockOut;
+            actOutEvent = actOutTime ? 'clock out' : null;
+          } else {
+            actOutEvent = null;
+            actOutTime = null;
+          }
+        } else if (i === lunchInIntervalIndex) {
+          actInTime = actLunchOut;
+          actInEvent = actInTime ? 'back lunch' : null;
+          if (lunchOutIntervalIndex === i) {
+            actOutTime = actLunchIn;
+            actOutEvent = actOutTime ? 'go lunch' : null;
+          } else if (i === lastIntervalIndex) {
+            actOutTime = actClockOut;
+            actOutEvent = actOutTime ? 'clock out' : null;
+          } else {
+            actOutEvent = null;
+            actOutTime = null;
+          }
+        } else if (i === lastIntervalIndex) {
+          actInEvent = null;
+          actInTime = null;
+          actOutTime = actClockOut;
+          actOutEvent = actOutTime ? 'clock out' : null;
+        } else {
+          actInEvent = null;
+          actOutEvent = null;
+          actInTime = null;
+          actOutTime = null;
+        }
+
+        const actWorked = diffHours(actInTime, actOutTime);
+        const differenceHours = this.round2(tcwWorked - actWorked);
+        const hasActivity = actInTime !== null || actOutTime !== null;
+        const status: 'fine' | 'error' =
+          !hasActivity || Math.abs(differenceHours) > 0.08 ? 'error' : 'fine';
+
+        result.push({
+          tcw_employee: employee,
+          tcw_date: date,
+          tcw_time_in: tcwIn,
+          tcw_time_out: tcwOut,
+          tcw_hours: tcwWorked,
+          tcw_paid_break: this.round2(Number(interval.paid_break ?? 0)),
+          tcw_unpaid_break: this.round2(Number(interval.unpaid_break ?? 0)),
+          tcw_total_hours: tcwTotalHours,
+          activity_in_event: actInEvent,
+          activity_out_event: actOutEvent,
+          activity_in_time: actInTime,
+          activity_out_time: actOutTime,
+          activity_worked_hours: actWorked,
+          activity_source: activitySource,
+          difference_hours: differenceHours,
+          status,
+        });
+      }
+    }
+
+    result.sort((a, b) => {
+      if (a.tcw_date === b.tcw_date) {
+        if (a.tcw_employee === b.tcw_employee) {
+          const aMin = this.timeToMinutes(a.tcw_time_in);
+          const bMin = this.timeToMinutes(b.tcw_time_in);
+          if (aMin === null && bMin === null) return 0;
+          if (aMin === null) return 1;
+          if (bMin === null) return -1;
+          return aMin - bMin;
+        }
+        return a.tcw_employee.localeCompare(b.tcw_employee);
+      }
+      return a.tcw_date.localeCompare(b.tcw_date);
+    });
+
+    return result;
+  }
+
+  async getClockComparisonDetailRecords(
+    start_date: string,
+    end_date: string,
+    employees?: string[],
+  ) {
+    const tcwRows = await this.timesheetRecordRepository
+      .createQueryBuilder('t')
+      .where('t.day_date >= :start_date::date', { start_date })
+      .andWhere('t.day_date <= :end_date::date', { end_date })
+      .orderBy('t.day_date', 'ASC')
+      .addOrderBy('t.employee', 'ASC')
+      .getMany();
+
+    // Búsqueda por texto parcial (igual que el filtro "employee" de la tabla
+    // cruda, que hace LIKE %texto%): esto es un search box, no un cruce
+    // TCW-vs-Activity, así que NO se usa matchScoreDetail aquí (esa función
+    // exige tokens completos y rompe la búsqueda por nombre parcial).
+    const filteredTcwRows = employees?.length
+      ? tcwRows.filter(row => {
+        const name = row.employee.toLowerCase();
+        return employees.some(emp => name.includes(String(emp).toLowerCase().trim()));
+      })
+      : tcwRows;
+
+    // Sin filtro de empleado, esto compara CADA registro TCW del rango contra
+    // TODOS los empleados de Activity Report (costo O(TCW x Activity), y el
+    // resultado se manda entero al front sin paginar). En un rango amplio sin
+    // filtrar esto puede tardar minutos y colgar la pestaña — mejor cortar
+    // con un mensaje claro que dejar que el usuario tenga que cerrarla.
+    const MAX_UNFILTERED_ROWS = 5000;
+    if (!employees?.length && filteredTcwRows.length > MAX_UNFILTERED_ROWS) {
+      throw new BadRequestException(
+        `El rango trae ${filteredTcwRows.length} registros TCW sin filtrar por empleado — ` +
+        `demasiado para comparar de una vez (máximo ${MAX_UNFILTERED_ROWS}). ` +
+        `Filtra por empleado o acorta el rango de fechas.`,
+      );
+    }
+
+    let activityOneData: any[] = [];
+    try {
+      const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
+      const { data } = await axios.post(
+        `${baseUrl}/new-activity/clock-report/data`,
+        { start_date, end_date },
+        { timeout: 15_000 },
+      );
+      activityOneData = data?.data ?? [];
+    } catch (error) {
+      console.error('⚠️ [detail-records] Activity ONE clock-report/data failed:', error.message);
+    }
+
+    let activityVoutData: any[] = [];
+    try {
+      const baseUrl = process.env.VOUT_API;
+      const { data } = await axios.post(
+        `${baseUrl}/activity_report/clock-report/data`,
+        { start_date, end_date },
+        { timeout: 15_000 },
+      );
+      activityVoutData = data?.data ?? [];
+    } catch (error) {
+      console.error('⚠️ [detail-records] Activity VOUT clock-report/data failed:', error.message);
+    }
+
+    const oneIndex = this.buildActivityIndexDetail(activityOneData);
+    const voutIndex = this.buildActivityIndexDetail(activityVoutData);
+
+    return this.buildClockComparisonDetailRows(filteredTcwRows, oneIndex, voutIndex);
+  }
+
+  private async buildClockComparisonDetailWorkbook(
+    data: ReturnType<PayrollService['buildClockComparisonDetailRows']>,
+  ): Promise<Buffer> {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Nova ONE';
+    wb.created = new Date();
+
+    const ws = wb.addWorksheet('Clock Comparison Detail', {
+      properties: { tabColor: { argb: 'FF1A2C4E' } },
+    });
+
+    const columns = [
+      { header: 'Employee', key: 'tcw_employee', width: 28 },
+      { header: 'Date', key: 'tcw_date', width: 14 },
+      { header: 'TCW — Time In', key: 'tcw_time_in', width: 16 },
+      { header: 'TCW — Time Out', key: 'tcw_time_out', width: 16 },
+      { header: 'TCW — Hours', key: 'tcw_hours', width: 14 },
+      { header: 'Activity — In Event', key: 'activity_in_event', width: 16 },
+      { header: 'Activity — Out Event', key: 'activity_out_event', width: 16 },
+      { header: 'Activity — In Time', key: 'activity_in_time', width: 18 },
+      { header: 'Activity — Out Time', key: 'activity_out_time', width: 18 },
+      { header: 'Activity — Worked Hrs', key: 'activity_worked_hours', width: 20 },
+      { header: 'Activity — Source', key: 'activity_source', width: 18 },
+      { header: 'Difference Hours', key: 'difference_hours', width: 18 },
+      { header: 'Status', key: 'status', width: 12 },
+      { header: 'Time Break', key: 'time_break', width: 14 },
+    ];
+
+    ws.columns = columns;
+
+    const headerRow = ws.getRow(1);
+    headerRow.height = 28;
+
+    const tcwHeaderColor = 'FF1A2C4E';
+    const actHeaderColor = 'FF1565C0';
+    const metaHeaderColor = 'FF37474F';
+
+    const headerColors: Record<number, string> = {
+      1: tcwHeaderColor, 2: tcwHeaderColor,
+      3: tcwHeaderColor, 4: tcwHeaderColor, 5: tcwHeaderColor,
+      6: actHeaderColor, 7: actHeaderColor, 8: actHeaderColor, 9: actHeaderColor, 10: actHeaderColor, 11: actHeaderColor,
+      12: metaHeaderColor, 13: metaHeaderColor, 14: metaHeaderColor,
+    };
+
+    for (let c = 1; c <= columns.length; c++) {
+      const cell = headerRow.getCell(c);
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10, name: 'Arial' };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerColors[c] ?? tcwHeaderColor } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF000000' } },
+        left: { style: 'thin', color: { argb: 'FF000000' } },
+        bottom: { style: 'thin', color: { argb: 'FF000000' } },
+        right: { style: 'thin', color: { argb: 'FF000000' } },
+      };
+    }
+
+    let currentEmployee = '';
+    const ERROR_BG = 'FFFDE8E8';
+    const BORDER_COLOR = 'FFAAB4C8';
+    const DIVIDER_COLOR = 'FF1A2C4E';
+
+    for (let i = 0; i < data.length; i++) {
+      const row = data[i];
+      const nextRow = data[i + 1];
+      const isLastRowOfEmployee = !nextRow || nextRow.tcw_employee !== row.tcw_employee;
+
+      if (row.tcw_employee !== currentEmployee) {
+        currentEmployee = row.tcw_employee;
+      }
+
+      const isError = row.status === 'error';
+      const bgColor = isError ? ERROR_BG : 'FFFFFFFF';
+
+      const excelRow = ws.addRow({
+        tcw_employee: row.tcw_employee,
+        tcw_date: row.tcw_date,
+        tcw_time_in: row.tcw_time_in ?? '—',
+        tcw_time_out: row.tcw_time_out ?? '—',
+        tcw_hours: row.tcw_hours,
+        activity_in_event: row.activity_in_event ?? '—',
+        activity_out_event: row.activity_out_event ?? '—',
+        activity_in_time: row.activity_in_time ?? '—',
+        activity_out_time: row.activity_out_time ?? '—',
+        activity_worked_hours: row.activity_worked_hours,
+        activity_source: row.activity_source ?? '—',
+        difference_hours: row.difference_hours,
+        status: row.status.toUpperCase(),
+        time_break: (Number(row.tcw_paid_break ?? 0) > 0 || Number(row.tcw_unpaid_break ?? 0) > 0) ? 'SI' : 'NO',
+      });
+
+      excelRow.height = 22;
+
+      for (let c = 1; c <= columns.length; c++) {
+        const cell = excelRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgColor } };
+        cell.font = {
+          name: 'Arial',
+          size: 9.5,
+          color: { argb: 'FF1A2C4E' },
+          bold: c === 1 || c === 13,
+        };
+        cell.alignment = { vertical: 'middle', horizontal: c >= 3 ? 'center' : 'left' };
+        cell.border = {
+          top: { style: 'thin', color: { argb: BORDER_COLOR } },
+          left: { style: 'thin', color: { argb: BORDER_COLOR } },
+          bottom: isLastRowOfEmployee
+            ? { style: 'medium', color: { argb: DIVIDER_COLOR } }
+            : { style: 'thin', color: { argb: BORDER_COLOR } },
+          right: { style: 'thin', color: { argb: BORDER_COLOR } },
+        };
+      }
+
+      const statusCell = excelRow.getCell(13);
+      if (isError) {
+        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEF4444' } };
+        statusCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9.5, name: 'Arial' };
+      } else {
+        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } };
+        statusCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 9.5, name: 'Arial' };
+      }
+
+      const diffCell = excelRow.getCell(12);
+      const diff = Number(row.difference_hours ?? 0);
+      diffCell.font = Math.abs(diff) > 0.08
+        ? { bold: true, color: { argb: 'FF1A2C4E' }, size: 9.5, name: 'Arial' }
+        : { color: { argb: 'FF1A2C4E' }, size: 9.5, name: 'Arial' };
+
+      const hasBreak = Number(row.tcw_paid_break ?? 0) > 0 || Number(row.tcw_unpaid_break ?? 0) > 0;
+      const timeBreakCell = excelRow.getCell(14);
+      timeBreakCell.fill = {
+        type: 'pattern', pattern: 'solid',
+        fgColor: { argb: hasBreak ? 'FFFFF3CD' : 'FFFFFFFF' },
+      };
+      timeBreakCell.font = { bold: true, color: { argb: hasBreak ? 'FF856404' : 'FF6B7280' }, size: 9.5, name: 'Arial' };
+    }
+
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+
+    const buf = await wb.xlsx.writeBuffer();
+    return Buffer.from(buf);
+  }
+
+  async exportClockComparisonDetailRecordsExcel(
+    start_date: string,
+    end_date: string,
+    employees?: string[],
+  ): Promise<Buffer> {
+    const data = await this.getClockComparisonDetailRecords(start_date, end_date, employees);
+    return this.buildClockComparisonDetailWorkbook(data);
+  }
 }

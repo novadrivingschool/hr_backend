@@ -10,6 +10,7 @@ import { CreateTimesheetRecordDto } from './dto/create-timesheet-record.dto';
 import { QueryTimesheetRecordDto } from './dto/query-timesheet-record.dto';
 import { UpdateTimesheetRecordDto } from './dto/update-timesheet-record.dto';
 import { TimesheetRecord } from './entities/timesheet-record.entity';
+import { PayrollService } from 'src/payroll/payroll.service';
 
 type ParsedCsvRecord = {
   employee: string;
@@ -33,6 +34,7 @@ export class TimesheetRecordsService {
   constructor(
     @InjectRepository(TimesheetRecord)
     private readonly timesheetRecordRepository: Repository<TimesheetRecord>,
+    private readonly payrollService: PayrollService,
   ) {}
 
   async create(createDto: CreateTimesheetRecordDto) {
@@ -260,27 +262,48 @@ export class TimesheetRecordsService {
       throw new BadRequestException('The CSV does not contain valid rows to import');
     }
 
-    const deletedExistingRows = await this.timesheetRecordRepository.manager.transaction(async (manager) => {
-      const repository = manager.getRepository(TimesheetRecord);
-      const deletedCount = await this.deleteByEmployeeDayPairs(repository, parsed.employeeDayPairs);
+    // Mismo CSV, dos tablas independientes (payroll_timesheet_records "cruda"
+    // y payroll_timesheets "conciliada" vía PayrollService.parseTimesheetCsv).
+    // No hay FK entre ellas ni dependencia de datos entre sí, así que corren
+    // en paralelo en vez de en serie. Usamos allSettled (no all) a propósito:
+    // si la consolidación falla, NO debe tumbar la importación cruda, que es
+    // el propósito principal de esta vista — solo se reporta el error de la
+    // consolidación por separado en la respuesta.
+    const [rawResult, consolidatedResult] = await Promise.allSettled([
+      this.timesheetRecordRepository.manager.transaction(async (manager) => {
+        const repository = manager.getRepository(TimesheetRecord);
+        const deletedCount = await this.deleteByEmployeeDayPairs(repository, parsed.employeeDayPairs);
 
-      const insertChunks = this.chunkArray(parsed.rows, 500);
-      for (const chunk of insertChunks) {
-        await repository.insert(chunk);
-      }
+        const insertChunks = this.chunkArray(parsed.rows, 500);
+        for (const chunk of insertChunks) {
+          await repository.insert(chunk);
+        }
 
-      return deletedCount;
-    });
+        return deletedCount;
+      }),
+      this.payrollService.parseTimesheetCsv(buffer),
+    ]);
+
+    // Si la escritura cruda (la principal de esta vista) falla, sí propagamos
+    // el error — no tiene sentido responder "ok" si no se importó nada.
+    if (rawResult.status === 'rejected') {
+      throw rawResult.reason;
+    }
+
+    const consolidation = consolidatedResult.status === 'fulfilled'
+      ? { ok: true, employees_count: consolidatedResult.value.length }
+      : { ok: false, error: consolidatedResult.reason?.message || 'Error desconocido al consolidar en payroll_timesheets' };
 
     return {
       ok: true,
       imported_rows: parsed.rows.length,
-      deleted_existing_rows: deletedExistingRows,
+      deleted_existing_rows: rawResult.value,
       skipped_rows: parsed.skippedRows,
       employees_count: parsed.employees.length,
       start_date: parsed.minDate,
       end_date: parsed.maxDate,
       employees: parsed.employees,
+      consolidation,
     };
   }
 

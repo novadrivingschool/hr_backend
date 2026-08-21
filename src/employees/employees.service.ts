@@ -454,7 +454,12 @@ export class EmployeesService {
         'employee.last_name',
         'employee.nova_email',
         'employee.danubanet_name_1',
-        'employee.danubanet_name_2'
+        'employee.danubanet_name_2',
+        // Necesario para el live search de Leave of Absence: resolveEducationRoles
+        // (hr_backend/leave_of_absence) decide loa-education-teacher vs.
+        // loa-education-instructor a partir de este campo, snapshoteado en
+        // employee_data al elegir el empleado — sin esto siempre llegaba undefined.
+        'employee.multi_type_of_job',
       ]);
 
     // 3. Iterar sobre las llaves del objeto 'filters' de forma segura

@@ -5,6 +5,7 @@ import { memoryStorage } from 'multer';
 import { TimesheetRecord } from './entities/timesheet-record.entity';
 import { TimesheetRecordsController } from './timesheet-records.controller';
 import { TimesheetRecordsService } from './timesheet-records.service';
+import { PayrollModule } from 'src/payroll/payroll.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { TimesheetRecordsService } from './timesheet-records.service';
     MulterModule.register({
       storage: memoryStorage(),
     }),
+    PayrollModule,
   ],
   controllers: [TimesheetRecordsController],
   providers: [TimesheetRecordsService],

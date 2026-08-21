@@ -72,10 +72,6 @@ export class HrWhatsappUpdate {
   @Column({ type: 'text', nullable: true })
   observations: string | null;
 
-  // Columna "Seguimiento".
-  @Column({ type: 'text', nullable: true })
-  seguimiento: string | null;
-
   // Columna "Asana Link".
   @Column({ type: 'varchar', length: 500, nullable: true })
   asana_link: string | null;

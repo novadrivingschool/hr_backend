@@ -35,6 +35,16 @@ export class LoaEmployeeSnapshotDto {
     @IsArray()
     @IsString({ each: true })
     multi_department?: string[];
+
+    /**
+     * forbidNonWhitelisted:true tira este campo si no está declarado acá —
+     * necesario para que resolveEducationRoles (Education
+     * teacher/instructor) tenga de dónde leer.
+     */
+    @IsOptional()
+    @IsArray()
+    @IsString({ each: true })
+    multi_type_of_job?: string[];
 }
 
 /** Quién hizo la acción. */

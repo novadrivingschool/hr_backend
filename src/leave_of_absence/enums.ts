@@ -11,8 +11,11 @@ export enum LoaTypeEnum {
 
 /**
  * Departamentos que atienden un LOA — cada uno mapea 1:1 al rol `loa-<dept>`
- * (ver EmployeesCard.vue). No confundir con `loa-hr`, que es el rol que
- * gestiona el registro completo, no una bitácora de departamento.
+ * (ver EmployeesCard.vue), CON UNA EXCEPCIÓN: Education ya no tiene un rol
+ * único — se resolvió en loa-education-teacher / loa-education-instructor
+ * según el multi_type_of_job del empleado (ver resolveEducationRoles en
+ * ./constants/department-actions.ts). No confundir con `loa-hr`, que es el
+ * rol que gestiona el registro completo, no una bitácora de departamento.
  */
 export enum LoaDepartmentEnum {
     It = 'it',
@@ -20,6 +23,7 @@ export enum LoaDepartmentEnum {
     Education = 'education',
     Calendar = 'calendar',
     Fleet = 'fleet',
+    Accounting = 'accounting',
 }
 
 export const LOA_DEPARTMENTS: readonly LoaDepartmentEnum[] = [
@@ -28,6 +32,7 @@ export const LOA_DEPARTMENTS: readonly LoaDepartmentEnum[] = [
     LoaDepartmentEnum.Education,
     LoaDepartmentEnum.Calendar,
     LoaDepartmentEnum.Fleet,
+    LoaDepartmentEnum.Accounting,
 ];
 
 /**

@@ -14,6 +14,14 @@ export interface LoaEmployeeSnapshot {
     employee_number: string;
     nova_email?: string;
     multi_department?: string[];
+    /**
+     * Job types del empleado al momento de crear/editar el LOA — snapshot,
+     * igual que el resto de este objeto. Es lo único que determina qué rol
+     * de Education (loa-education-teacher / loa-education-instructor)
+     * atiende este LOA — ver resolveEducationRoles en
+     * ../constants/department-actions.ts.
+     */
+    multi_type_of_job?: string[];
 }
 
 /** Quién hizo la acción — mismo shape que EmployeeRefDto usado en i-care. */

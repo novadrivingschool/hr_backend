@@ -32,5 +32,6 @@ import { EmployeeRateHistory } from 'src/employees/entities/employee-rate-histor
     storage: memoryStorage(), // guardamos en memoria, no en disco
   }),
   ],
+  exports: [PayrollService],
 })
 export class PayrollModule { }

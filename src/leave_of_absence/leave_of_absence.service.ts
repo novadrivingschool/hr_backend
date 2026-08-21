@@ -27,6 +27,7 @@ import {
     LOA_DEPARTMENT_DISABLE_ACTIONS,
     LOA_DEPARTMENT_LABELS,
     LOA_RETURN_TO_WORK_NOTICE,
+    resolveEducationRoles,
 } from './constants/department-actions';
 import { EmployeesV2Service } from '../employees/employees-v2.service';
 
@@ -269,7 +270,7 @@ export class LeaveOfAbsenceService {
 
         for (const dept of LOA_DEPARTMENTS) {
             sends.push(this.safeSend(`loa:created:${dept}`, async () => {
-                const recipients = await this.recipientsForRoles([`loa-${dept}`]);
+                const recipients = await this.recipientsForRoles(this.rolesForDepartment(found, dept));
                 if (!recipients.length) return { total: 0 };
                 return this.emailApi.sendTemplate({
                     recipientsObjects: recipients,
@@ -284,6 +285,23 @@ export class LeaveOfAbsenceService {
         }
 
         await Promise.allSettled(sends);
+    }
+
+    /**
+     * Rol(es) de LOA que atienden un depto para ESTE LOA en particular. Para
+     * todos los deptos es 1:1 con `loa-<depto>` — excepto Education, que
+     * desde el split loa-education-teacher/loa-education-instructor se
+     * resuelve según el multi_type_of_job del empleado (ver
+     * resolveEducationRoles). Se usa tanto para el email de creación
+     * (notifyCreated) como para el aviso de returned_to_work
+     * (notifyReturnedToWork) — así solo se notifica al lado de Education que
+     * realmente le corresponde a este empleado, no a los dos.
+     */
+    private rolesForDepartment(found: LeaveOfAbsence, dept: LoaDepartmentEnum): string[] {
+        if (dept === LoaDepartmentEnum.Education) {
+            return resolveEducationRoles(found.employee_data?.multi_type_of_job);
+        }
+        return [`loa-${dept}`];
     }
 
     /**
@@ -321,7 +339,7 @@ export class LeaveOfAbsenceService {
     private async notifyReturnedToWork(found: LeaveOfAbsence, isReturning: boolean, actor: LoaActor): Promise<void> {
         const actorName = this.actorFullName(actor);
         const recipients = [
-            ...(await this.recipientsForRoles(LOA_DEPARTMENTS.map((d) => `loa-${d}`))),
+            ...(await this.recipientsForRoles(LOA_DEPARTMENTS.flatMap((d) => this.rolesForDepartment(found, d)))),
             ...(await this.recipientsForRoles(['loa-hr'])),
             ...this.actorRecipient(actor),
         ];
@@ -376,14 +394,24 @@ export class LeaveOfAbsenceService {
      * registro viejo puede simplemente no traer la key todavía. Se siembra
      * vacío en memoria al leer; se persiste recién cuando esa parte reciba su
      * primera mutación real (acá o en syncMissingTemplateSubtasks).
+     *
+     * Mismo criterio aplica a un DEPARTAMENTO ENTERO agregado después de que
+     * el LOA ya existía (ej. Accounting, agregado a LOA_DEPARTMENTS más
+     * tarde): `status` viene undefined para ese LOA viejo — antes se
+     * saltaba con `return` y esa key jsonb quedaba faltante para siempre; el
+     * fix es sembrarla acá en vez de solo hacer skip, así "accounting"
+     * aparece retroactivamente en los LOAs existentes, no solo en los nuevos.
      */
     private backfill(row: LeaveOfAbsence): void {
         if (!row.department_logs || Object.keys(row.department_logs).length === 0) {
             row.department_logs = emptyDepartmentLogs();
         } else {
             LOA_DEPARTMENTS.forEach((dept) => {
-                const status = row.department_logs[dept];
-                if (!status) return;
+                let status = row.department_logs[dept];
+                if (!status) {
+                    status = emptyDepartmentLogs()[dept];
+                    row.department_logs[dept] = status;
+                }
                 if (!Array.isArray(status.subtasks)) status.subtasks = [];
                 if (!Array.isArray(status.removed_template_ids)) status.removed_template_ids = [];
                 status.subtasks.forEach((s) => {

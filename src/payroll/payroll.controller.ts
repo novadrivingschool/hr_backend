@@ -357,5 +357,64 @@ export class PayrollController {
     res.send(buf);
   }
 
+  /**
+   * Igual que /clock-comparison/detail pero leyendo TCW desde
+   * payroll_timesheet_records (tabla sin consolidar, reutilizada de
+   * "In/Out Auditoría") en vez de payroll_timesheets (consolidada).
+   */
+  @Post('timesheets/clock-comparison/detail-records')
+  async getClockComparisonDetailRecords(
+    @Body() body: {
+      start_date: string;
+      end_date: string;
+      employees?: string[];
+    },
+  ) {
+    const { start_date, end_date, employees } = body;
+
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+
+    const data = await this.payrollService.getClockComparisonDetailRecords(
+      start_date,
+      end_date,
+      employees,
+    );
+
+    return {
+      ok: true,
+      total: data.length,
+      data,
+    };
+  }
+
+  @Post('timesheets/clock-comparison/detail-records/export')
+  async exportClockComparisonDetailRecords(
+    @Body() body: { start_date: string; end_date: string; employees?: string[] },
+    @Res() res: Response,
+  ) {
+    const { start_date, end_date, employees } = body;
+
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+
+    const buf = await this.payrollService.exportClockComparisonDetailRecordsExcel(
+      start_date,
+      end_date,
+      employees,
+    );
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const now = new Date();
+    const ymd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const fname = `ClockComparisonDetail_${start_date}_${end_date}_${ymd}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.send(buf);
+  }
+
 
 }

@@ -97,10 +97,6 @@ export class CreateHrWhatsappUpdateDto {
 
   @IsString()
   @IsOptional()
-  seguimiento?: string;
-
-  @IsString()
-  @IsOptional()
   @MaxLength(500)
   asana_link?: string;
 
