@@ -5332,10 +5332,17 @@ export class PayrollService {
   }
 
   private buildActivityIndexDetail(rows: any[]) {
+    // ONE y VOUT no siempre usan los mismos nombres de campo (confirmado por
+    // upsertActivityRow, línea ~3829, que ya maneja este caso con pickFirst).
+    // Leer solo row.employee_name/row.date acá descartaba TODAS las filas de
+    // VOUT en silencio si su API usa otro nombre — el índice quedaba vacío y
+    // nunca matcheaba, sin ningún error visible.
     const index = new Map<string, Map<string, any[]>>();
     for (const row of rows) {
-      const n = this.normalizeName(row.employee_name ?? '');
-      const date = String(row.date ?? '').slice(0, 10);
+      const rawName = this.pickFirst<string>(row, ['employee_name', 'full_name', 'employee', 'name']);
+      const rawDate = this.pickFirst<string>(row, ['date', 'day_date', 'work_date']);
+      const n = this.normalizeName(rawName ?? '');
+      const date = String(rawDate ?? '').slice(0, 10);
       if (!n || !date) continue;
       if (!index.has(n)) index.set(n, new Map());
       const dateMap = index.get(n)!;
@@ -5946,19 +5953,19 @@ export class PayrollService {
           ? 'Activity ONE'
           : null;
 
+      // Mismos alias por proveedor que ya usa upsertActivityRow (línea ~3855)
+      // para clock_in/out y lunch — ONE y VOUT no nombran los campos igual.
       const actClockIn = toHHMMSS(
-        activityRows[0]?.clock_in ?? activityRows[0]?.time_in ?? null,
+        this.pickFirst<string>(activityRows[0], ['clock_in', 'time_in', 'in', 'shift_start']),
       );
       const actLunchIn = toHHMMSS(
-        activityRows[0]?.lunch_in ?? activityRows[0]?.lunch_start ?? null,
+        this.pickFirst<string>(activityRows[0], ['lunch_in', 'lunch_start']),
       );
       const actLunchOut = toHHMMSS(
-        activityRows[0]?.lunch_out ?? activityRows[0]?.lunch_end ?? null,
+        this.pickFirst<string>(activityRows[0], ['lunch_out', 'lunch_end']),
       );
       const actClockOut = toHHMMSS(
-        activityRows[activityRows.length - 1]?.clock_out ??
-        activityRows[activityRows.length - 1]?.time_out ??
-        null,
+        this.pickFirst<string>(activityRows[activityRows.length - 1], ['clock_out', 'time_out', 'out', 'shift_end']),
       );
 
       const tcwTotalHours = this.round2(Number(intervals[0]?.total_hours ?? 0));
@@ -6147,8 +6154,16 @@ export class PayrollService {
       console.error('⚠️ [detail-records] Activity VOUT clock-report/data failed:', error.message);
     }
 
+    // DEBUG temporal: buildActivityIndexDetail asume employee_name/date en el
+    // JSON (shape confirmado de Activity ONE). Si VOUT usa otros nombres de
+    // campo, el índice queda vacío en silencio y nunca matchea — esto expone
+    // el shape real para confirmarlo/descartarlo. Quitar una vez diagnosticado.
+    console.log('=== [detail-records] ACTIVITY VOUT SAMPLE ===', JSON.stringify(activityVoutData.slice(0, 2), null, 2));
+    console.log('=== [detail-records] ACTIVITY ONE SAMPLE ===', JSON.stringify(activityOneData.slice(0, 2), null, 2));
+
     const oneIndex = this.buildActivityIndexDetail(activityOneData);
     const voutIndex = this.buildActivityIndexDetail(activityVoutData);
+    console.log(`=== [detail-records] oneIndex employees: ${oneIndex.size} | voutIndex employees: ${voutIndex.size} ===`);
 
     return this.buildClockComparisonDetailRows(filteredTcwRows, oneIndex, voutIndex);
   }
