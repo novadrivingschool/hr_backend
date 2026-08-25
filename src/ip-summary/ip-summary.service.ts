@@ -18,6 +18,7 @@ const RATE_TYPE_FIELD: Record<string, string> = {
   'Department2, Diego Sanchez Mechanical': 'mechanics_rate',
   OFFICE: 'office_assignment_rate',
   'Stick shift': 'ss_rate',
+  TRAINEE: 'trainee_rate',
 }
 
 const AS_TYPES = [
@@ -27,11 +28,13 @@ const AS_TYPES = [
   { key: 'OFFICE',     label: 'Office',      rateType: 'OFFICE',                                 cellBg: '#fffde7', bg: '#fff176', color: '#f57f17' },
   { key: 'MECHANICS',  label: 'Mec.',        rateType: 'Department2, Diego Sanchez Mechanical',  cellBg: '#fff3e0', bg: '#ffcc80', color: '#e65100' },
   { key: 'SS',         label: 'Stick Shift', rateType: 'Stick shift',                            cellBg: '#f3e5f5', bg: '#ce93d8', color: '#6a1b9a' },
+  { key: 'TRAINEE',    label: 'Trainee',     rateType: 'TRAINEE',                                cellBg: '#e3f2fd', bg: '#90caf9', color: '#0d47a1' },
 ]
 
 const RATE_FIELDS_NEEDED = [
   'btw_rate', 'cr_rate', 'assignment_rate', 'class_c_rate',
   'office_assignment_rate', 'ss_rate', 'mechanics_rate', 'no_show_cancellation_rate',
+  'trainee_rate',
 ]
 
 type RatePeriod = { rate: number; start_date: string; end_date: string | null }

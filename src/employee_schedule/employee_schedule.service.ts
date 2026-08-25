@@ -75,7 +75,7 @@ export class EmployeeScheduleService {
         // 🟦 Fixed schedules
         if (dto.fixed?.length) {
           for (const f of dto.fixed) {
-            const fixedHasCustomer = f.register === 'Work Shift';
+            const fixedHasCustomer = f.register === 'Work Shift' || f.register === RegisterEnum.HOLIDAY_WORK;
             const fixedPayload: Partial<FixedSchedule> = {
               weekdays: f.weekdays,
               start: f.start,
@@ -979,6 +979,7 @@ export class EmployeeScheduleService {
       RegisterEnum.WORK_SHIFT,
       RegisterEnum.EXTRA_HOURS,
       RegisterEnum.TIME_OFF_RECOVERY,
+      RegisterEnum.HOLIDAY_WORK,
     ];
     const hasCustomer = customerRegisters.includes(dto.register);
 
@@ -1931,6 +1932,8 @@ export class EmployeeScheduleService {
       [RegisterEnum.WORK_SHIFT, RegisterEnum.LUNCH].sort().join('|'),
       [RegisterEnum.WORK_SHIFT, RegisterEnum.OUTAGE].sort().join('|'),
       [RegisterEnum.LUNCH, RegisterEnum.OUTAGE].sort().join('|'),
+      [RegisterEnum.HOLIDAY_WORK, RegisterEnum.LUNCH].sort().join('|'),
+      [RegisterEnum.HOLIDAY_WORK, RegisterEnum.OUTAGE].sort().join('|'),
     ]);
 
     return allowedPairs.has([left, right].sort().join('|'));
@@ -2083,12 +2086,31 @@ export class EmployeeScheduleService {
       .addOrderBy('event.start', 'ASC')
       .getMany();
 
+    // Holiday Work tiene jerarquía sobre Work Shift: si el empleado tiene un
+    // Holiday Work ese día, el Work Shift (fijo o variable) del mismo
+    // employee|date|customer no se contabiliza — Holiday Work lo reemplaza.
+    const holidayWorkKeys = new Set<string>();
+    for (const event of rawEvents) {
+      if (event.register !== RegisterEnum.HOLIDAY_WORK) continue;
+      holidayWorkKeys.add(
+        `${event.schedule.employee_number}|${event.date}|${String(event.customer || '').toLowerCase()}`,
+      );
+    }
+
     for (const event of rawEvents) {
       const employeeNumber = event.schedule.employee_number;
+
+      if (
+        event.register === RegisterEnum.WORK_SHIFT &&
+        holidayWorkKeys.has(`${employeeNumber}|${event.date}|${String(event.customer || '').toLowerCase()}`)
+      ) {
+        continue;
+      }
+
       const bucket = ensureBucket(employeeNumber, event.date);
       const minutes = this.diffDateTimeMinutes(event.start, event.end);
 
-      if (event.register === RegisterEnum.WORK_SHIFT) {
+      if (event.register === RegisterEnum.WORK_SHIFT || event.register === RegisterEnum.HOLIDAY_WORK) {
         bucket.work_shift_minutes += minutes;
         const range = this.toEpochRange(event.start, event.end);
         if (range) {
@@ -2121,6 +2143,13 @@ export class EmployeeScheduleService {
       overriddenKeys.add(
         `${event.schedule.employee_number}|${event.date}|${event.register}|${String(event.customer || '').toLowerCase()}`,
       );
+      // Holiday Work también oculta la ocurrencia FIJA de Work Shift ese día
+      // (misma jerarquía que arriba, aplicada a la regla recurrente).
+      if (event.register === RegisterEnum.HOLIDAY_WORK) {
+        overriddenKeys.add(
+          `${event.schedule.employee_number}|${event.date}|${RegisterEnum.WORK_SHIFT}|${String(event.customer || '').toLowerCase()}`,
+        );
+      }
     }
 
     const rawFixed = await this.fixedRepo

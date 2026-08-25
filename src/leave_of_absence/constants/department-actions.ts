@@ -9,6 +9,7 @@ export const LOA_DEPARTMENT_LABELS: Record<LoaDepartmentEnum, string> = {
     [LoaDepartmentEnum.Calendar]: 'Calendar',
     [LoaDepartmentEnum.Fleet]: 'Fleet',
     [LoaDepartmentEnum.Accounting]: 'Accounting',
+    [LoaDepartmentEnum.LearningDevelopment]: 'Learning and Development',
 };
 
 /**
@@ -75,6 +76,9 @@ export const LOA_DEPARTMENT_DISABLE_ACTIONS: Record<LoaDepartmentEnum, string[]>
     [LoaDepartmentEnum.Accounting]: [
         'Pause payroll runs and reimbursement/expense processing for this employee during the leave.',
         'Flag any pending invoices, deposits or petty cash tied to this employee.',
+    ],
+    [LoaDepartmentEnum.LearningDevelopment]: [
+        'Reassign or pause any training sessions/onboarding cohorts currently assigned to this employee.',
     ],
 };
 

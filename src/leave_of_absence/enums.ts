@@ -24,6 +24,7 @@ export enum LoaDepartmentEnum {
     Calendar = 'calendar',
     Fleet = 'fleet',
     Accounting = 'accounting',
+    LearningDevelopment = 'learning-development',
 }
 
 export const LOA_DEPARTMENTS: readonly LoaDepartmentEnum[] = [
@@ -33,6 +34,7 @@ export const LOA_DEPARTMENTS: readonly LoaDepartmentEnum[] = [
     LoaDepartmentEnum.Calendar,
     LoaDepartmentEnum.Fleet,
     LoaDepartmentEnum.Accounting,
+    LoaDepartmentEnum.LearningDevelopment,
 ];
 
 /**

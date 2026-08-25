@@ -238,9 +238,40 @@ export class ICare {
   @Column({ nullable: true, type: 'varchar', length: 10 })
   commit_approved_time: string | null;
 
+  // 2026-08-22: campos añadidos a pedido del usuario — "está mal como
+  // guardas el follow up... eso no indica que es un follow up, es para
+  // que el primer follow up se dé en esa fecha, lo que se hace en ese
+  // momento es el coaching session ese es el stage". Antes, approveCommit()
+  // creaba directamente una entrada en `seguimientos[]` con actual_date:null
+  // — eso hacía que el front la mostrara como "Follow-up #1 · Pending" ya
+  // desde el momento de la Coaching Session, cuando en realidad NINGÚN
+  // seguimiento se había realizado todavía, solo se PROGRAMÓ. Ahora esa
+  // decisión de programación vive en estos campos, propios del stage
+  // "Commit Approval" — `seguimientos[]` solo se llena cuando el
+  // seguimiento se REALIZA de verdad (ver addSeguimiento()).
+  @Column({ type: 'text', nullable: true })
+  commit_approved_notes: string | null;
+
+  @Column('jsonb', { nullable: true, default: () => "'[]'" })
+  commit_approved_attachments: string[];
+
+  /**
+   * Fecha programada para el PRIMER seguimiento (solo planeación, no es un
+   * seguimiento en sí). Se limpia (null) en cuanto ese seguimiento se
+   * realiza de verdad (addSeguimiento) o si el caso se marca fulfilled
+   * directo desde la Coaching Session (fulfillCommit).
+   */
+  @Column({ nullable: true, type: 'varchar', length: 20 })
+  next_followup_scheduled_date: string | null;
+
   // ─── Seguimientos (Follow-ups) ─────────────────────────────────────────────
   /**
-   * Array de seguimientos asignados por el coordinator/HR.
+   * Array de seguimientos REALMENTE REALIZADOS, agregados por el
+   * coordinator/HR vía addSeguimiento(). Cada entrada representa un
+   * seguimiento que ya ocurrió (o se está cerrando en este momento) —
+   * no una simple fecha programada. Ver `next_followup_scheduled_date`
+   * arriba para la fecha planeada del PRÓXIMO seguimiento que aún no
+   * se ha realizado.
    * Cada entrada: { id, scheduled_date, actual_date, notes, added_by, created_at }
    */
   @Column('jsonb', { nullable: true, default: () => "'[]'" })

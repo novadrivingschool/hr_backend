@@ -7,6 +7,7 @@ export enum RegisterEnum {
   LUNCH = 'Lunch',
   OFF = 'Off',
   OUTAGE = 'Outage',
+  HOLIDAY_WORK = 'Holiday Work',
 }
 
 export const OUTAGE_REASONS = [

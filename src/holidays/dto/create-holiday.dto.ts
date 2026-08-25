@@ -43,6 +43,13 @@ export class CreateHolidayDto {
   @IsBoolean()
   is_active?: boolean;
 
+  // Indica si las horas autorizadas de este holiday son de toma obligatoria
+  // para el empleado. Opcional: default false a nivel de servicio/DB si no
+  // se envía.
+  @IsOptional()
+  @IsBoolean()
+  is_mandatory?: boolean;
+
   @IsOptional()
   @IsObject()
   performed_by?: PerformedByDto;

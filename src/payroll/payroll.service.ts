@@ -11,6 +11,8 @@ import * as puppeteer from 'puppeteer';
 import { buildSingleEmployeeHtml } from './templates/payroll-report.template';
 import { buildSummaryEmployeeHtml } from './templates/payroll-summary-report.template';
 import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as ExcelJS from 'exceljs';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
 import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
@@ -2956,6 +2958,16 @@ export class PayrollService {
 
     return employees.map((emp) => {
       const employeeNumber = emp.employee_number;
+
+      // rate_office_staff puede ser un total de PERÍODO (Fixed, Fixed with
+      // variations, Monthly — hay que repartirlo entre las horas reales del
+      // rango seleccionado, ver internalRate más abajo) o puede ser YA un
+      // $/hora (Hourly, Hourly with varations) — en ese caso dividirlo entre
+      // correctedTotalAuthorizedHours lo destroza (ej. $10/hr repartido
+      // entre ~160 hrs de un mes = $0.0625/hr). type_of_income decide cuál
+      // de los dos casos aplica; ver itemRate en RatesEditDialog.vue para
+      // los 5 valores posibles.
+      const isHourlyIncome = /^hourly/i.test(String(emp.type_of_income || '').trim());
       const master = scheduleMap.get(employeeNumber);
       const metrics = this.calculateMasterMetrics(master, start_date, end_date);
       const rawRates = ratesMap.get(employeeNumber) || [];
@@ -3055,9 +3067,9 @@ export class PayrollService {
         const authorizedLunchHours  = round(d.lunch_hours ?? 0);
         const authorizedOutageHours = round(d.outage_hours ?? 0);
 
-        const internalRate = correctedTotalAuthorizedHours > 0
-          ? getRateForDay(d.date) / correctedTotalAuthorizedHours
-          : 0;
+        const internalRate = isHourlyIncome
+          ? getRateForDay(d.date)
+          : (correctedTotalAuthorizedHours > 0 ? getRateForDay(d.date) / correctedTotalAuthorizedHours : 0);
 
         const payableHours = authorizedHours;
 
@@ -3114,9 +3126,9 @@ export class PayrollService {
       // holidayFallback days también necesitan day_payable_amount (holidayFallback
       // ya se construyó arriba, en el Pase 1, para calcular correctedTotalAuthorizedHours)
       const holidayFallbackMapped = (holidayFallback as any[]).map((d) => {
-        const internalRate = correctedTotalAuthorizedHours > 0
-          ? getRateForDay(d.date) / correctedTotalAuthorizedHours
-          : 0;
+        const internalRate = isHourlyIncome
+          ? getRateForDay(d.date)
+          : (correctedTotalAuthorizedHours > 0 ? getRateForDay(d.date) / correctedTotalAuthorizedHours : 0);
         const authorizedHours = round(d.total_hours ?? 0);
         return {
           date: d.date,
@@ -3224,9 +3236,9 @@ export class PayrollService {
 
       // time_off y extra_hours: calculamos con getRateForDay directamente (no rawRates)
       const enrichedTimeOff = (eventsByEmployee[employeeNumber]?.timeOffDetails ?? []).map((detail) => {
-        const internalRate = correctedTotalAuthorizedHours > 0
-          ? getRateForDay(detail.date) / correctedTotalAuthorizedHours
-          : 0;
+        const internalRate = isHourlyIncome
+          ? getRateForDay(detail.date)
+          : (correctedTotalAuthorizedHours > 0 ? getRateForDay(detail.date) / correctedTotalAuthorizedHours : 0);
         const deductedHours = detail.deducted_hours ?? detail.total_hours;
         return {
           ...detail,
@@ -3238,9 +3250,9 @@ export class PayrollService {
       });
 
       const enrichedExtraHours = (eventsByEmployee[employeeNumber]?.extraHoursDetails ?? []).map((detail) => {
-        const internalRate = correctedTotalAuthorizedHours > 0
-          ? getRateForDay(detail.date) / correctedTotalAuthorizedHours
-          : 0;
+        const internalRate = isHourlyIncome
+          ? getRateForDay(detail.date)
+          : (correctedTotalAuthorizedHours > 0 ? getRateForDay(detail.date) / correctedTotalAuthorizedHours : 0);
         return {
           ...detail,
           has_rate: hasRateForDay(detail.date),
@@ -3253,9 +3265,9 @@ export class PayrollService {
       // Outage: deducción independiente, mismo criterio que Time Off — un registro por
       // evento (con reason), enriquecido con el rate del día.
       const enrichedOutage = (metrics.outage_details ?? []).map((detail: any) => {
-        const internalRate = correctedTotalAuthorizedHours > 0
-          ? getRateForDay(detail.date) / correctedTotalAuthorizedHours
-          : 0;
+        const internalRate = isHourlyIncome
+          ? getRateForDay(detail.date)
+          : (correctedTotalAuthorizedHours > 0 ? getRateForDay(detail.date) / correctedTotalAuthorizedHours : 0);
         return {
           ...detail,
           has_rate: hasRateForDay(detail.date),
@@ -3322,9 +3334,9 @@ export class PayrollService {
           const hours = holidayHoursByDate.has(holiday.date)
             ? holidayHoursByDate.get(holiday.date)!
             : round(matchedDay?.payroll_day?.authorized_hours ?? 0);
-          const internalRate = correctedTotalAuthorizedHours > 0
-            ? getRateForDay(holiday.date) / correctedTotalAuthorizedHours
-            : 0;
+          const internalRate = isHourlyIncome
+            ? getRateForDay(holiday.date)
+            : (correctedTotalAuthorizedHours > 0 ? getRateForDay(holiday.date) / correctedTotalAuthorizedHours : 0);
           return {
             id: holiday.id,
             name: holiday.name,
@@ -5331,6 +5343,103 @@ export class PayrollService {
     return best;
   }
 
+  /**
+   * POST /activity_report/clock-events de vout-api es el endpoint correcto
+   * para consumo server-to-server (sin auth — a diferencia de
+   * /activity_report/clock-report/data, que exige JWT de sesión de usuario
+   * y por eso siempre devolvía 401 acá). Confirmado en el código fuente de
+   * vout-api: src/activity-report/activity-clock-events.controller.ts.
+   *
+   * Devuelve EVENTOS crudos por día ({date, events: [{type, status,
+   * started_at, ended_at, employee_number, employee_name,
+   * employee_last_name, ...}]}), no un resumen diario ya armado como ONE.
+   * Esta función los agrupa por (fecha, empleado) y arma una fila con el
+   * mismo shape que ya espera buildActivityIndexDetail/
+   * buildClockComparisonDetailRows (employee_name, date, clock_in,
+   * clock_out, lunch_start, lunch_end), para no tener que tocar esa lógica.
+   */
+  private buildVoutRowsFromClockEvents(dateGroups: any[]): any[] {
+    // started_at/ended_at vienen en ISO con el offset de Chicago ya
+    // embebido (confirmado en el DTO de vout-api) — se extrae el HH:mm:ss
+    // directo del string, sin reinterpretar zona horaria.
+    const isoToHHMMSS = (iso: string | null | undefined): string | null => {
+      if (!iso) return null;
+      const m = String(iso).match(/T(\d{2}:\d{2}:\d{2})/);
+      return m ? m[1] : null;
+    };
+
+    const rows: any[] = [];
+    for (const group of dateGroups ?? []) {
+      const date = String(group?.date ?? '').slice(0, 10);
+      if (!date) continue;
+
+      const byEmployee = new Map<string, any[]>();
+      for (const ev of group?.events ?? []) {
+        const key = `${ev.employee_number ?? ''}__${ev.employee_name ?? ''}__${ev.employee_last_name ?? ''}`;
+        if (!byEmployee.has(key)) byEmployee.set(key, []);
+        byEmployee.get(key)!.push(ev);
+      }
+
+      for (const [key, events] of byEmployee) {
+        const [employee_number, employee_name, employee_last_name] = key.split('__');
+
+        // Modelo general: se ordena TODO el timeline del día y se separa
+        // en "primer clock_in real" / "último clock_out real" (delimitan
+        // el día) y todo lo de EN MEDIO son candidatos a break/lunch —
+        // puede haber más de uno (ej. lunch + otra pausa corta), no solo
+        // el primer par. isDeparture/isArrival cubren tanto clock_out /
+        // clock_in "de sobra" como el evento explícito type:'lunch'
+        // (distinguido por status: 'out' = salida, 'in' = regreso —
+        // confirmado con datos reales que status importa más que
+        // started_at/ended_at, que a veces vienen incompletos).
+        const isDeparture = (e: any) => e.type === 'clock_out' || (e.type === 'lunch' && e.status === 'out');
+        const isArrival = (e: any) => e.type === 'clock_in' || (e.type === 'lunch' && e.status === 'in');
+
+        const allSorted = [...events].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+
+        const firstInIdx = allSorted.findIndex(e => e.type === 'clock_in');
+        let lastOutIdx = -1;
+        for (let i = allSorted.length - 1; i >= 0; i--) {
+          if (allSorted[i].type === 'clock_out') { lastOutIdx = i; break; }
+        }
+
+        const clockInEvent = firstInIdx >= 0 ? allSorted[firstInIdx] : allSorted[0];
+        const clockOutEvent = lastOutIdx >= 0 ? allSorted[lastOutIdx] : allSorted[allSorted.length - 1];
+
+        const middle = allSorted.filter((e, idx) => idx !== firstInIdx && idx !== lastOutIdx && e !== clockInEvent && e !== clockOutEvent);
+        const departures = middle.filter(isDeparture).sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+        const arrivals = middle.filter(isArrival).sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+
+        // Se emparejan por posición cronológica dentro del propio VOUT
+        // (1ra salida con 1er regreso, 2da con 2do, etc.) — el matching
+        // contra los gaps del TCW (por proximidad ≤5min) pasa después,
+        // en buildClockComparisonDetailRows.
+        const breakCount = Math.max(departures.length, arrivals.length);
+        const lunch_breaks: Array<{ start: string | null; end: string | null }> = [];
+        for (let i = 0; i < breakCount; i++) {
+          lunch_breaks.push({
+            start: isoToHHMMSS(departures[i]?.started_at),
+            end: isoToHHMMSS(arrivals[i]?.started_at),
+          });
+        }
+
+        rows.push({
+          date,
+          employee_number,
+          employee_name: `${employee_name} ${employee_last_name}`.trim(),
+          clock_in: isoToHHMMSS(clockInEvent?.started_at),
+          clock_out: isoToHHMMSS(clockOutEvent?.started_at),
+          // Compat: primer break como lunch_start/lunch_end "plano" para
+          // quien siga leyendo esos dos campos sueltos.
+          lunch_start: lunch_breaks[0]?.start ?? null,
+          lunch_end: lunch_breaks[0]?.end ?? null,
+          lunch_breaks,
+        });
+      }
+    }
+    return rows;
+  }
+
   private buildActivityIndexDetail(rows: any[]) {
     // ONE y VOUT no siempre usan los mismos nombres de campo (confirmado por
     // upsertActivityRow, línea ~3829, que ya maneja este caso con pickFirst).
@@ -5924,9 +6033,9 @@ export class PayrollService {
       activity_out_event: string | null;
       activity_in_time: string | null;
       activity_out_time: string | null;
-      activity_worked_hours: number;
+      activity_worked_hours: number | null;
       activity_source: string | null;
-      difference_hours: number;
+      difference_hours: number | null;
       status: 'fine' | 'error';
     };
 
@@ -5946,23 +6055,21 @@ export class PayrollService {
 
       const voutRows = this.findActivityRowsDetail(voutIndex, employee, date);
       const oneRows = this.findActivityRowsDetail(oneIndex, employee, date);
-      const activityRows = voutRows.length ? voutRows : oneRows;
-      const activitySource = voutRows.length
-        ? 'Activity VOUT'
-        : oneRows.length
-          ? 'Activity ONE'
+      // Prioridad: Activity ONE primero, VOUT solo como fallback si ONE no
+      // tiene datos para ese empleado/día.
+      const activityRows = oneRows.length ? oneRows : voutRows;
+      const activitySource = oneRows.length
+        ? 'Activity ONE'
+        : voutRows.length
+          ? 'Activity VOUT'
           : null;
 
+      console.log(`🔎 [detail-records] ${employee} | ${date} | ONE rows: ${oneRows.length} | VOUT rows: ${voutRows.length} | source usado: ${activitySource ?? 'NINGUNO'}`);
+
       // Mismos alias por proveedor que ya usa upsertActivityRow (línea ~3855)
-      // para clock_in/out y lunch — ONE y VOUT no nombran los campos igual.
+      // para clock_in/out — ONE y VOUT no nombran los campos igual.
       const actClockIn = toHHMMSS(
         this.pickFirst<string>(activityRows[0], ['clock_in', 'time_in', 'in', 'shift_start']),
-      );
-      const actLunchIn = toHHMMSS(
-        this.pickFirst<string>(activityRows[0], ['lunch_in', 'lunch_start']),
-      );
-      const actLunchOut = toHHMMSS(
-        this.pickFirst<string>(activityRows[0], ['lunch_out', 'lunch_end']),
       );
       const actClockOut = toHHMMSS(
         this.pickFirst<string>(activityRows[activityRows.length - 1], ['clock_out', 'time_out', 'out', 'shift_end']),
@@ -5970,86 +6077,88 @@ export class PayrollService {
 
       const tcwTotalHours = this.round2(Number(intervals[0]?.total_hours ?? 0));
 
-      let lunchOutIntervalIndex: number | null = null;
-      let lunchInIntervalIndex: number | null = null;
-
-      if (actLunchIn && actLunchOut) {
-        for (let i = 0; i < intervals.length; i++) {
-          const tcwOut = toHHMMSS(intervals[i].time_out);
-          const tcwIn = toHHMMSS(intervals[i].time_in);
-
-          const diffOut = minutesDiff(tcwOut, actLunchIn);
-          if (diffOut !== null && diffOut <= 5 && lunchOutIntervalIndex === null) {
-            lunchOutIntervalIndex = i;
-          }
-
-          const diffIn = minutesDiff(tcwIn, actLunchOut);
-          if (diffIn !== null && diffIn <= 5 && lunchInIntervalIndex === null) {
-            lunchInIntervalIndex = i;
-          }
+      // Candidatos de break/lunch de Activity, en orden cronológico: TODOS
+      // los que traiga cada fila (lunch_breaks, si viene de VOUT vía
+      // buildVoutRowsFromClockEvents — puede haber más de uno), o fallback
+      // a lunch_in/lunch_start + lunch_out/lunch_end si la fila no trae el
+      // arreglo (caso ONE, que solo maneja un lunch por día). "departure"
+      // = hora de SALIDA (candidata a "go lunch"), "arrival" = hora de
+      // REGRESO (candidata a "back lunch").
+      const departureCandidates: string[] = [];
+      const arrivalCandidates: string[] = [];
+      for (const row of activityRows) {
+        const breaks: Array<{ start: any; end: any }> =
+          Array.isArray(row?.lunch_breaks) && row.lunch_breaks.length
+            ? row.lunch_breaks
+            : [{
+                start: this.pickFirst<string>(row, ['lunch_in', 'lunch_start']),
+                end: this.pickFirst<string>(row, ['lunch_out', 'lunch_end']),
+              }];
+        for (const b of breaks) {
+          const start = toHHMMSS(b?.start);
+          const end = toHHMMSS(b?.end);
+          if (start) departureCandidates.push(start);
+          if (end) arrivalCandidates.push(end);
         }
       }
 
       const lastIntervalIndex = intervals.length - 1;
+
+      // Un TCW con N periodos tiene N-1 "gaps" (huecos entre periodos) —
+      // cada gap es, por posición/estructura del propio TCW, un lunch/break
+      // (period[i].time_out = "go lunch", period[i+1].time_in = "back
+      // lunch"), sin importar si Activity trae o no un match ahí. El
+      // emparejamiento con los breaks de Activity es POSICIONAL: el gap 1
+      // del TCW toma el break 1 que reportó Activity, el gap 2 el break 2,
+      // etc. — no por proximidad de horario, para no perder datos reales
+      // de Activity solo porque el TCW y el reloj difieren por unos
+      // minutos (esa diferencia ya la evidencia difference_hours/status).
+      const gapGoLunch = departureCandidates;
+      const gapBackLunch = arrivalCandidates;
 
       for (let i = 0; i < intervals.length; i++) {
         const interval = intervals[i];
         const tcwIn = toHHMMSS(interval.time_in);
         const tcwOut = toHHMMSS(interval.time_out);
         const tcwWorked = Number(interval.hours ?? 0);
+        const isFirst = i === 0;
+        const isLast = i === lastIntervalIndex;
 
-        let actInEvent: string | null = null;
-        let actOutEvent: string | null = null;
-        let actInTime: string | null = null;
-        let actOutTime: string | null = null;
+        let actInEvent: string | null;
+        let actOutEvent: string | null;
+        let actInTime: string | null;
+        let actOutTime: string | null;
 
-        // El label del evento (clock in / go lunch / back lunch / clock out)
-        // solo se pinta si REALMENTE hay una hora del Activity Report detrás.
-        // Si no hay match (actXxx === null), no hubo ningún registro en el
-        // Activity Report para ese punto — no se debe inventar el evento.
-        if (i === 0) {
+        // clock in / clock out: son el mismo evento que se está comparando
+        // (no hay una señal independiente del TCW que los confirme), así
+        // que solo se pintan si Activity realmente los respalda — igual
+        // que antes.
+        if (isFirst) {
           actInTime = actClockIn;
           actInEvent = actInTime ? 'clock in' : null;
-          if (lunchOutIntervalIndex === 0) {
-            actOutTime = actLunchIn;
-            actOutEvent = actOutTime ? 'go lunch' : null;
-          } else if (i === lastIntervalIndex) {
-            actOutTime = actClockOut;
-            actOutEvent = actOutTime ? 'clock out' : null;
-          } else {
-            actOutEvent = null;
-            actOutTime = null;
-          }
-        } else if (i === lunchInIntervalIndex) {
-          actInTime = actLunchOut;
-          actInEvent = actInTime ? 'back lunch' : null;
-          if (lunchOutIntervalIndex === i) {
-            actOutTime = actLunchIn;
-            actOutEvent = actOutTime ? 'go lunch' : null;
-          } else if (i === lastIntervalIndex) {
-            actOutTime = actClockOut;
-            actOutEvent = actOutTime ? 'clock out' : null;
-          } else {
-            actOutEvent = null;
-            actOutTime = null;
-          }
-        } else if (i === lastIntervalIndex) {
-          actInEvent = null;
-          actInTime = null;
+        } else {
+          // go lunch / back lunch: el TCW ya confirmó el gap con su propia
+          // estructura de periodos — el label se pinta siempre, con o sin
+          // respaldo de Activity.
+          actInTime = gapBackLunch[i - 1] ?? null;
+          actInEvent = 'back lunch';
+        }
+
+        if (isLast) {
           actOutTime = actClockOut;
           actOutEvent = actOutTime ? 'clock out' : null;
         } else {
-          actInEvent = null;
-          actOutEvent = null;
-          actInTime = null;
-          actOutTime = null;
+          actOutTime = gapGoLunch[i] ?? null;
+          actOutEvent = 'go lunch';
         }
 
-        const actWorked = diffHours(actInTime, actOutTime);
-        const differenceHours = this.round2(tcwWorked - actWorked);
-        const hasActivity = actInTime !== null || actOutTime !== null;
+        // Worked hours solo se calcula si HAY los dos lados — null (no 0)
+        // cuando falta uno, para no confundir "sin dato" con "0 horas".
+        const actWorked = (actInTime && actOutTime) ? diffHours(actInTime, actOutTime) : null;
+        const differenceHours = actWorked === null ? null : this.round2(tcwWorked - actWorked);
+        const hasActivity = actInTime !== null && actOutTime !== null;
         const status: 'fine' | 'error' =
-          !hasActivity || Math.abs(differenceHours) > 0.08 ? 'error' : 'fine';
+          !hasActivity || (differenceHours !== null && Math.abs(differenceHours) > 0.08) ? 'error' : 'fine';
 
         result.push({
           tcw_employee: employee,
@@ -6068,6 +6177,37 @@ export class PayrollService {
           activity_source: activitySource,
           difference_hours: differenceHours,
           status,
+        });
+      }
+
+      // Si Activity trae MÁS breaks de los que el TCW tiene gaps (ej. TCW
+      // = 1 solo periodo continuo, pero Activity vio un lunch de todos
+      // modos), los que sobran no se pierden en silencio — se agregan como
+      // filas extra (sin datos de TCW) para evidenciar la discrepancia.
+      const leftoverDepartures = departureCandidates.slice(lastIntervalIndex);
+      const leftoverArrivals = arrivalCandidates.slice(lastIntervalIndex);
+      const extraCount = Math.max(leftoverDepartures.length, leftoverArrivals.length);
+      for (let i = 0; i < extraCount; i++) {
+        const dep = leftoverDepartures[i] ?? null;
+        const arr = leftoverArrivals[i] ?? null;
+        const actWorked = (dep && arr) ? diffHours(dep, arr) : null;
+        result.push({
+          tcw_employee: employee,
+          tcw_date: date,
+          tcw_time_in: null,
+          tcw_time_out: null,
+          tcw_hours: 0,
+          tcw_paid_break: 0,
+          tcw_unpaid_break: 0,
+          tcw_total_hours: tcwTotalHours,
+          activity_in_event: arr ? 'back lunch' : null,
+          activity_out_event: dep ? 'go lunch' : null,
+          activity_in_time: arr,
+          activity_out_time: dep,
+          activity_worked_hours: actWorked,
+          activity_source: activitySource,
+          difference_hours: actWorked === null ? null : this.round2(0 - actWorked),
+          status: 'error',
         });
       }
     }
@@ -6129,6 +6269,7 @@ export class PayrollService {
     }
 
     let activityOneData: any[] = [];
+    let oneError: any = null;
     try {
       const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
       const { data } = await axios.post(
@@ -6138,32 +6279,88 @@ export class PayrollService {
       );
       activityOneData = data?.data ?? [];
     } catch (error) {
+      oneError = {
+        message: error.message,
+        status: error.response?.status ?? null,
+        response_data: error.response?.data ?? null,
+        base_url: process.env.ACTIVITY_REPORT_ONE_API ?? null,
+      };
       console.error('⚠️ [detail-records] Activity ONE clock-report/data failed:', error.message);
     }
 
     let activityVoutData: any[] = [];
+    let voutError: any = null;
+    let voutRawEventsSample: any[] = [];
+    let voutRawEventTypeCounts: Record<string, number> = {};
     try {
       const baseUrl = process.env.VOUT_API;
+      // /activity_report/clock-report/data exige JWT de usuario (401 siempre
+      // en server-to-server). El endpoint correcto para esto es
+      // /activity_report/clock-events — sin auth, hecho para consumo
+      // backend-a-backend (confirmado en el código fuente de vout-api).
+      // Devuelve eventos crudos por día; se agrupan a filas por
+      // (fecha, empleado) con buildVoutRowsFromClockEvents.
       const { data } = await axios.post(
-        `${baseUrl}/activity_report/clock-report/data`,
+        `${baseUrl}/activity_report/clock-events`,
         { start_date, end_date },
         { timeout: 15_000 },
       );
-      activityVoutData = data?.data ?? [];
+      const dateGroups = data?.data ?? [];
+      activityVoutData = this.buildVoutRowsFromClockEvents(dateGroups);
+      // DEBUG temporal: evidencia cruda para confirmar si VOUT manda
+      // type:'lunch' explícito o si el break viene como un segundo par
+      // clock_out/clock_in. Ver nota de borrado más abajo.
+      for (const group of dateGroups) {
+        for (const ev of group?.events ?? []) {
+          voutRawEventTypeCounts[ev.type] = (voutRawEventTypeCounts[ev.type] ?? 0) + 1;
+        }
+      }
+      voutRawEventsSample = dateGroups
+        .flatMap((g: any) => (g?.events ?? []).map((ev: any) => ({ date: g.date, ...ev })))
+        .slice(0, 15);
     } catch (error) {
+      voutError = {
+        message: error.message,
+        status: error.response?.status ?? null,
+        response_data: error.response?.data ?? null,
+        base_url: process.env.VOUT_API ?? null,
+      };
       console.error('⚠️ [detail-records] Activity VOUT clock-report/data failed:', error.message);
     }
 
-    // DEBUG temporal: buildActivityIndexDetail asume employee_name/date en el
-    // JSON (shape confirmado de Activity ONE). Si VOUT usa otros nombres de
-    // campo, el índice queda vacío en silencio y nunca matchea — esto expone
-    // el shape real para confirmarlo/descartarlo. Quitar una vez diagnosticado.
-    console.log('=== [detail-records] ACTIVITY VOUT SAMPLE ===', JSON.stringify(activityVoutData.slice(0, 2), null, 2));
-    console.log('=== [detail-records] ACTIVITY ONE SAMPLE ===', JSON.stringify(activityOneData.slice(0, 2), null, 2));
-
     const oneIndex = this.buildActivityIndexDetail(activityOneData);
     const voutIndex = this.buildActivityIndexDetail(activityVoutData);
-    console.log(`=== [detail-records] oneIndex employees: ${oneIndex.size} | voutIndex employees: ${voutIndex.size} ===`);
+
+    // DEBUG temporal: escribe la evidencia a un archivo en vez de solo
+    // console.log, para no depender de que alguien copie/pegue logs de
+    // consola. Se sobreescribe en cada llamada. Borrar este bloque (y los
+    // imports de fs/path arriba) una vez diagnosticado.
+    try {
+      fs.writeFileSync(
+        path.join(process.cwd(), 'debug_vout_diagnostic.json'),
+        JSON.stringify({
+          generated_at: new Date().toISOString(),
+          start_date,
+          end_date,
+          activityOneData_count: activityOneData.length,
+          activityVoutData_count: activityVoutData.length,
+          activityOneData_sample: activityOneData.slice(0, 3),
+          activityVoutData_sample: activityVoutData.slice(0, 3),
+          oneError,
+          voutError,
+          oneIndex_employee_count: oneIndex.size,
+          voutIndex_employee_count: voutIndex.size,
+          oneIndex_employee_names: [...oneIndex.keys()].slice(0, 10),
+          voutIndex_employee_names: [...voutIndex.keys()].slice(0, 10),
+          tcw_employee_names_sample: [...new Set(filteredTcwRows.map(r => r.employee))].slice(0, 10),
+          voutRawEventTypeCounts,
+          voutRawEventsSample,
+        }, null, 2),
+        'utf-8',
+      );
+    } catch (e) {
+      console.error('⚠️ [detail-records] No se pudo escribir debug_vout_diagnostic.json:', e.message);
+    }
 
     return this.buildClockComparisonDetailRows(filteredTcwRows, oneIndex, voutIndex);
   }
@@ -6252,9 +6449,9 @@ export class PayrollService {
         activity_out_event: row.activity_out_event ?? '—',
         activity_in_time: row.activity_in_time ?? '—',
         activity_out_time: row.activity_out_time ?? '—',
-        activity_worked_hours: row.activity_worked_hours,
+        activity_worked_hours: row.activity_worked_hours ?? '—', // null = sin dato, no 0
         activity_source: row.activity_source ?? '—',
-        difference_hours: row.difference_hours,
+        difference_hours: row.difference_hours ?? '—',
         status: row.status.toUpperCase(),
         time_break: (Number(row.tcw_paid_break ?? 0) > 0 || Number(row.tcw_unpaid_break ?? 0) > 0) ? 'SI' : 'NO',
       });

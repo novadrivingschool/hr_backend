@@ -86,6 +86,11 @@ type ICareEmailEvent =
   | 'committed_staff' | 'committed_coordinator' | 'committed_hr' | 'committed_management'
   | 'seguimiento_added_staff' | 'seguimiento_added_coordinator' | 'seguimiento_added_hr' | 'seguimiento_added_management'
   | 'commit_fulfilled_staff' | 'commit_fulfilled_coordinator' | 'commit_fulfilled_hr' | 'commit_fulfilled_management'
+  // 2026-08-23: fired ONCE at the end of the Coaching Session bundle
+  // (approveCommit/fulfillCommit with coaching_session_bundle:true) instead
+  // of 'seguimiento_added_*'/'commit_fulfilled_*' — see triggerCoachingSessionCompletedEmails.
+  | 'coaching_session_completed_staff' | 'coaching_session_completed_coordinator'
+  | 'coaching_session_completed_hr' | 'coaching_session_completed_management'
   | 'resolved_staff' | 'resolved_coordinator' | 'resolved_hr' | 'resolved_management'
   | 'coordinator_rejected_coordinator' | 'coordinator_rejected_hr' | 'coordinator_rejected_management'
   | 'rejection_review_accepted_coordinator' | 'rejection_review_accepted_hr' | 'rejection_review_accepted_management'
@@ -442,6 +447,36 @@ export class ICareService {
     if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'commit_fulfilled_coordinator', coordinatorEmails));
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_hr', allHrEmails));
     if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'commit_fulfilled_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  /**
+   * 2026-08-23: dispara UN solo evento — 'coaching_session_completed_*' —
+   * cuando approveCommit()/fulfillCommit() son el último paso del bundle de
+   * Coaching Session (dto.coaching_session_bundle === true). Reemplaza,
+   * para ese caso, a 'seguimiento_added_*'/'commit_fulfilled_*' — el
+   * usuario pidió explícitamente que el correo diga "Coaching Session",
+   * no "Follow-up", porque son conceptos distintos (la coaching session es
+   * el evento de hoy; un follow-up real es algo que pasa DESPUÉS, por
+   * separado, vía seguimientoDialog/addSeguimiento()).
+   * Misma resolución de destinatarios que el resto de los triggers.
+   */
+  private async triggerCoachingSessionCompletedEmails(id: string, record: ICare): Promise<void> {
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
+    const staffEmail = record.staff_name?.nova_email ?? null;
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const isHighCritical = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+    const sends: Promise<void>[] = [];
+    if (staffEmail) sends.push(this.triggerEmail(id, 'coaching_session_completed_staff', [staffEmail]));
+    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase) sends.push(this.triggerEmail(id, 'coaching_session_completed_coordinator', coordinatorEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'coaching_session_completed_hr', allHrEmails));
+    if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'coaching_session_completed_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -1314,7 +1349,11 @@ export class ICareService {
         this.triggerPendingHrReviewEmails(saved.id, saved).catch((err) =>
           this.logger.error(`❌ Failed to trigger 'pending_hr_review' emails for id=${saved.id}`, err?.message || err),
         );
-      } else {
+      } else if (!dto.skip_notification) {
+        // skip_notification=true (Coaching Session bundle): commit() +
+        // approveCommit()/fulfillCommit() fire right after in the same
+        // submit and the last of those is the one that actually notifies
+        // people — see JustifyICareDto.skip_notification.
         this.triggerJustifiedEmails(saved.id, saved).catch((err) =>
           this.logger.error(`❌ Failed to trigger 'justified' emails for id=${saved.id}`, err?.message || err),
         );
@@ -1474,8 +1513,11 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    // Notificar a HR + Coordinator + Management cuando el Staff hace commit
-    if (dto.committed) {
+    // Notificar a HR + Coordinator + Management cuando el Staff hace commit.
+    // skip_notification=true (Coaching Session bundle): approveCommit()/
+    // fulfillCommit() fire right after in the same submit and are the ones
+    // that actually notify people — see CommitICareDto.skip_notification.
+    if (dto.committed && !dto.skip_notification) {
       this.triggerCommittedEmails(saved.id, saved).catch((err) =>
         this.logger.error(
           `❌ Failed to trigger 'committed' emails for id=${saved.id}`,
@@ -1559,32 +1601,47 @@ export class ICareService {
     record.commit_approved_by = dto.approved_by;
     record.commit_approved_date = now.format('YYYY-MM-DD');
     record.commit_approved_time = now.format('HH:mm');
+    record.commit_approved_notes = dto.notes ?? null;
+    record.commit_approved_attachments = dto.attachments ?? [];
     record.status = ICareStatus.FOLLOWING_UP;
 
-    // Primer seguimiento
-    const firstSeguimiento = {
-      id: `seg_${Date.now()}`,
-      scheduled_date: dto.scheduled_date,
-      actual_date: null,
-      notes: dto.notes ?? null,
-      added_by: dto.approved_by,
-      created_at: now.format('YYYY-MM-DD HH:mm'),
-      attachments: dto.attachments ?? [],
-    };
-
-    record.seguimientos = [firstSeguimiento];
+    // 2026-08-22: ya NO se crea una entrada en `seguimientos[]` aquí. Elegir
+    // una fecha para el primer seguimiento es una decisión de PLANEACIÓN que
+    // pertenece al stage "Commit Approval" (Coaching Session o
+    // approveCommitDialog) — no es en sí un seguimiento realizado. El
+    // seguimiento real se crea después, cuando de verdad ocurre
+    // (addSeguimiento()). Antes esto se guardaba como un `seguimientos[0]`
+    // con actual_date:null, y el front lo mostraba como "Follow-up #1 ·
+    // Pending" ya desde este punto, lo cual era incorrecto.
+    if (!dto.is_fulfill_direct) {
+      record.next_followup_scheduled_date = dto.scheduled_date;
+    } else {
+      record.next_followup_scheduled_date = null;
+    }
 
     const saved = await this.iCareRepository.save(record);
 
-    // En la ruta "con seguimiento", el primer seguimiento dispara el email.
-    // En "fulfill directo" (is_fulfill_direct=true) el email lo dispara fulfillCommit.
+    // En la ruta "con seguimiento", este paso dispara el email. En "fulfill
+    // directo" (is_fulfill_direct=true) el email lo dispara fulfillCommit.
+    // 2026-08-23: si coaching_session_bundle=true, este es el cierre del
+    // bundle de Coaching Session — dispara 'coaching_session_completed_*'
+    // en vez de 'seguimiento_added_*' (ver ApproveCommitICareDto).
     if (!dto.is_fulfill_direct) {
-      this.triggerSeguimientoAddedEmails(saved.id, saved).catch((err) =>
-        this.logger.error(
-          `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
-          err?.message || err,
-        ),
-      );
+      if (dto.coaching_session_bundle) {
+        this.triggerCoachingSessionCompletedEmails(saved.id, saved).catch((err) =>
+          this.logger.error(
+            `❌ Failed to trigger 'coaching_session_completed' email for id=${saved.id}`,
+            err?.message || err,
+          ),
+        );
+      } else {
+        this.triggerSeguimientoAddedEmails(saved.id, saved).catch((err) =>
+          this.logger.error(
+            `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
+            err?.message || err,
+          ),
+        );
+      }
     }
 
     return this.transformDates([saved])[0];
@@ -1625,6 +1682,12 @@ export class ICareService {
     };
 
     record.seguimientos = [...(record.seguimientos ?? []), newSeguimiento];
+
+    // 2026-08-22: este seguimiento SÍ acaba de realizarse de verdad, así que
+    // limpiamos la fecha meramente "programada" que venía de Commit Approval
+    // (o del seguimiento anterior) — de aquí en adelante la fuente de verdad
+    // para "cuándo es el próximo" es `scheduled_date` de esta misma entrada.
+    record.next_followup_scheduled_date = null;
 
     const saved = await this.iCareRepository.save(record);
 
@@ -1669,6 +1732,8 @@ export class ICareService {
     record.commit_fulfilled_notes = dto.notes ?? null;
     record.commit_fulfilled_attachments = dto.attachments ?? [];
     record.status = ICareStatus.COMMIT_FULFILLED;
+    // 2026-08-22: ya no se espera ningún seguimiento futuro una vez fulfilled.
+    record.next_followup_scheduled_date = null;
 
     // Si se provee actual_date para el último seguimiento, actualizarlo
     if (dto.actual_date && record.seguimientos?.length) {
@@ -1679,12 +1744,27 @@ export class ICareService {
 
     const saved = await this.iCareRepository.save(record);
 
-    this.triggerCommitFulfilledEmails(saved.id, saved).catch((err) =>
-      this.logger.error(
-        `❌ Failed to trigger 'commit_fulfilled' email for id=${saved.id}`,
-        err?.message || err,
-      ),
-    );
+    // 2026-08-23: si coaching_session_bundle=true, este es el cierre del
+    // bundle de Coaching Session (ruta "fulfill directo") — dispara
+    // 'coaching_session_completed_*' en vez de 'commit_fulfilled_*' (ver
+    // FulfillCommitICareDto). Una llamada standalone posterior real (p.ej.
+    // "Mark Fulfilled" en seguimientoDialog tras uno o más follow-ups) NO
+    // manda el flag y sigue disparando 'commit_fulfilled_*' como siempre.
+    if (dto.coaching_session_bundle) {
+      this.triggerCoachingSessionCompletedEmails(saved.id, saved).catch((err) =>
+        this.logger.error(
+          `❌ Failed to trigger 'coaching_session_completed' email for id=${saved.id}`,
+          err?.message || err,
+        ),
+      );
+    } else {
+      this.triggerCommitFulfilledEmails(saved.id, saved).catch((err) =>
+        this.logger.error(
+          `❌ Failed to trigger 'commit_fulfilled' email for id=${saved.id}`,
+          err?.message || err,
+        ),
+      );
+    }
 
     return this.transformDates([saved])[0];
   }

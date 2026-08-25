@@ -59,6 +59,7 @@ export class HolidaysService {
       ...holidayData,
       type: holidayData.type || 'public',
       is_active: holidayData.is_active !== undefined ? holidayData.is_active : true,
+      is_mandatory: holidayData.is_mandatory !== undefined ? holidayData.is_mandatory : false,
     });
 
     const saved = await this.holidayRepository.save(holiday);
@@ -70,6 +71,7 @@ export class HolidaysService {
         type: saved.type,
         authorized_hours: saved.authorized_hours,
         is_active: saved.is_active,
+        is_mandatory: saved.is_mandatory,
       },
     });
 
@@ -106,6 +108,7 @@ export class HolidaysService {
       type: holiday.type,
       authorized_hours: holiday.authorized_hours,
       is_active: holiday.is_active,
+      is_mandatory: holiday.is_mandatory,
     };
 
     const updatedHoliday = this.holidayRepository.merge(holiday, updateData);
@@ -117,6 +120,7 @@ export class HolidaysService {
       type: saved.type,
       authorized_hours: saved.authorized_hours,
       is_active: saved.is_active,
+      is_mandatory: saved.is_mandatory,
     };
 
     // Determinar si fue toggle de active o edición general
@@ -146,6 +150,7 @@ export class HolidaysService {
         type: holiday.type,
         authorized_hours: holiday.authorized_hours,
         is_active: holiday.is_active,
+        is_mandatory: holiday.is_mandatory,
       },
     });
 
@@ -180,6 +185,7 @@ export class HolidaysService {
       date: string | null;
       authorized_hours: number | null;
       is_active?: boolean;
+      is_mandatory?: boolean;
       deleted_at?: Date;
     }>;
   }> {
@@ -205,6 +211,7 @@ export class HolidaysService {
         date: h.date,
         authorized_hours: h.authorized_hours,
         is_active: h.is_active,
+        is_mandatory: h.is_mandatory,
       })),
       // Si un id ya fue re-creado con el mismo nombre no debería duplicarse,
       // pero por las dudas filtramos deletes cuyo id siga vivo en currentRows.
@@ -215,6 +222,7 @@ export class HolidaysService {
           id: e.holiday_id,
           date: (e.changes?.before?.date as string) ?? null,
           authorized_hours: (e.changes?.before?.authorized_hours as number) ?? null,
+          is_mandatory: (e.changes?.before?.is_mandatory as boolean) ?? undefined,
           deleted_at: e.created_at,
         })),
     ].sort((a, b) => String(b.date ?? '').localeCompare(String(a.date ?? '')));

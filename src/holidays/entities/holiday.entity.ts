@@ -40,6 +40,12 @@ export class Holiday {
   })
   authorized_hours: number | null;
 
+  // Indica si las horas autorizadas de este holiday son de toma obligatoria
+  // para el empleado (true) o simplemente disponibles/opcionales (false).
+  // Informativo por ahora: no participa en el cálculo de payroll.service.ts.
+  @Column({ type: 'boolean', default: false })
+  is_mandatory: boolean;
+
   @Column({ type: 'text', nullable: true })
   description?: string;
 

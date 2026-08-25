@@ -2,7 +2,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray, IsObject, IsOptional, IsString,
-  MaxLength, ValidateNested,
+  ValidateNested,
 } from 'class-validator';
 
 class EmployeeRefDto {
@@ -22,9 +22,11 @@ export class CoordinatorRejectICareDto {
   @Type(() => EmployeeRefDto)
   rejected_by: EmployeeRefDto;
 
+  // 2026-08-20: @MaxLength(2000) removed at the user's explicit request
+  // ("no puedes dejar solo 2 mil, déjalo libre") — was rejecting real
+  // write-ups with a 400. Old declaration kept for reference: @MaxLength(2000)
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
   notes?: string;
 
   @IsOptional()

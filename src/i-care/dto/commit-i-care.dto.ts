@@ -5,7 +5,6 @@ import {
   IsOptional,
   IsString,
   Matches,
-  MaxLength,
   ValidateIf,
 } from 'class-validator';
 
@@ -56,10 +55,16 @@ export class CommitICareDto {
 
   /**
    * Optional free-text message written by the staff member.
+   * 2026-08-20: length cap removed at the user's request ("no puedes dejar
+   * solo 2 mil, déjalo libre") — it was rejecting real coaching-session
+   * write-ups with a 400 (committed_notes must be shorter than or equal to
+   * 2000 characters). Column is `type: 'text'` in the entity, no DB-level
+   * length limit, so removing this is safe. Old declaration kept commented
+   * for reference in case a cap needs to come back:
+   * @MaxLength(2000)
    */
   @IsOptional()
   @IsString()
-  @MaxLength(2000)
   committed_notes?: string;
 
   // 2026-08-19 workflow change: evidence becomes mandatory as soon as there
@@ -78,4 +83,15 @@ export class CommitICareDto {
     message: 'committed_attachments is required when committed_notes is provided',
   })
   committed_attachments?: string[];
+
+  /**
+   * 2026-08-22: see JustifyICareDto.skip_notification — same reasoning.
+   * The Coaching Session bundle is currently the ONLY caller of commit()
+   * (MyICare.vue's own commitDialog trigger is commented out), so this is
+   * always true in practice today; kept optional/defensive in case a
+   * standalone commit() caller is ever reintroduced.
+   */
+  @IsOptional()
+  @IsBoolean()
+  skip_notification?: boolean;
 }

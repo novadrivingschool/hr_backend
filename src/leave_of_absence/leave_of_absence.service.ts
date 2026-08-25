@@ -631,7 +631,49 @@ export class LeaveOfAbsenceService {
         this.assertValidDepartment(department);
         const tpl = await this.findTemplateOrThrow(department, templateId);
         tpl.label = dto.label.trim();
-        return this.templateRepo.save(tpl);
+        const saved = await this.templateRepo.save(tpl);
+        await this.propagateTemplateRename(department as LoaDepartmentEnum, templateId, saved.label);
+        return saved;
+    }
+
+    /**
+     * Al renombrar un template, propaga el nuevo label a las subtareas YA
+     * sembradas (por template_id) en LOAs existentes que sigan PENDIENTES
+     * (completed=false) — es la misma tarea, solo con otro nombre, así que
+     * el depto debe poder verla/completarla con el nombre correcto. Bug
+     * reportado por el usuario: updateSubtaskTemplate solo tocaba el
+     * catálogo (templateRepo); el snapshot en cada LOA (department_logs)
+     * quedaba con el label viejo para siempre, y syncMissingTemplateSubtasks
+     * no lo corregía porque el template_id ya matcheaba (no duplica, pero
+     * tampoco actualiza el label de lo ya sembrado).
+     * Las subtareas YA completadas se dejan intactas a propósito — son
+     * historial ("se hizo con ese nombre") y no deben cambiar
+     * retroactivamente, mismo criterio que deleteSubtaskTemplate no afecta
+     * instancias ya sembradas.
+     */
+    private async propagateTemplateRename(
+        department: LoaDepartmentEnum,
+        templateId: string,
+        label: string,
+    ): Promise<void> {
+        const rows = await this.repo.find();
+        const toSave: LeaveOfAbsence[] = [];
+
+        rows.forEach((row) => {
+            const status = row.department_logs?.[department];
+            if (!status || !Array.isArray(status.subtasks)) return;
+
+            let changed = false;
+            status.subtasks.forEach((s) => {
+                if (s.template_id === templateId && !s.completed && s.label !== label) {
+                    s.label = label;
+                    changed = true;
+                }
+            });
+            if (changed) toSave.push(row);
+        });
+
+        if (toSave.length) await this.repo.save(toSave);
     }
 
     /**
