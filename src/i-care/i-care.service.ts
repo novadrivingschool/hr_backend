@@ -98,6 +98,7 @@ type ICareEmailEvent =
   | 'rejection_review_accepted_reviewer' | 'rejection_review_overridden_reviewer'
   | 'hr_rejected_hr' | 'hr_rejected_management'
   | 'pending_hr_review_coordinator' | 'pending_hr_review_hr' | 'pending_hr_review_management'
+  | 'hc_handled_by_coordinator_coordinator' | 'hc_handled_by_coordinator_hr' | 'hc_handled_by_coordinator_management'
   | 'hc_accepted_hr' | 'hc_accepted_management' | 'hc_accepted_staff'
   | 'justification_downgraded_staff' | 'justification_downgraded_coordinator'
   | 'justification_downgraded_hr' | 'justification_downgraded_management'
@@ -536,6 +537,27 @@ export class ICareService {
     const sends: Promise<void>[] = [];
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'hr_rejected_hr', allHrEmails));
     if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'hr_rejected_management', managementEmails));
+    await Promise.all(sends);
+  }
+
+  /**
+   * 2026-08-27: aviso informativo (NO bloqueante) a HR/Mgmt + coordinator
+   * cuando un coordinator (o super-coordinator) justifica un High/Critical
+   * directamente. Reemplaza a triggerPendingHrReviewEmails en este punto --
+   * ya no hay nada que aprobar/rechazar, es solo visibilidad/auditoria.
+   */
+  private async triggerHcHandledByCoordinatorEmails(id: string, record: ICare): Promise<void> {
+    const coordinatorEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
+    const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
+      this.getEmailsByRole('hr'),
+      this.getEmailsByRole('management'),
+      this.getEmailsByAnyRole('hr-assistant'),
+    ]);
+    const allHrEmails = [...hrEmails, ...hrAssistantEmails];
+    const sends: Promise<void>[] = [];
+    if (coordinatorEmails.length > 0) sends.push(this.triggerEmail(id, 'hc_handled_by_coordinator_coordinator', coordinatorEmails));
+    if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'hc_handled_by_coordinator_hr', allHrEmails));
+    if (managementEmails.length > 0) sends.push(this.triggerEmail(id, 'hc_handled_by_coordinator_management', managementEmails));
     await Promise.all(sends);
   }
 
@@ -1313,30 +1335,29 @@ export class ICareService {
       ];
     }
 
-    const isCoordinatorRole = dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant';
+    // 2026-08-27: se suma 'super-coordinator' -- tambien gestiona H/C ahora,
+    // debe contar para el snapshot de auditoria y el aviso informativo a HR/Mgmt.
+    const isCoordinatorRole = dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant' || dto.caller_role === 'super-coordinator';
     // Se evalúa sobre record.urgency (valor ya persistido en memoria arriba) y no sobre
     // dto.urgency crudo, para que un caso downgraded (que no manda urgency en el payload
     // una vez corregido el frontend) siga evaluando correctamente su urgency real.
     const isHighCriticalUrgency = record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL;
 
     if (dto.justified) {
-      if (isCoordinatorRole && isHighCriticalUrgency) {
-        record.status = ICareStatus.PENDING_HR_REVIEW;
-        // Snapshot inmutable del momento de la escalación — se setea UNA sola vez.
-        // No puede volver a ocurrir para este record (una vez escalado, si HR/Mgmt
-        // downgradea la urgency queda bloqueada a Low/Medium — ver record.downgraded
-        // arriba — así que justify() nunca vuelve a entrar a este branch).
-        if (!record.escalated) {
-          record.escalated = true;
-          record.escalated_by = dto.approved_by;
-          record.escalated_date = now.format('YYYY-MM-DD');
-          record.escalated_time = now.format('HH:mm');
-          record.escalated_urgency = record.urgency;
-          record.escalated_comment = dto.comment ?? null;
-          record.escalated_attachments = dto.attachments?.length ? [...dto.attachments] : [];
-        }
-      } else {
-        record.status = ICareStatus.IN_PROGRESS;
+      // 2026-08-27: High/Critical ya no escala a pending_hr_review -- el
+      // coordinator (o super-coordinator) gestiona el caso completo, status
+      // siempre in_progress. Se conserva el snapshot escalated_* (para
+      // Analytics/auditoria) cuando aplica H/C-por-coordinator, pero ya no
+      // bloquea nada ni cambia el status.
+      record.status = ICareStatus.IN_PROGRESS;
+      if (isCoordinatorRole && isHighCriticalUrgency && !record.escalated) {
+        record.escalated = true;
+        record.escalated_by = dto.approved_by;
+        record.escalated_date = now.format('YYYY-MM-DD');
+        record.escalated_time = now.format('HH:mm');
+        record.escalated_urgency = record.urgency;
+        record.escalated_comment = dto.comment ?? null;
+        record.escalated_attachments = dto.attachments?.length ? [...dto.attachments] : [];
       }
     } else {
       record.status = ICareStatus.REJECTION_UNDER_REVIEW;
@@ -1346,8 +1367,10 @@ export class ICareService {
 
     if (dto.justified) {
       if (isCoordinatorRole && isHighCriticalUrgency) {
-        this.triggerPendingHrReviewEmails(saved.id, saved).catch((err) =>
-          this.logger.error(`❌ Failed to trigger 'pending_hr_review' emails for id=${saved.id}`, err?.message || err),
+        // 2026-08-27: ya no es un "review pendiente" que bloquea -- es un aviso
+        // informativo a HR/Mgmt de que el coordinator gestiono un H/C directamente.
+        this.triggerHcHandledByCoordinatorEmails(saved.id, saved).catch((err) =>
+          this.logger.error(`❌ Failed to trigger 'hc_handled_by_coordinator' emails for id=${saved.id}`, err?.message || err),
         );
       } else if (!dto.skip_notification) {
         // skip_notification=true (Coaching Session bundle): commit() +
@@ -1589,10 +1612,12 @@ export class ICareService {
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
     if (
-      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
+      // 2026-08-27: ya no bloquea por urgencia H/C -- el coordinator gestiona
+      // el caso completo. Se conserva solo el guard de peer-coordinator (auto-reporte).
+      (record.staff_name?.is_coordinator === true) &&
       (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
     ) {
-      throw new ForbiddenException('High and Critical records are handled exclusively by HR and Management');
+      throw new ForbiddenException('This record is handled exclusively by HR and Management');
     }
 
     const now = moment().tz('America/Chicago');
@@ -1663,7 +1688,9 @@ export class ICareService {
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
     if (
-      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
+      // 2026-08-27: ya no bloquea por urgencia H/C -- el coordinator gestiona
+      // el caso completo. Se conserva solo el guard de peer-coordinator (auto-reporte).
+      (record.staff_name?.is_coordinator === true) &&
       (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
     ) {
       throw new ForbiddenException('This record is handled exclusively by HR and Management');
@@ -1717,10 +1744,12 @@ export class ICareService {
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
     if (
-      (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) &&
+      // 2026-08-27: ya no bloquea por urgencia H/C -- el coordinator gestiona
+      // el caso completo. Se conserva solo el guard de peer-coordinator (auto-reporte).
+      (record.staff_name?.is_coordinator === true) &&
       (dto.caller_role === 'coordinator' || dto.caller_role === 'coordinator-assistant')
     ) {
-      throw new ForbiddenException('High and Critical records are handled exclusively by HR and Management');
+      throw new ForbiddenException('This record is handled exclusively by HR and Management');
     }
 
     const now = moment().tz('America/Chicago');
@@ -1779,7 +1808,9 @@ export class ICareService {
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
-    if (record.urgency === ICareUrgency.HIGH || record.urgency === ICareUrgency.CRITICAL || record.staff_name?.is_coordinator === true) {
+    // 2026-08-27: ya no bloquea por urgencia H/C -- el coordinator gestiona el
+    // caso completo. Se conserva solo el guard de peer-coordinator (auto-reporte).
+    if (record.staff_name?.is_coordinator === true) {
       throw new ForbiddenException('This record is handled exclusively by HR and Management');
     }
 

@@ -1,4 +1,5 @@
-import { IsString, IsNotEmpty, IsOptional, IsArray } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsArray, IsEnum } from 'class-validator';
+import { ICareUrgency } from '../../i-care/entities/i-care.entity';
 
 export class CreateICareReasonDto {
     @IsString()
@@ -8,6 +9,9 @@ export class CreateICareReasonDto {
     @IsString()
     @IsNotEmpty()
     reason: string;
+
+    @IsEnum(ICareUrgency)
+    urgency: ICareUrgency;
 
     @IsString()
     @IsOptional()

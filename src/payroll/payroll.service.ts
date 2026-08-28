@@ -5392,48 +5392,115 @@ export class PayrollService {
         // (distinguido por status: 'out' = salida, 'in' = regreso —
         // confirmado con datos reales que status importa más que
         // started_at/ended_at, que a veces vienen incompletos).
-        const isDeparture = (e: any) => e.type === 'clock_out' || (e.type === 'lunch' && e.status === 'out');
-        const isArrival = (e: any) => e.type === 'clock_in' || (e.type === 'lunch' && e.status === 'in');
+        // FIX 2026-08-25: datos crudos reales de VOUT (ver debug_vout_diagnostic.json,
+        // commit e3f5ff5) muestran el lunch 'in' ANTES que el 'out' (ej. in=14:00,
+        // out=15:00, duration=1h en el 'out') — para type:'lunch', status:'in' es la
+        // SALIDA a lunch (mas temprano) y status:'out' es el REGRESO (mas tarde);
+        // al reves de como se lee clock_in/clock_out. Pendiente confirmar con datos
+        // reales de produccion (esta muestra es de un empleado de prueba).
+        const isDeparture = (e: any) => e.type === 'clock_out' || (e.type === 'lunch' && e.status === 'in');
+        const isArrival = (e: any) => e.type === 'clock_in' || (e.type === 'lunch' && e.status === 'out');
 
-        const allSorted = [...events].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+        // FIX 2026-08-25 (2): eventos espurios (doble-toque en el checador)
+        // ensucian el dia antes de calcular apertura/cierre y breaks — un
+        // par in/out de segundos no es un evento real (visto en produccion:
+        // clock_in+clock_out a 5s de distancia, y un "lunch" de 1s). Para
+        // type:'lunch' VOUT ya manda 'duration' en el evento del par — se usa
+        // ese dato directo en vez de inferir. Para clock_in/clock_out (que no
+        // vienen pareados por id) se descarta un clock_in seguido de un
+        // clock_out sin nada real en medio si el hueco es menor al minimo.
+        const MIN_VALID_SECONDS = 120; // 2 min
 
-        const firstInIdx = allSorted.findIndex(e => e.type === 'clock_in');
-        let lastOutIdx = -1;
-        for (let i = allSorted.length - 1; i >= 0; i--) {
-          if (allSorted[i].type === 'clock_out') { lastOutIdx = i; break; }
+        const durationToSeconds = (d: string | null | undefined): number | null => {
+          const m = String(d ?? '').match(/^(\d+):(\d{2}):(\d{2})$/);
+          if (!m) return null;
+          return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+        };
+
+        const rawSorted = [...events].sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+
+        const noisyLunchIds = new Set<string>();
+        for (const ev of rawSorted) {
+          if (ev.type !== 'lunch') continue;
+          const secs = durationToSeconds(ev.duration);
+          if (secs !== null && secs < MIN_VALID_SECONDS) {
+            noisyLunchIds.add(String(ev.id).replace(/_in$|_out$/, ''));
+          }
         }
 
-        const clockInEvent = firstInIdx >= 0 ? allSorted[firstInIdx] : allSorted[0];
-        const clockOutEvent = lastOutIdx >= 0 ? allSorted[lastOutIdx] : allSorted[allSorted.length - 1];
+        let allSorted = rawSorted.filter(ev => {
+          if (ev.type !== 'lunch') return true;
+          return !noisyLunchIds.has(String(ev.id).replace(/_in$|_out$/, ''));
+        });
 
-        const middle = allSorted.filter((e, idx) => idx !== firstInIdx && idx !== lastOutIdx && e !== clockInEvent && e !== clockOutEvent);
-        const departures = middle.filter(isDeparture).sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
-        const arrivals = middle.filter(isArrival).sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)));
+        const clockNoise = new Set<any>();
+        for (let i = 0; i < allSorted.length; i++) {
+          const e = allSorted[i];
+          if (e.type !== 'clock_in') continue;
+          const next: any = allSorted[i + 1];
+          if (next?.type === 'clock_out') {
+            const gapSec = (new Date(next.started_at).getTime() - new Date(e.started_at).getTime()) / 1000;
+            if (gapSec >= 0 && gapSec < MIN_VALID_SECONDS) {
+              clockNoise.add(e);
+              clockNoise.add(next);
+            }
+          }
+        }
+        allSorted = allSorted.filter(e => !clockNoise.has(e));
 
-        // Se emparejan por posición cronológica dentro del propio VOUT
-        // (1ra salida con 1er regreso, 2da con 2do, etc.) — el matching
-        // contra los gaps del TCW (por proximidad ≤5min) pasa después,
-        // en buildClockComparisonDetailRows.
-        const breakCount = Math.max(departures.length, arrivals.length);
-        const lunch_breaks: Array<{ start: string | null; end: string | null }> = [];
-        for (let i = 0; i < breakCount; i++) {
-          lunch_breaks.push({
-            start: isoToHHMMSS(departures[i]?.started_at),
-            end: isoToHHMMSS(arrivals[i]?.started_at),
-          });
+        // FIX 2026-08-25 (5): el modelo anterior (primer clock_in / ultimo
+        // clock_out del dia + "breaks" del medio emparejados por indice)
+        // no distinguia cuantos periodos reales tenia el dia ni respetaba
+        // el orden cuando un lunch caia dentro de lo que el TCW ve como un
+        // solo periodo -- terminaba pintando el clock_out del dia donde no
+        // iba. Ahora se camina el timeline UNA sola vez y se arman
+        // "segmentos" en orden cronologico real (clock in, go lunch, back
+        // lunch, clock out, ...): cada arrival (clock_in / back lunch)
+        // ABRE un segmento, cada departure (clock_out / go lunch) lo
+        // CIERRA. Si un segmento se queda sin cerrar ("sin clock out") o
+        // sin abrir (dato raro), ese lado queda en null en vez de
+        // inventarse una hora. buildClockComparisonDetailRows reparte
+        // estos segmentos entre los periodos del TCW en este mismo orden.
+        const labelFor = (e: any): string | null => {
+          if (e.type === 'clock_in') return 'clock in';
+          if (e.type === 'clock_out') return 'clock out';
+          if (e.type === 'lunch') return e.status === 'in' ? 'go lunch' : 'back lunch';
+          return null;
+        };
+
+        const segments: Array<{ in_time: string | null; in_label: string | null; out_time: string | null; out_label: string | null }> = [];
+        let pendingIn: any = null;
+        for (const e of allSorted) {
+          if (isArrival(e)) {
+            if (pendingIn) {
+              // Dos arrivals seguidas sin un departure en medio — no
+              // debería pasar con datos válidos; se cierra la pendiente
+              // sin "out" en vez de perder el evento.
+              segments.push({ in_time: isoToHHMMSS(pendingIn.started_at), in_label: labelFor(pendingIn), out_time: null, out_label: null });
+            }
+            pendingIn = e;
+          } else if (isDeparture(e)) {
+            if (pendingIn) {
+              segments.push({ in_time: isoToHHMMSS(pendingIn.started_at), in_label: labelFor(pendingIn), out_time: isoToHHMMSS(e.started_at), out_label: labelFor(e) });
+              pendingIn = null;
+            } else {
+              segments.push({ in_time: null, in_label: null, out_time: isoToHHMMSS(e.started_at), out_label: labelFor(e) });
+            }
+          }
+        }
+        if (pendingIn) {
+          segments.push({ in_time: isoToHHMMSS(pendingIn.started_at), in_label: labelFor(pendingIn), out_time: null, out_label: null });
         }
 
         rows.push({
           date,
           employee_number,
           employee_name: `${employee_name} ${employee_last_name}`.trim(),
-          clock_in: isoToHHMMSS(clockInEvent?.started_at),
-          clock_out: isoToHHMMSS(clockOutEvent?.started_at),
-          // Compat: primer break como lunch_start/lunch_end "plano" para
-          // quien siga leyendo esos dos campos sueltos.
-          lunch_start: lunch_breaks[0]?.start ?? null,
-          lunch_end: lunch_breaks[0]?.end ?? null,
-          lunch_breaks,
+          // Compat: primer/último segmento como clock_in/clock_out "planos"
+          // para quien siga leyendo esos dos campos sueltos.
+          clock_in: segments[0]?.in_time ?? null,
+          clock_out: segments[segments.length - 1]?.out_time ?? null,
+          segments,
         });
       }
     }
@@ -6068,155 +6135,138 @@ export class PayrollService {
 
       // Mismos alias por proveedor que ya usa upsertActivityRow (línea ~3855)
       // para clock_in/out — ONE y VOUT no nombran los campos igual.
-      const actClockIn = toHHMMSS(
-        this.pickFirst<string>(activityRows[0], ['clock_in', 'time_in', 'in', 'shift_start']),
-      );
-      const actClockOut = toHHMMSS(
-        this.pickFirst<string>(activityRows[activityRows.length - 1], ['clock_out', 'time_out', 'out', 'shift_end']),
-      );
-
       const tcwTotalHours = this.round2(Number(intervals[0]?.total_hours ?? 0));
 
-      // Candidatos de break/lunch de Activity, en orden cronológico: TODOS
-      // los que traiga cada fila (lunch_breaks, si viene de VOUT vía
-      // buildVoutRowsFromClockEvents — puede haber más de uno), o fallback
-      // a lunch_in/lunch_start + lunch_out/lunch_end si la fila no trae el
-      // arreglo (caso ONE, que solo maneja un lunch por día). "departure"
-      // = hora de SALIDA (candidata a "go lunch"), "arrival" = hora de
-      // REGRESO (candidata a "back lunch").
-      const departureCandidates: string[] = [];
-      const arrivalCandidates: string[] = [];
+      // Segmentos de Activity para este día: cada uno ya viene ordenado
+      // cronológicamente con su propio par in/out (ver
+      // buildVoutRowsFromClockEvents). ONE no expone .segments (solo
+      // maneja un lunch por día, siempre real) — se sintetiza el mismo
+      // shape aquí a partir de sus campos planos.
+      const activitySegments: Array<{ in_time: string | null; in_label: string | null; out_time: string | null; out_label: string | null }> = [];
       for (const row of activityRows) {
-        const breaks: Array<{ start: any; end: any }> =
-          Array.isArray(row?.lunch_breaks) && row.lunch_breaks.length
-            ? row.lunch_breaks
-            : [{
-                start: this.pickFirst<string>(row, ['lunch_in', 'lunch_start']),
-                end: this.pickFirst<string>(row, ['lunch_out', 'lunch_end']),
-              }];
-        for (const b of breaks) {
-          const start = toHHMMSS(b?.start);
-          const end = toHHMMSS(b?.end);
-          if (start) departureCandidates.push(start);
-          if (end) arrivalCandidates.push(end);
+        if (Array.isArray(row?.segments)) {
+          activitySegments.push(...row.segments);
+          continue;
+        }
+        const clockIn = toHHMMSS(this.pickFirst<string>(row, ['clock_in', 'time_in', 'in', 'shift_start']));
+        const clockOut = toHHMMSS(this.pickFirst<string>(row, ['clock_out', 'time_out', 'out', 'shift_end']));
+        const lunchIn = toHHMMSS(this.pickFirst<string>(row, ['lunch_in', 'lunch_start']));
+        const lunchOut = toHHMMSS(this.pickFirst<string>(row, ['lunch_out', 'lunch_end']));
+        if (lunchIn || lunchOut) {
+          activitySegments.push({ in_time: clockIn, in_label: clockIn ? 'clock in' : null, out_time: lunchIn, out_label: lunchIn ? 'go lunch' : null });
+          activitySegments.push({ in_time: lunchOut, in_label: lunchOut ? 'back lunch' : null, out_time: clockOut, out_label: clockOut ? 'clock out' : null });
+        } else {
+          activitySegments.push({ in_time: clockIn, in_label: clockIn ? 'clock in' : null, out_time: clockOut, out_label: clockOut ? 'clock out' : null });
         }
       }
 
-      const lastIntervalIndex = intervals.length - 1;
-
-      // Un TCW con N periodos tiene N-1 "gaps" (huecos entre periodos) —
-      // cada gap es, por posición/estructura del propio TCW, un lunch/break
-      // (period[i].time_out = "go lunch", period[i+1].time_in = "back
-      // lunch"), sin importar si Activity trae o no un match ahí. El
-      // emparejamiento con los breaks de Activity es POSICIONAL: el gap 1
-      // del TCW toma el break 1 que reportó Activity, el gap 2 el break 2,
-      // etc. — no por proximidad de horario, para no perder datos reales
-      // de Activity solo porque el TCW y el reloj difieren por unos
-      // minutos (esa diferencia ya la evidencia difference_hours/status).
-      const gapGoLunch = departureCandidates;
-      const gapBackLunch = arrivalCandidates;
+      // FIX 2026-08-25 (6): en vez de "1 segmento por gap, el último
+      // absorbe el resto" (asumía que lo extra siempre cae al final), cada
+      // segmento de Activity se asigna al periodo del TCW cuyo time_in
+      // esté MÁS CERCA en minutos — así un lunch que Activity vio más
+      // cerca del periodo siguiente no se le atribuye al periodo anterior
+      // (o viceversa), respetando que el TCW manda en la ESTRUCTURA de
+      // periodos. La asignación es monótona (nunca retrocede): como ambas
+      // listas ya vienen en orden cronológico, un segmento nunca se asigna
+      // a un periodo anterior al del segmento previo.
+      const intervalTimeIns = intervals.map((iv) => toHHMMSS(iv.time_in));
+      const segsByInterval: Array<typeof activitySegments> = intervals.map(() => []);
+      let runningIdx = 0;
+      for (const seg of activitySegments) {
+        const segTime = seg.in_time ?? seg.out_time;
+        let bestIdx = runningIdx;
+        let bestDist = minutesDiff(segTime, intervalTimeIns[runningIdx]) ?? Infinity;
+        for (let j = runningIdx + 1; j < intervals.length; j++) {
+          const d = minutesDiff(segTime, intervalTimeIns[j]) ?? Infinity;
+          if (d <= bestDist) { bestDist = d; bestIdx = j; }
+        }
+        segsByInterval[bestIdx].push(seg);
+        runningIdx = bestIdx;
+      }
 
       for (let i = 0; i < intervals.length; i++) {
         const interval = intervals[i];
         const tcwIn = toHHMMSS(interval.time_in);
         const tcwOut = toHHMMSS(interval.time_out);
         const tcwWorked = Number(interval.hours ?? 0);
-        const isFirst = i === 0;
-        const isLast = i === lastIntervalIndex;
 
-        let actInEvent: string | null;
-        let actOutEvent: string | null;
-        let actInTime: string | null;
-        let actOutTime: string | null;
+        const segsForInterval = segsByInterval[i];
+        const rowsForInterval = segsForInterval.length ? segsForInterval : [null];
+        const lastSubIdx = rowsForInterval.length - 1;
 
-        // clock in / clock out: son el mismo evento que se está comparando
-        // (no hay una señal independiente del TCW que los confirme), así
-        // que solo se pintan si Activity realmente los respalda — igual
-        // que antes.
-        if (isFirst) {
-          actInTime = actClockIn;
-          actInEvent = actInTime ? 'clock in' : null;
-        } else {
-          // go lunch / back lunch: el TCW ya confirmó el gap con su propia
-          // estructura de periodos — el label se pinta siempre, con o sin
-          // respaldo de Activity.
-          actInTime = gapBackLunch[i - 1] ?? null;
-          actInEvent = 'back lunch';
-        }
+        // Suma de horas de Activity de TODOS los segmentos de este
+        // periodo, para comparar contra tcwWorked UNA vez (en la fila que
+        // cierra el periodo) en vez de comparar el total del periodo
+        // contra un solo segmento suelto.
+        const groupActWorked = rowsForInterval.reduce((sum: number, s) => {
+          const w = (s?.in_time && s?.out_time) ? diffHours(s.in_time, s.out_time) : 0;
+          return sum + w;
+        }, 0);
+        const groupHasActivity = rowsForInterval.every((s) => s?.in_time && s?.out_time);
 
-        if (isLast) {
-          actOutTime = actClockOut;
-          actOutEvent = actOutTime ? 'clock out' : null;
-        } else {
-          actOutTime = gapGoLunch[i] ?? null;
-          actOutEvent = 'go lunch';
-        }
+        rowsForInterval.forEach((seg, subIdx) => {
+          const isFirstSub = subIdx === 0;
+          const isLastSub = subIdx === lastSubIdx;
+          const actInTime = seg?.in_time ?? null;
+          const actInEvent = seg?.in_label ?? null;
+          const actOutTime = seg?.out_time ?? null;
+          const actOutEvent = seg?.out_label ?? null;
 
-        // Worked hours solo se calcula si HAY los dos lados — null (no 0)
-        // cuando falta uno, para no confundir "sin dato" con "0 horas".
-        const actWorked = (actInTime && actOutTime) ? diffHours(actInTime, actOutTime) : null;
-        const differenceHours = actWorked === null ? null : this.round2(tcwWorked - actWorked);
-        const hasActivity = actInTime !== null && actOutTime !== null;
-        const status: 'fine' | 'error' =
-          !hasActivity || (differenceHours !== null && Math.abs(differenceHours) > 0.08) ? 'error' : 'fine';
+          // Worked hours solo se calcula si HAY los dos lados — null (no 0)
+          // cuando falta uno, para no confundir "sin dato" con "0 horas".
+          const actWorked = (actInTime && actOutTime) ? diffHours(actInTime, actOutTime) : null;
 
-        result.push({
-          tcw_employee: employee,
-          tcw_date: date,
-          tcw_time_in: tcwIn,
-          tcw_time_out: tcwOut,
-          tcw_hours: tcwWorked,
-          tcw_paid_break: this.round2(Number(interval.paid_break ?? 0)),
-          tcw_unpaid_break: this.round2(Number(interval.unpaid_break ?? 0)),
-          tcw_total_hours: tcwTotalHours,
-          activity_in_event: actInEvent,
-          activity_out_event: actOutEvent,
-          activity_in_time: actInTime,
-          activity_out_time: actOutTime,
-          activity_worked_hours: actWorked,
-          activity_source: activitySource,
-          difference_hours: differenceHours,
-          status,
-        });
-      }
+          // FIX 2026-08-25 (8): cuando un periodo del TCW se desglosa en
+          // varias filas, el tcw_time_in real solo corresponde al PRIMER
+          // evento de Activity de ese periodo, y el tcw_time_out real solo
+          // al ÚLTIMO — un clock_out de re-checada a medio periodo NO es
+          // el cierre real del periodo aunque sea la primera fila. Las
+          // horas/paid/unpaid del TCW y la comparación de diferencia van
+          // junto al cierre (última fila), sumando TODOS los segmentos del
+          // periodo, no solo el último.
+          const differenceHours = isLastSub
+            ? (groupHasActivity ? this.round2(tcwWorked - groupActWorked) : null)
+            : null;
+          const status: 'fine' | 'error' = isLastSub
+            ? (!groupHasActivity || (differenceHours !== null && Math.abs(differenceHours) > 0.08) ? 'error' : 'fine')
+            : 'error';
 
-      // Si Activity trae MÁS breaks de los que el TCW tiene gaps (ej. TCW
-      // = 1 solo periodo continuo, pero Activity vio un lunch de todos
-      // modos), los que sobran no se pierden en silencio — se agregan como
-      // filas extra (sin datos de TCW) para evidenciar la discrepancia.
-      const leftoverDepartures = departureCandidates.slice(lastIntervalIndex);
-      const leftoverArrivals = arrivalCandidates.slice(lastIntervalIndex);
-      const extraCount = Math.max(leftoverDepartures.length, leftoverArrivals.length);
-      for (let i = 0; i < extraCount; i++) {
-        const dep = leftoverDepartures[i] ?? null;
-        const arr = leftoverArrivals[i] ?? null;
-        const actWorked = (dep && arr) ? diffHours(dep, arr) : null;
-        result.push({
-          tcw_employee: employee,
-          tcw_date: date,
-          tcw_time_in: null,
-          tcw_time_out: null,
-          tcw_hours: 0,
-          tcw_paid_break: 0,
-          tcw_unpaid_break: 0,
-          tcw_total_hours: tcwTotalHours,
-          activity_in_event: arr ? 'back lunch' : null,
-          activity_out_event: dep ? 'go lunch' : null,
-          activity_in_time: arr,
-          activity_out_time: dep,
-          activity_worked_hours: actWorked,
-          activity_source: activitySource,
-          difference_hours: actWorked === null ? null : this.round2(0 - actWorked),
-          status: 'error',
+          result.push({
+            tcw_employee: employee,
+            tcw_date: date,
+            tcw_time_in: isFirstSub ? tcwIn : null,
+            tcw_time_out: isLastSub ? tcwOut : null,
+            tcw_hours: isLastSub ? tcwWorked : 0,
+            tcw_paid_break: isLastSub ? this.round2(Number(interval.paid_break ?? 0)) : 0,
+            tcw_unpaid_break: isLastSub ? this.round2(Number(interval.unpaid_break ?? 0)) : 0,
+            tcw_total_hours: tcwTotalHours,
+            activity_in_event: actInEvent,
+            activity_out_event: actOutEvent,
+            activity_in_time: actInTime,
+            activity_out_time: actOutTime,
+            activity_worked_hours: actWorked,
+            activity_source: activitySource,
+            difference_hours: differenceHours,
+            status,
+          });
         });
       }
     }
 
+    // FIX 2026-08-25 (7): las filas "extra" de un periodo partido (ver
+    // arriba) no tienen tcw_time_in propio (null) — ordenar SOLO por
+    // tcw_time_in las mandaba siempre al final del día sin importar su
+    // hora real, deshaciendo el orden cronológico recién armado. Se usa
+    // tcw_time_in si existe, si no la hora de Activity de esa misma fila,
+    // para que caiga en su posición real.
+    const sortKey = (r: DetailRow): number | null =>
+      this.timeToMinutes(r.tcw_time_in) ?? this.timeToMinutes(r.activity_in_time) ?? this.timeToMinutes(r.activity_out_time);
+
     result.sort((a, b) => {
       if (a.tcw_date === b.tcw_date) {
         if (a.tcw_employee === b.tcw_employee) {
-          const aMin = this.timeToMinutes(a.tcw_time_in);
-          const bMin = this.timeToMinutes(b.tcw_time_in);
+          const aMin = sortKey(a);
+          const bMin = sortKey(b);
           if (aMin === null && bMin === null) return 0;
           if (aMin === null) return 1;
           if (bMin === null) return -1;

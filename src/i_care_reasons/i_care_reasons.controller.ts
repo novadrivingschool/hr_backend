@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe, Query, Res } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, ParseIntPipe, Query, Res, UploadedFile, UseInterceptors, BadRequestException } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ICareReasonsService } from './i_care_reasons.service';
 import { CreateICareReasonDto } from './dto/create-i_care_reason.dto';
 import { UpdateICareReasonDto } from './dto/update-i_care_reason.dto';
@@ -24,6 +25,13 @@ export class ICareReasonsController {
     @Query('category') category?: string,
   ) {
     return this.iCareReasonsService.exportExcel(res, category);
+  }
+
+  @Post('import/excel')
+  @UseInterceptors(FileInterceptor('file'))
+  async importExcel(@UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException('No file received');
+    return this.iCareReasonsService.importExcel(file.buffer);
   }
 
   @Get(':id')
