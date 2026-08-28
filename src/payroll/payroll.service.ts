@@ -6160,29 +6160,76 @@ export class PayrollService {
         }
       }
 
-      // FIX 2026-08-25 (6): en vez de "1 segmento por gap, el último
-      // absorbe el resto" (asumía que lo extra siempre cae al final), cada
-      // segmento de Activity se asigna al periodo del TCW cuyo time_in
-      // esté MÁS CERCA en minutos — así un lunch que Activity vio más
-      // cerca del periodo siguiente no se le atribuye al periodo anterior
-      // (o viceversa), respetando que el TCW manda en la ESTRUCTURA de
-      // periodos. La asignación es monótona (nunca retrocede): como ambas
-      // listas ya vienen en orden cronológico, un segmento nunca se asigna
-      // a un periodo anterior al del segmento previo.
+      // FIX 2026-08-26 (9): el fix (6) asignaba el SEGMENTO COMPLETO a un
+      // periodo del TCW usando solo su lado "in" (o "out" si "in" faltaba).
+      // Eso falla cuando un segmento entra cerca de un periodo pero su
+      // salida está mucho más cerca de OTRO periodo (p.ej. un clock_in que
+      // cruza el hueco administrativo entre 2 periodos del TCW sin ningún
+      // evento de Activity justo en el hueco: el "in" pertenece al periodo
+      // de antes, el "out" al de después, y ya no son el mismo periodo).
+      // Ahora el lado "in" y el lado "out" de CADA segmento se asignan de
+      // forma INDEPENDIENTE — cada uno a su periodo más cercano por su
+      // propia hora — y luego, periodo por periodo, los eventos in/out que
+      // cayeron ahí se vuelven a emparejar en orden cronológico. Así un
+      // segmento que cruza un hueco queda partido en 2 medias filas (una
+      // por periodo), en vez de pegarse entero al periodo equivocado.
       const intervalTimeIns = intervals.map((iv) => toHHMMSS(iv.time_in));
-      const segsByInterval: Array<typeof activitySegments> = intervals.map(() => []);
-      let runningIdx = 0;
-      for (const seg of activitySegments) {
-        const segTime = seg.in_time ?? seg.out_time;
-        let bestIdx = runningIdx;
-        let bestDist = minutesDiff(segTime, intervalTimeIns[runningIdx]) ?? Infinity;
-        for (let j = runningIdx + 1; j < intervals.length; j++) {
-          const d = minutesDiff(segTime, intervalTimeIns[j]) ?? Infinity;
-          if (d <= bestDist) { bestDist = d; bestIdx = j; }
+      const intervalTimeOuts = intervals.map((iv) => toHHMMSS(iv.time_out));
+
+      type ActEvent = { time: string; label: string | null; kind: 'in' | 'out' };
+      const inEvents: ActEvent[] = activitySegments
+        .filter((s) => s.in_time)
+        .map((s) => ({ time: s.in_time as string, label: s.in_label, kind: 'in' as const }));
+      const outEvents: ActEvent[] = activitySegments
+        .filter((s) => s.out_time)
+        .map((s) => ({ time: s.out_time as string, label: s.out_label, kind: 'out' as const }));
+
+      // Misma mecánica de asignación monótona por cercanía del fix (6),
+      // reutilizada para las 2 listas (in y out) por separado.
+      const bucketByNearest = (events: ActEvent[], targets: (string | null)[]): ActEvent[][] => {
+        const buckets: ActEvent[][] = targets.map(() => []);
+        let runningIdx = 0;
+        for (const ev of events) {
+          let bestIdx = runningIdx;
+          let bestDist = minutesDiff(ev.time, targets[runningIdx]) ?? Infinity;
+          for (let j = runningIdx + 1; j < targets.length; j++) {
+            const d = minutesDiff(ev.time, targets[j]) ?? Infinity;
+            if (d <= bestDist) { bestDist = d; bestIdx = j; }
+          }
+          buckets[bestIdx].push(ev);
+          runningIdx = bestIdx;
         }
-        segsByInterval[bestIdx].push(seg);
-        runningIdx = bestIdx;
-      }
+        return buckets;
+      };
+
+      const inBuckets = bucketByNearest(inEvents, intervalTimeIns);
+      const outBuckets = bucketByNearest(outEvents, intervalTimeOuts);
+
+      // Dentro de cada periodo, los eventos in/out ya asignados se
+      // vuelven a emparejar cronológicamente (mismo patrón pendingIn con
+      // el que buildVoutRowsFromClockEvents arma los segmentos originales)
+      // para producir las filas reales de ese periodo.
+      type ActRow = { in_time: string | null; in_label: string | null; out_time: string | null; out_label: string | null };
+      const pairEvents = (events: ActEvent[]): ActRow[] => {
+        const merged = [...events].sort((a, b) => (this.timeToMinutes(a.time) ?? 0) - (this.timeToMinutes(b.time) ?? 0));
+        const paired: ActRow[] = [];
+        let pendingIn: ActEvent | null = null;
+        for (const ev of merged) {
+          if (ev.kind === 'in') {
+            if (pendingIn) paired.push({ in_time: pendingIn.time, in_label: pendingIn.label, out_time: null, out_label: null });
+            pendingIn = ev;
+          } else if (pendingIn) {
+            paired.push({ in_time: pendingIn.time, in_label: pendingIn.label, out_time: ev.time, out_label: ev.label });
+            pendingIn = null;
+          } else {
+            paired.push({ in_time: null, in_label: null, out_time: ev.time, out_label: ev.label });
+          }
+        }
+        if (pendingIn) paired.push({ in_time: pendingIn.time, in_label: pendingIn.label, out_time: null, out_label: null });
+        return paired;
+      };
+
+      const rowsByInterval: ActRow[][] = intervals.map((_, i) => pairEvents([...inBuckets[i], ...outBuckets[i]]));
 
       for (let i = 0; i < intervals.length; i++) {
         const interval = intervals[i];
@@ -6190,13 +6237,32 @@ export class PayrollService {
         const tcwOut = toHHMMSS(interval.time_out);
         const tcwWorked = Number(interval.hours ?? 0);
 
-        const segsForInterval = segsByInterval[i];
-        const rowsForInterval = segsForInterval.length ? segsForInterval : [null];
-        const lastSubIdx = rowsForInterval.length - 1;
+        const rowsForInterval = rowsByInterval[i].length ? rowsByInterval[i] : [null];
+
+        // El tcw_time_in real va en la fila cuya PROPIA entrada está más
+        // cerca de la hora real de entrada del periodo, y el tcw_time_out
+        // real en la fila cuya PROPIA salida está más cerca de la hora
+        // real de salida — de forma independiente, así que pueden caer en
+        // filas distintas (p.ej. la 1ra recibe el tcw_in y la ÚLTIMA el
+        // tcw_out, aunque haya filas intermedias sin ninguno de los dos).
+        // Con una sola fila (o el placeholder de "sin actividad"), ambos
+        // caen ahí sin importar si esa fila tiene el lado in/out vacío.
+        let winInIdx = 0;
+        let winOutIdx = rowsForInterval.length - 1;
+        if (rowsForInterval.length > 1) {
+          let bestIn = Infinity;
+          let bestOut = Infinity;
+          rowsForInterval.forEach((seg, idx) => {
+            const dIn = minutesDiff(seg?.in_time ?? null, tcwIn) ?? Infinity;
+            if (dIn < bestIn) { bestIn = dIn; winInIdx = idx; }
+            const dOut = minutesDiff(seg?.out_time ?? null, tcwOut) ?? Infinity;
+            if (dOut < bestOut) { bestOut = dOut; winOutIdx = idx; }
+          });
+        }
 
         // Suma de horas de Activity de TODOS los segmentos de este
         // periodo, para comparar contra tcwWorked UNA vez (en la fila que
-        // cierra el periodo) en vez de comparar el total del periodo
+        // gana el tcw_out) en vez de comparar el total del periodo
         // contra un solo segmento suelto.
         const groupActWorked = rowsForInterval.reduce((sum: number, s) => {
           const w = (s?.in_time && s?.out_time) ? diffHours(s.in_time, s.out_time) : 0;
@@ -6205,8 +6271,8 @@ export class PayrollService {
         const groupHasActivity = rowsForInterval.every((s) => s?.in_time && s?.out_time);
 
         rowsForInterval.forEach((seg, subIdx) => {
-          const isFirstSub = subIdx === 0;
-          const isLastSub = subIdx === lastSubIdx;
+          const isWinIn = subIdx === winInIdx;
+          const isWinOut = subIdx === winOutIdx;
           const actInTime = seg?.in_time ?? null;
           const actInEvent = seg?.in_label ?? null;
           const actOutTime = seg?.out_time ?? null;
@@ -6216,29 +6282,29 @@ export class PayrollService {
           // cuando falta uno, para no confundir "sin dato" con "0 horas".
           const actWorked = (actInTime && actOutTime) ? diffHours(actInTime, actOutTime) : null;
 
-          // FIX 2026-08-25 (8): cuando un periodo del TCW se desglosa en
-          // varias filas, el tcw_time_in real solo corresponde al PRIMER
-          // evento de Activity de ese periodo, y el tcw_time_out real solo
-          // al ÚLTIMO — un clock_out de re-checada a medio periodo NO es
-          // el cierre real del periodo aunque sea la primera fila. Las
-          // horas/paid/unpaid del TCW y la comparación de diferencia van
-          // junto al cierre (última fila), sumando TODOS los segmentos del
-          // periodo, no solo el último.
-          const differenceHours = isLastSub
+          // FIX 2026-08-25 (8) + (9): cuando un periodo del TCW se
+          // desglosa en varias filas, el tcw_time_in real solo va en la
+          // fila ganadora "in" y el tcw_time_out real solo en la fila
+          // ganadora "out" (ver arriba) — un clock_out de re-checada a
+          // medio periodo NO es el cierre real aunque sea la primera fila.
+          // Las horas/paid/unpaid del TCW y la comparación de diferencia
+          // van junto a la fila ganadora "out", sumando TODOS los
+          // segmentos del periodo, no solo ese.
+          const differenceHours = isWinOut
             ? (groupHasActivity ? this.round2(tcwWorked - groupActWorked) : null)
             : null;
-          const status: 'fine' | 'error' = isLastSub
+          const status: 'fine' | 'error' = isWinOut
             ? (!groupHasActivity || (differenceHours !== null && Math.abs(differenceHours) > 0.08) ? 'error' : 'fine')
             : 'error';
 
           result.push({
             tcw_employee: employee,
             tcw_date: date,
-            tcw_time_in: isFirstSub ? tcwIn : null,
-            tcw_time_out: isLastSub ? tcwOut : null,
-            tcw_hours: isLastSub ? tcwWorked : 0,
-            tcw_paid_break: isLastSub ? this.round2(Number(interval.paid_break ?? 0)) : 0,
-            tcw_unpaid_break: isLastSub ? this.round2(Number(interval.unpaid_break ?? 0)) : 0,
+            tcw_time_in: isWinIn ? tcwIn : null,
+            tcw_time_out: isWinOut ? tcwOut : null,
+            tcw_hours: isWinOut ? tcwWorked : 0,
+            tcw_paid_break: isWinOut ? this.round2(Number(interval.paid_break ?? 0)) : 0,
+            tcw_unpaid_break: isWinOut ? this.round2(Number(interval.unpaid_break ?? 0)) : 0,
             tcw_total_hours: tcwTotalHours,
             activity_in_event: actInEvent,
             activity_out_event: actOutEvent,
