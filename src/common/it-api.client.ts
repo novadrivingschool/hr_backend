@@ -31,11 +31,30 @@ function baseUrl(): string {
 }
 
 export async function pushBellNotification(input: PushBellNotificationInput): Promise<void> {
-  await axios.post(
-    `${baseUrl()}/notifications`,
-    { ...input, source_service: 'hr_backend' },
-    { timeout: 7000 },
+  const url = `${baseUrl()}/notifications`;
+  // 2026-08-30: logging explicito pedido por el usuario -- hasta ahora un
+  // fallo/exito de este POST no dejaba ningun rastro propio, solo lo que el
+  // caller decidiera loguear en su catch (i-care.service.ts). Con 3 intentos
+  // de fix sin poder confirmar si el request sale y que responde IT API,
+  // esto da visibilidad directa en la consola de hr_backend.
+  console.log(
+    `[pushBellNotification] POST ${url} category=${input.category} type=${input.type} ` +
+    `recipients=${input.recipients.length} [${input.recipients.join(',')}]`,
   );
+  try {
+    const resp = await axios.post(
+      url,
+      { ...input, source_service: 'hr_backend' },
+      { timeout: 7000 },
+    );
+    console.log(`[pushBellNotification] ✅ OK (${resp.status}) type=${input.type} source_id=${input.source_id ?? ''}`);
+  } catch (err: any) {
+    const detail = err?.response
+      ? `HTTP ${err.response.status} ${JSON.stringify(err.response.data)}`
+      : (err?.code || err?.message || String(err));
+    console.error(`[pushBellNotification] ❌ FAILED POST ${url} type=${input.type}: ${detail}`);
+    throw err;
+  }
 }
 
 /**
@@ -77,7 +96,25 @@ export async function resolveEmployeeNumbersByRoles(roles: string[]): Promise<st
 
   // allSettled: a failure resolving one role (e.g. a typo'd role name)
   // shouldn't wipe out recipients successfully resolved for the others.
+  //
+  // 2026-08-28: antes esto tragaba el error de cada rol en absoluto silencio
+  // (ni un console.error) -- si NOVA_ONE_API estaba caido, o el body
+  // {status,permissions} no era el que el servicio realmente espera, esta
+  // funcion devolvia [] para TODOS los roles sin dejar ningun rastro
+  // diagnosticable. Se agrega logging explicito (no cambia el contrato:
+  // sigue devolviendo [] por rol fallido, no rompe a los demas).
   const settled = await Promise.allSettled(roles.map((role) => fetchByRole(role)));
-  const perRole = settled.map((r) => (r.status === 'fulfilled' ? r.value : []));
+  const perRole = settled.map((r, i) => {
+    if (r.status === 'fulfilled') {
+      console.log(`[resolveEmployeeNumbersByRoles] role='${roles[i]}' -> ${r.value.length} employee_number(s) via ${nova}/employees/filter`);
+      return r.value;
+    }
+    const reason: any = r.reason;
+    const detail = reason?.response
+      ? `HTTP ${reason.response.status} ${JSON.stringify(reason.response.data)}`
+      : (reason?.code || reason?.message || String(reason));
+    console.error(`[resolveEmployeeNumbersByRoles] ❌ role='${roles[i]}' failed against ${nova}/employees/filter: ${detail}`);
+    return [];
+  });
   return [...new Set(perRole.flat())];
 }

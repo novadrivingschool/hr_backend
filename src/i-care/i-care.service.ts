@@ -21,6 +21,9 @@ import { ApproveJustificationICareDto } from './dto/approve-justification-i-care
 import { ICareAnalyticsQueryDto } from './dto/analytics-query-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
+import { ICareReason } from '../i_care_reasons/entities/i_care_reason.entity';
+import { pushBellNotification } from '../common/it-api.client';
+import { EmployeesV2Service } from '../employees/employees-v2.service';
 
 // -- Types ----------------------------------------------------------------------
 
@@ -119,7 +122,30 @@ export class ICareService {
 
     @InjectRepository(Employee)
     private readonly employeeRepository: Repository<Employee>,
+
+    @InjectRepository(ICareReason)
+    private readonly iCareReasonRepository: Repository<ICareReason>,
+
+    private readonly employeesV2Service: EmployeesV2Service,
   ) { }
+
+  /**
+   * 2026-08-28: la urgency de un iCare ya NO se elige libremente (ni al crear,
+   * ni al editar, ni en ningun paso del flujo) -- se deriva de la reason
+   * elegida (columna `urgency` del catalogo i_care_reason) y queda fija.
+   * Se resuelve en el backend (no se confia en lo que mande el cliente) para
+   * que no sea evadible, igual que el hueco ya documentado de caller_role.
+   */
+  private async resolveUrgencyForReason(reasonText: string): Promise<ICareUrgency> {
+    const reasonRecord = await this.iCareReasonRepository.findOne({ where: { reason: reasonText } });
+    if (!reasonRecord) {
+      throw new BadRequestException(`Reason "${reasonText}" was not found in the reasons catalog`);
+    }
+    if (!reasonRecord.urgency) {
+      throw new BadRequestException(`Reason "${reasonText}" does not have an urgency assigned yet -- ask an admin to set it in iCare Reasons before using it`);
+    }
+    return reasonRecord.urgency;
+  }
 
   // -- Email helpers ----------------------------------------------------------
 
@@ -169,6 +195,69 @@ export class ICareService {
       // Lanzamos la excepción para que el método que llamó a esta función (ej. tu triggerEmail) 
       // se entere de que falló y pueda manejarlo o abortar el proceso, en lugar de fallar silenciosamente.
       throw new InternalServerErrorException(`Fallo al obtener los correos del rol ${role}`);
+    }
+  }
+
+  /**
+   * 2026-08-28: gemelo de getEmailsByAnyRole() pero devuelve employee_number
+   * en vez de nova_email.
+   *
+   * ⚠️ DEPRECADA / SIN USO 2026-08-28 (mismo día, tras reporte del usuario
+   * "no llega a hr o management"): esta función resuelve contra la tabla
+   * LOCAL `employees` de hr_backend, camino que nunca se había probado para
+   * bell -- el personal de HR/Management aparentemente no tiene
+   * `employee_number` poblado ahí (por eso el email, que usa `nova_email`,
+   * sí funcionaba contra la misma tabla, y la campana no). Los 6
+   * trigger*BellNotification() de iCare pasaron a usar
+   * `resolveEmployeeNumbersByRoles()` (common/it-api.client.ts), el
+   * mecanismo YA probado en producción por time_off_request.service.ts, que
+   * resuelve employee_number por rol vía HTTP contra NOVA_ONE_API
+   * (`/employees/filter`, campo `permissions`) en vez de la tabla local.
+   * Se deja sin borrar (convención del proyecto) pero NO USAR para nuevos
+   * triggers de campana -- usar resolveEmployeeNumbersByRoles() en su lugar.
+   */
+  private async getEmployeeNumbersByAnyRole(role: string): Promise<string[]> {
+    try {
+      const rawResults = await this.employeeRepository
+        .createQueryBuilder('emp')
+        .select('DISTINCT emp.employee_number', 'employee_number')
+        .where('emp.status = :status', { status: 'Active' })
+        .andWhere("NULLIF(TRIM(emp.employee_number), '') IS NOT NULL")
+        .andWhere('emp.roles::jsonb @> :roleParam::jsonb', { roleParam: JSON.stringify([role]) })
+        .getRawMany<{ employee_number: string }>();
+      return rawResults.map(r => r.employee_number);
+    } catch (error) {
+      this.logger.error(`[getEmployeeNumbersByAnyRole] Failed for role '${role}': ${error?.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * ⚠️ 2026-08-28 (segundo intento, tras confirmar con el usuario que el
+   * primero seguia sin funcionar): se habia migrado a
+   * resolveEmployeeNumbersByRoles() (common/it-api.client.ts, HTTP contra
+   * NOVA_ONE_API externo) -- pero esa dependencia de red nunca pudo
+   * verificarse desde esta sesion (ni alcanzabilidad del servicio, ni que
+   * el body {status,permissions} sea el contrato real que espera). Se
+   * encontro un patron YA PROBADO EN PRODUCCION dentro de este MISMO
+   * backend: leave_of_absence.service.ts (recipientsForRoles) inyecta
+   * EmployeesV2Service y llama a findByRoles(roles) -- misma tabla local
+   * `employees`, mismo query roles::jsonb @> [role] que ya usan
+   * getEmailsByRole/getEmailsByAnyRole (los emails, que SI llegan), sin
+   * salir a ningun servicio externo. Se adopta ese mecanismo aca: cero
+   * dependencia de red, mismo proceso, misma conexion a DB que el resto
+   * de ICareService.
+   *
+   * resolveEmployeeNumbersByRoles() de it-api.client.ts NO se toco -- sigue
+   * en uso por time_off_request.service.ts, fuera del alcance de este fix.
+   */
+  private async resolveEmployeeNumbersViaEmployeesV2(roles: string[]): Promise<string[]> {
+    try {
+      const employees = await this.employeesV2Service.findByRoles(roles);
+      return employees.map(e => e.employee_number).filter(Boolean);
+    } catch (err: any) {
+      this.logger.warn(`[bell] findByRoles failed for roles [${roles.join(',')}]: ${err?.message || err}`);
+      return [];
     }
   }
 
@@ -338,6 +427,131 @@ export class ICareService {
   }
 
   /**
+   * 2026-08-28: empuja la campana genérica de it_backend (pushBellNotification,
+   * ver common/it-api.client.ts) para el evento de creación. Misma resolución
+   * de "quién" que triggerCreatedEmails() de arriba, traducida a employee_number
+   * en vez de nova_email, MENOS el propio actor -- nadie necesita que le avisen
+   * de lo que él mismo acaba de hacer -- salvo la excepción que YA existe para
+   * el email en el caso "propio personal": el submitter SÍ recibe confirmación
+   * (mismo criterio que 'creation_review_submitter'), porque ahí el caso queda
+   * oculto para el resto y es la única forma de que se entere de que quedó
+   * pendiente de aprobación.
+   * Cada push va en su propio try/catch: pushBellNotification() (a diferencia
+   * de triggerEmail()) NO traga sus propios errores -- si el push a HR/Mgmt
+   * falla, el de confirmación al submitter debe intentarse igual.
+   * Fire-and-forget desde create(): nunca debe tumbar la creación del record.
+   */
+  private async triggerCreatedBellNotification(id: string, record: ICare): Promise<void> {
+    const isHighCritical = ICareService.isHighCriticalUrgency(record);
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+    const isCreationReviewCase = record.creation_review_required === true;
+    const staffLabel = `${record.staff_name?.name ?? ''} ${record.staff_name?.last_name ?? ''}`.trim() || 'a staff member';
+    const submitterLabel = `${record.submitter?.name ?? ''} ${record.submitter?.last_name ?? ''}`.trim() || 'A coordinator';
+
+    // HR/Management/HR-Assistant via EmployeesV2Service.findByRoles() --
+    // ver JSDoc de resolveEmployeeNumbersViaEmployeesV2() mas arriba para el
+    // historial completo (2 intentos previos descartados).
+    const [allHrNumbers, mgmtNumbers] = await Promise.all([
+      this.resolveEmployeeNumbersViaEmployeesV2(['hr', 'hr-assistant']),
+      this.resolveEmployeeNumbersViaEmployeesV2(['management']),
+    ]);
+    this.logger.log(`[bell:${id}] hr/hr-assistant resolved=${allHrNumbers.length} [${allHrNumbers.join(',')}] management resolved=${mgmtNumbers.length} [${mgmtNumbers.join(',')}]`);
+
+    if (isCreationReviewCase) {
+      // Caso "propio personal": oculto para coordinators. Mismo público que
+      // creation_review_hr / creation_review_management.
+      // 2026-08-28: Management SIN gate de urgency, a pedido explícito del
+      // usuario (ver nota completa en el caso normal, más abajo).
+      const adminRecipients = [...new Set([...allHrNumbers, ...mgmtNumbers])];
+      if (adminRecipients.length > 0) {
+        try {
+          await pushBellNotification({
+            category: 'icare',
+            type: 'creation_review',
+            title: `iCare Creation Needs Approval — ${record.urgency}`,
+            message: `${submitterLabel} reported ${staffLabel} — review required before this case proceeds.`,
+            link: `/i-care?icare=${id}`,
+            source_id: id,
+            recipients: adminRecipients,
+          });
+        } catch (err: any) {
+          this.logger.error(`❌ Failed to push 'creation_review' admin bell notification for id=${id}`, err?.message || err);
+        }
+      }
+
+      const submitterNumber = record.submitter?.employee_number;
+      if (submitterNumber) {
+        try {
+          await pushBellNotification({
+            category: 'icare',
+            type: 'creation_review',
+            title: `iCare Submitted — Pending Review (${record.urgency})`,
+            message: `Your report about ${staffLabel} is pending HR/Management approval before it proceeds.`,
+            link: `/my-i-care?icare=${id}`,
+            source_id: id,
+            recipients: [submitterNumber],
+          });
+        } catch (err: any) {
+          this.logger.error(`❌ Failed to push 'creation_review' submitter bell notification for id=${id}`, err?.message || err);
+        }
+      }
+      return;
+    }
+
+    // Caso normal.
+    // 2026-08-28: a pedido explícito del usuario, la campana NO gatea
+    // coordinator ni management por urgency ("independiente de la urgency
+    // tiene que llegar al coordinator y a hr y management") -- a diferencia
+    // del email (triggerCreatedEmails), que sí lo hace. Se mantiene SOLO el
+    // gate de isCoordinatorCase (el staff reportado ES coordinator), que es
+    // una regla distinta y no tiene que ver con urgency.
+    const recipients = new Set<string>(allHrNumbers);
+    if (!isCoordinatorCase) {
+      (record.responsible ?? []).forEach(r => { if (r?.employee_number) recipients.add(r.employee_number); });
+    }
+    mgmtNumbers.forEach(n => recipients.add(n));
+
+    // Roles por posición (Operator/Instructor/Teacher) — mismo gate que el email.
+    if (!isHighCritical && !isCoordinatorCase && record.submitter?.employee_number) {
+      const positionRoleMap: Record<string, string> = {
+        'Operator': 'i-care-operator',
+        'Instructor': 'i-care-instructor',
+        'Teacher': 'i-care-teacher',
+      };
+      const submitterEmployee = await this.employeeRepository.findOne({
+        where: { employee_number: record.submitter.employee_number },
+        select: ['multi_position'],
+      });
+      const positions: string[] = (submitterEmployee as any)?.multi_position ?? [];
+      for (const pos of positions) {
+        const role = positionRoleMap[pos];
+        if (!role) continue;
+        const roleNumbers = await this.resolveEmployeeNumbersViaEmployeesV2([role]);
+        roleNumbers.forEach(n => recipients.add(n));
+      }
+    }
+
+    if (recipients.size === 0) {
+      this.logger.warn(`[triggerCreatedBellNotification] no recipients resolved for iCare id=${id} — skipping bell push`);
+      return;
+    }
+
+    try {
+      await pushBellNotification({
+        category: 'icare',
+        type: 'created',
+        title: `New iCare Case — ${record.urgency}`,
+        message: `${staffLabel} — ${record.reason}`,
+        link: `/i-care?icare=${id}`,
+        source_id: id,
+        recipients: [...recipients],
+      });
+    } catch (err: any) {
+      this.logger.error(`❌ Failed to push 'created' bell notification for id=${id}`, err?.message || err);
+    }
+  }
+
+  /**
    * Triggers para el evento 'justified' — 4 envíos separados por rol.
    * justified_staff       → staff_name (el staff del iCare)
    * justified_coordinator → coordinator(s)
@@ -413,6 +627,74 @@ export class ICareService {
     await Promise.all(sends);
   }
 
+  /**
+   * Campana -- mismo evento que triggerResolvedEmails de arriba (HR/Mgmt/
+   * SuperCoordinator resuelve un caso commit_fulfilled -> solved, el
+   * ultimo paso del flujo). Mismos 2 criterios que los eventos anteriores
+   * (created/coaching_session_completed/seguimiento_added): coordinator/
+   * HR/management SIEMPRE sin gate de urgency, y el actor (quien resolvio)
+   * excluido de sus propios destinatarios. `resolved_by` ya queda en el
+   * record recien guardado (igual que commit_approved_by/commit_fulfilled_by).
+   */
+  private async triggerResolvedBellNotification(id: string, record: ICare): Promise<void> {
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+    const staffLabel = `${record.staff_name?.name ?? ''} ${record.staff_name?.last_name ?? ''}`.trim() || 'a staff member';
+    const actorRef = record.resolved_by;
+    const actorNumber = actorRef?.employee_number;
+    const actorLabel = actorRef ? `${actorRef.name ?? ''} ${actorRef.last_name ?? ''}`.trim() : 'HR';
+
+    // HR/Management/HR-Assistant via EmployeesV2Service.findByRoles() --
+    // ver JSDoc de resolveEmployeeNumbersViaEmployeesV2() mas arriba para el
+    // historial completo (2 intentos previos descartados).
+    const [allHrNumbers, mgmtNumbers] = await Promise.all([
+      this.resolveEmployeeNumbersViaEmployeesV2(['hr', 'hr-assistant']),
+      this.resolveEmployeeNumbersViaEmployeesV2(['management']),
+    ]);
+    this.logger.log(`[bell:${id}] hr/hr-assistant resolved=${allHrNumbers.length} [${allHrNumbers.join(',')}] management resolved=${mgmtNumbers.length} [${mgmtNumbers.join(',')}]`);
+
+    const recipients = new Set<string>(allHrNumbers);
+    mgmtNumbers.forEach(n => recipients.add(n));
+    if (!isCoordinatorCase) {
+      (record.responsible ?? []).forEach(r => { if (r?.employee_number) recipients.add(r.employee_number); });
+    }
+    if (actorNumber) recipients.delete(actorNumber);
+
+    if (recipients.size > 0) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'resolved',
+          title: `iCare Case Solved — ${record.urgency}`,
+          message: `${actorLabel} resolved the case for ${staffLabel}.`,
+          link: `/i-care?icare=${id}`,
+          source_id: id,
+          recipients: [...recipients],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'resolved' admin bell notification for id=${id}`, err?.message || err);
+      }
+    } else {
+      this.logger.warn(`[triggerResolvedBellNotification] no admin recipients resolved for iCare id=${id}`);
+    }
+
+    const staffNumber = record.staff_name?.employee_number;
+    if (staffNumber && staffNumber !== actorNumber) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'resolved',
+          title: `iCare Case Solved (${record.urgency})`,
+          message: `${actorLabel} resolved your case.`,
+          link: `/my-i-care?icare=${id}`,
+          source_id: id,
+          recipients: [staffNumber],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'resolved' staff bell notification for id=${id}`, err?.message || err);
+      }
+    }
+  }
+
   private async triggerSeguimientoAddedEmails(id: string, record: ICare): Promise<void> {
     const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
@@ -432,6 +714,82 @@ export class ICareService {
     await Promise.all(sends);
   }
 
+  /**
+   * Campana -- mismo evento que triggerSeguimientoAddedEmails de arriba
+   * (follow-up agregado: sea el primero via approveCommit() FUERA del
+   * bundle de Coaching Session, o uno posterior via addSeguimiento() --
+   * seguimientoDialog, que puede llamarse varias veces en loop mientras el
+   * caso sigue FOLLOWING_UP). Misma resolucion de destinatarios que el
+   * email, con los mismos 2 criterios ya aplicados a
+   * 'created'/'coaching_session_completed':
+   *  1) coordinator/HR/management van SIEMPRE, sin gate de urgency.
+   *  2) el coordinator que agrego ESTE seguimiento se excluye de sus
+   *     propios destinatarios. El actor se recibe como parametro (no se
+   *     puede leer de un campo fijo del record como en coaching session:
+   *     approveCommit usa dto.approved_by, addSeguimiento usa dto.added_by).
+   */
+  private async triggerSeguimientoAddedBellNotification(
+    id: string,
+    record: ICare,
+    actor?: { employee_number: string; name: string; last_name: string } | null,
+  ): Promise<void> {
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+    const staffLabel = `${record.staff_name?.name ?? ''} ${record.staff_name?.last_name ?? ''}`.trim() || 'a staff member';
+    const actorNumber = actor?.employee_number;
+    const actorLabel = actor ? `${actor.name ?? ''} ${actor.last_name ?? ''}`.trim() : 'A coordinator';
+
+    // HR/Management/HR-Assistant via EmployeesV2Service.findByRoles() --
+    // ver JSDoc de resolveEmployeeNumbersViaEmployeesV2() mas arriba para el
+    // historial completo (2 intentos previos descartados).
+    const [allHrNumbers, mgmtNumbers] = await Promise.all([
+      this.resolveEmployeeNumbersViaEmployeesV2(['hr', 'hr-assistant']),
+      this.resolveEmployeeNumbersViaEmployeesV2(['management']),
+    ]);
+    this.logger.log(`[bell:${id}] hr/hr-assistant resolved=${allHrNumbers.length} [${allHrNumbers.join(',')}] management resolved=${mgmtNumbers.length} [${mgmtNumbers.join(',')}]`);
+
+    const recipients = new Set<string>(allHrNumbers);
+    mgmtNumbers.forEach(n => recipients.add(n));
+    if (!isCoordinatorCase) {
+      (record.responsible ?? []).forEach(r => { if (r?.employee_number) recipients.add(r.employee_number); });
+    }
+    if (actorNumber) recipients.delete(actorNumber);
+
+    if (recipients.size > 0) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'seguimiento_added',
+          title: `Follow-up Added — ${record.urgency}`,
+          message: `${actorLabel} recorded a new follow-up for ${staffLabel}.`,
+          link: `/i-care?icare=${id}`,
+          source_id: id,
+          recipients: [...recipients],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'seguimiento_added' admin bell notification for id=${id}`, err?.message || err);
+      }
+    } else {
+      this.logger.warn(`[triggerSeguimientoAddedBellNotification] no admin recipients resolved for iCare id=${id}`);
+    }
+
+    const staffNumber = record.staff_name?.employee_number;
+    if (staffNumber && staffNumber !== actorNumber) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'seguimiento_added',
+          title: `Follow-up Added (${record.urgency})`,
+          message: `${actorLabel} recorded a new follow-up for your case.`,
+          link: `/my-i-care?icare=${id}`,
+          source_id: id,
+          recipients: [staffNumber],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'seguimiento_added' staff bell notification for id=${id}`, err?.message || err);
+      }
+    }
+  }
+
   private async triggerCommitFulfilledEmails(id: string, record: ICare): Promise<void> {
     const [hrEmails, managementEmails, hrAssistantEmails] = await Promise.all([
       this.getEmailsByRole('hr'),
@@ -449,6 +807,74 @@ export class ICareService {
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'commit_fulfilled_hr', allHrEmails));
     if (managementEmails.length > 0 && isHighCritical) sends.push(this.triggerEmail(id, 'commit_fulfilled_management', managementEmails));
     await Promise.all(sends);
+  }
+
+  /**
+   * Campana -- mismo evento que triggerCommitFulfilledEmails de arriba
+   * (fulfill STANDALONE, fuera del bundle de Coaching Session -- ej. un
+   * caso en following_up que se marca fulfilled directamente desde
+   * seguimientoDialog). Mismos 2 criterios que los demas eventos:
+   * coordinator/HR/management SIEMPRE sin gate de urgency, y el actor
+   * (quien marco fulfilled) excluido de sus propios destinatarios.
+   * `commit_fulfilled_by` ya queda en el record recien guardado.
+   */
+  private async triggerCommitFulfilledBellNotification(id: string, record: ICare): Promise<void> {
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+    const staffLabel = `${record.staff_name?.name ?? ''} ${record.staff_name?.last_name ?? ''}`.trim() || 'a staff member';
+    const actorRef = record.commit_fulfilled_by;
+    const actorNumber = actorRef?.employee_number;
+    const actorLabel = actorRef ? `${actorRef.name ?? ''} ${actorRef.last_name ?? ''}`.trim() : 'A coordinator';
+
+    // HR/Management/HR-Assistant via EmployeesV2Service.findByRoles() --
+    // ver JSDoc de resolveEmployeeNumbersViaEmployeesV2() mas arriba para el
+    // historial completo (2 intentos previos descartados).
+    const [allHrNumbers, mgmtNumbers] = await Promise.all([
+      this.resolveEmployeeNumbersViaEmployeesV2(['hr', 'hr-assistant']),
+      this.resolveEmployeeNumbersViaEmployeesV2(['management']),
+    ]);
+    this.logger.log(`[bell:${id}] hr/hr-assistant resolved=${allHrNumbers.length} [${allHrNumbers.join(',')}] management resolved=${mgmtNumbers.length} [${mgmtNumbers.join(',')}]`);
+
+    const recipients = new Set<string>(allHrNumbers);
+    mgmtNumbers.forEach(n => recipients.add(n));
+    if (!isCoordinatorCase) {
+      (record.responsible ?? []).forEach(r => { if (r?.employee_number) recipients.add(r.employee_number); });
+    }
+    if (actorNumber) recipients.delete(actorNumber);
+
+    if (recipients.size > 0) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'commit_fulfilled',
+          title: `Commit Fulfilled — ${record.urgency}`,
+          message: `${actorLabel} marked the commitment fulfilled for ${staffLabel}.`,
+          link: `/i-care?icare=${id}`,
+          source_id: id,
+          recipients: [...recipients],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'commit_fulfilled' admin bell notification for id=${id}`, err?.message || err);
+      }
+    } else {
+      this.logger.warn(`[triggerCommitFulfilledBellNotification] no admin recipients resolved for iCare id=${id}`);
+    }
+
+    const staffNumber = record.staff_name?.employee_number;
+    if (staffNumber && staffNumber !== actorNumber) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'commit_fulfilled',
+          title: `Commit Fulfilled (${record.urgency})`,
+          message: `${actorLabel} marked your commitment as fulfilled.`,
+          link: `/my-i-care?icare=${id}`,
+          source_id: id,
+          recipients: [staffNumber],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'commit_fulfilled' staff bell notification for id=${id}`, err?.message || err);
+      }
+    }
   }
 
   /**
@@ -481,6 +907,81 @@ export class ICareService {
     await Promise.all(sends);
   }
 
+  /**
+   * Campana -- mismo evento que triggerCoachingSessionCompletedEmails de
+   * arriba (cierre del bundle de Coaching Session, sea via approveCommit
+   * con seguimiento o via fulfillCommit directo). Misma resolucion de
+   * destinatarios que el email, con 2 diferencias deliberadas (pedido
+   * explicito 2026-08-28, mismo criterio ya aplicado en 'created' -- ver
+   * triggerCreatedBellNotification):
+   *  1) coordinator/HR/management van SIEMPRE, sin gate de urgency.
+   *  2) el coordinator que HIZO la coaching session (commit_approved_by o
+   *     commit_fulfilled_by, segun cual de las 2 llamadas cerro el bundle)
+   *     se excluye de sus propios destinatarios -- no tiene sentido
+   *     notificarlo de su propia accion (pedido explicito del usuario).
+   */
+  private async triggerCoachingSessionBellNotification(id: string, record: ICare): Promise<void> {
+    const isCoordinatorCase = record.staff_name?.is_coordinator === true;
+    const staffLabel = `${record.staff_name?.name ?? ''} ${record.staff_name?.last_name ?? ''}`.trim() || 'a staff member';
+
+    // Solo uno de los 2 corrio para cerrar el bundle, asi que solo uno de
+    // estos 2 campos viene poblado en el record recien guardado.
+    const actorRef = record.commit_fulfilled_by ?? record.commit_approved_by;
+    const actorNumber = actorRef?.employee_number;
+    const actorLabel = actorRef ? `${actorRef.name ?? ''} ${actorRef.last_name ?? ''}`.trim() : 'A coordinator';
+
+    // HR/Management/HR-Assistant via EmployeesV2Service.findByRoles() --
+    // ver JSDoc de resolveEmployeeNumbersViaEmployeesV2() mas arriba para el
+    // historial completo (2 intentos previos descartados).
+    const [allHrNumbers, mgmtNumbers] = await Promise.all([
+      this.resolveEmployeeNumbersViaEmployeesV2(['hr', 'hr-assistant']),
+      this.resolveEmployeeNumbersViaEmployeesV2(['management']),
+    ]);
+    this.logger.log(`[bell:${id}] hr/hr-assistant resolved=${allHrNumbers.length} [${allHrNumbers.join(',')}] management resolved=${mgmtNumbers.length} [${mgmtNumbers.join(',')}]`);
+
+    const recipients = new Set<string>(allHrNumbers);
+    mgmtNumbers.forEach(n => recipients.add(n));
+    if (!isCoordinatorCase) {
+      (record.responsible ?? []).forEach(r => { if (r?.employee_number) recipients.add(r.employee_number); });
+    }
+    if (actorNumber) recipients.delete(actorNumber);
+
+    if (recipients.size > 0) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'coaching_session_completed',
+          title: `Coaching Session Completed — ${record.urgency}`,
+          message: `${actorLabel} completed a coaching session with ${staffLabel}.`,
+          link: `/i-care?icare=${id}`,
+          source_id: id,
+          recipients: [...recipients],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'coaching_session_completed' admin bell notification for id=${id}`, err?.message || err);
+      }
+    } else {
+      this.logger.warn(`[triggerCoachingSessionBellNotification] no admin recipients resolved for iCare id=${id}`);
+    }
+
+    const staffNumber = record.staff_name?.employee_number;
+    if (staffNumber && staffNumber !== actorNumber) {
+      try {
+        await pushBellNotification({
+          category: 'icare',
+          type: 'coaching_session_completed',
+          title: `Coaching Session Completed (${record.urgency})`,
+          message: `${actorLabel} completed a coaching session with you.`,
+          link: `/my-i-care?icare=${id}`,
+          source_id: id,
+          recipients: [staffNumber],
+        });
+      } catch (err: any) {
+        this.logger.error(`❌ Failed to push 'coaching_session_completed' staff bell notification for id=${id}`, err?.message || err);
+      }
+    }
+  }
+
   private async triggerCoordinatorRejectedEmails(id: string, record: ICare): Promise<void> {
     // Include both the responsible coordinators AND the one who performed the rejection
     const responsibleEmails = (record.responsible ?? []).map(r => r.nova_email).filter(Boolean);
@@ -497,6 +998,84 @@ export class ICareService {
     if (allHrEmails.length > 0) sends.push(this.triggerEmail(id, 'coordinator_rejected_hr', allHrEmails));
     if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'coordinator_rejected_management', managementEmails));
     await Promise.all(sends);
+  }
+
+  /**
+   * Campana -- mismo evento que triggerCoordinatorRejectedEmails de arriba
+   * (coordinator rechaza un pending -> rejection_under_review, para
+   * revision de HR/Mgmt). NO hay push a staff -- no existe
+   * 'coordinator_rejected_staff' en el email tampoco; el staff reportado
+   * no se entera de este paso interno, solo mas adelante segun como se
+   * resuelva la revision.
+   *
+   * 2026-08-30: a diferencia del email (que SI incluye al coordinator que
+   * rechazo, ver comentario en triggerCoordinatorRejectedEmails), la campana
+   * EXCLUYE al actor -- pedido explicito del usuario: "si yo como coordinator
+   * rechazo a mi no me debe llegar la notification, a los otros si". El resto
+   * de responsible[] (los demas coordinators del staff) SI la reciben, igual
+   * que HR/HR-assistant/Management.
+   *
+   * Unico criterio que SI diverge del email (mismo patron que el resto de
+   * esta ronda): management va SIEMPRE, sin el gate de
+   * isHighCriticalUrgency que tiene el email.
+   *
+   * 2026-08-31: HALLAZGO -- existe un SEGUNDO punto de entrada para este mismo
+   * evento de negocio. justify() con dto.justified=false (el toggle "Reject"
+   * dentro del dialog de Justify, distinto del dialog dedicado "Coordinator
+   * Reject" que llama a coordinatorReject()) TAMBIEN deja el record en
+   * REJECTION_UNDER_REVIEW y dispara triggerCoordinatorRejectedEmails -- pero
+   * esa rama nunca setea record.coordinator_rejected_by (ese campo solo lo
+   * llena coordinatorReject()). Por eso el actor ahora se recibe como
+   * parametro explicito (`rejectedBy`) en vez de leerse de
+   * record.coordinator_rejected_by: coordinatorReject() pasa
+   * record.coordinator_rejected_by, justify() pasa dto.approved_by.
+   */
+  private async triggerCoordinatorRejectedBellNotification(
+    id: string,
+    record: ICare,
+    rejectedBy?: { name?: string; last_name?: string; employee_number?: string },
+  ): Promise<void> {
+    this.logger.log(`[bell:${id}] triggerCoordinatorRejectedBellNotification() invoked`);
+    const responsibleNumbers = (record.responsible ?? []).map(r => r.employee_number).filter(Boolean);
+    const rejectorNumber = rejectedBy?.employee_number;
+    // El actor (coordinator que rechazo) queda EXCLUIDO -- ya sabe lo que hizo.
+    const coordinatorNumbers = responsibleNumbers.filter((n) => n !== rejectorNumber);
+
+    // HR/Management/HR-Assistant via EmployeesV2Service.findByRoles() --
+    // ver JSDoc de resolveEmployeeNumbersViaEmployeesV2() mas arriba para el
+    // historial completo (2 intentos previos descartados).
+    const [allHrNumbers, mgmtNumbers] = await Promise.all([
+      this.resolveEmployeeNumbersViaEmployeesV2(['hr', 'hr-assistant']),
+      this.resolveEmployeeNumbersViaEmployeesV2(['management']),
+    ]);
+    this.logger.log(`[bell:${id}] hr/hr-assistant resolved=${allHrNumbers.length} [${allHrNumbers.join(',')}] management resolved=${mgmtNumbers.length} [${mgmtNumbers.join(',')}]`);
+
+    const recipients = new Set<string>([...allHrNumbers, ...mgmtNumbers, ...coordinatorNumbers]);
+    this.logger.log(`[bell:${id}] final recipients (${recipients.size}): [${[...recipients].join(', ')}]`);
+
+    if (recipients.size === 0) {
+      this.logger.warn(`[triggerCoordinatorRejectedBellNotification] no recipients resolved for iCare id=${id}`);
+      return;
+    }
+
+    const staffLabel = `${record.staff_name?.name ?? ''} ${record.staff_name?.last_name ?? ''}`.trim() || 'a staff member';
+    const rejectorLabel = rejectedBy
+      ? `${rejectedBy.name ?? ''} ${rejectedBy.last_name ?? ''}`.trim()
+      : 'A coordinator';
+
+    try {
+      await pushBellNotification({
+        category: 'icare',
+        type: 'coordinator_rejected',
+        title: `Coordinator Rejected iCare Case — ${record.urgency}`,
+        message: `${rejectorLabel} rejected the case for ${staffLabel} — pending your review.`,
+        link: `/i-care?icare=${id}`,
+        source_id: id,
+        recipients: [...recipients],
+      });
+    } catch (err: any) {
+      this.logger.error(`❌ Failed to push 'coordinator_rejected' bell notification for id=${id}`, err?.message || err);
+    }
   }
 
   private async triggerRejectionReviewedEmails(id: string, record: ICare, accepted: boolean): Promise<void> {
@@ -525,6 +1104,67 @@ export class ICareService {
       if (managementEmails.length > 0 && ICareService.isHighCriticalUrgency(record)) sends.push(this.triggerEmail(id, 'rejection_review_overridden_management', managementEmails));
     }
     await Promise.all(sends);
+  }
+
+  /**
+   * Campana -- mismo evento que triggerRejectionReviewedEmails de arriba (HR/Mgmt
+   * revisa el rejected del coordinator: accept=true -> REJECTED definitivo;
+   * accept=false -> override, vuelve a PENDING con el coordinator).
+   * Pedido explicito del usuario: en AMBAS ramas debe llegar a los coordinators.
+   * 2026-08-30 (2do ajuste, mismo dia -- el usuario reporto que HR/Management no
+   * la recibian): se suman HR/HR-assistant/Management, igual que el email
+   * (`triggerRejectionReviewedEmails` los notifica siempre en ambas ramas). El
+   * reviewer (actor de este paso) se excluye -- mismo criterio de exclusion de
+   * actor que created/resolved/seguimiento_added/commit_fulfilled/coaching_session.
+   * NO se notifica al staff por esta via (el email si lo hace en el override).
+   */
+  private async triggerRejectionReviewedBellNotification(id: string, record: ICare, accepted: boolean): Promise<void> {
+    this.logger.log(`[bell:${id}] triggerRejectionReviewedBellNotification() invoked, accepted=${accepted}`);
+    const coordinatorNumbers = (record.responsible ?? []).map(r => r.employee_number).filter(Boolean);
+    const reviewerNumber = record.rejection_reviewed_by?.employee_number;
+
+    // HR/Management/HR-Assistant via EmployeesV2Service.findByRoles() --
+    // ver JSDoc de resolveEmployeeNumbersViaEmployeesV2() mas arriba para el
+    // historial completo (2 intentos previos descartados).
+    const [allHrNumbers, mgmtNumbers] = await Promise.all([
+      this.resolveEmployeeNumbersViaEmployeesV2(['hr', 'hr-assistant']),
+      this.resolveEmployeeNumbersViaEmployeesV2(['management']),
+    ]);
+    this.logger.log(`[bell:${id}] hr/hr-assistant resolved=${allHrNumbers.length} [${allHrNumbers.join(',')}] management resolved=${mgmtNumbers.length} [${mgmtNumbers.join(',')}]`);
+
+    const recipients = new Set<string>([...allHrNumbers, ...mgmtNumbers, ...coordinatorNumbers]);
+    if (reviewerNumber) recipients.delete(reviewerNumber);
+    this.logger.log(`[bell:${id}] final recipients (${recipients.size}): [${[...recipients].join(', ')}]`);
+
+    if (recipients.size === 0) {
+      this.logger.warn(`[triggerRejectionReviewedBellNotification] no recipients resolved for iCare id=${id}`);
+      return;
+    }
+
+    const staffLabel = `${record.staff_name?.name ?? ''} ${record.staff_name?.last_name ?? ''}`.trim() || 'a staff member';
+    const reviewerLabel = record.rejection_reviewed_by
+      ? `${record.rejection_reviewed_by.name ?? ''} ${record.rejection_reviewed_by.last_name ?? ''}`.trim()
+      : 'HR/Management';
+
+    const type = accepted ? 'rejection_review_accepted' : 'rejection_review_overridden';
+    const title = accepted ? `Rejection Confirmed — ${record.urgency}` : `Rejection Overridden — ${record.urgency}`;
+    const message = accepted
+      ? `${reviewerLabel} confirmed the rejection for ${staffLabel}.`
+      : `${reviewerLabel} overrode the rejection for ${staffLabel} — the case is back with you.`;
+
+    try {
+      await pushBellNotification({
+        category: 'icare',
+        type,
+        title,
+        message,
+        link: `/i-care?icare=${id}`,
+        source_id: id,
+        recipients: [...recipients],
+      });
+    } catch (err: any) {
+      this.logger.error(`❌ Failed to push '${type}' bell notification for id=${id}`, err?.message || err);
+    }
   }
 
   private async triggerHrRejectedEmails(id: string, record: ICare): Promise<void> {
@@ -630,6 +1270,7 @@ export class ICareService {
    */
   async create(createICareDto: CreateICareDto): Promise<ICare> {
     const record = this.iCareRepository.create(createICareDto);
+    record.urgency = await this.resolveUrgencyForReason(record.reason);
 
     // Embed is_coordinator inside the existing staff_name JSONB (no migration needed)
     let isStaffCoordinator = false;
@@ -669,6 +1310,13 @@ export class ICareService {
     this.triggerCreatedEmails(saved.id, saved).catch((err) =>
       this.logger.error(
         `❌ Failed to trigger created emails for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+    // 2026-08-28: campana genérica de it_backend — mismo evento, mismo público.
+    this.triggerCreatedBellNotification(saved.id, saved).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger created bell notification for id=${saved.id}`,
         err?.message || err,
       ),
     );
@@ -746,6 +1394,11 @@ export class ICareService {
     // Spreading into a plain object loses entity metadata and can cause JSONB columns
     // (like `attachments`) to be skipped in the UPDATE query.
     Object.assign(existingRecord, updateICareDto);
+
+    if (updateICareDto.reason) {
+      existingRecord.urgency = await this.resolveUrgencyForReason(existingRecord.reason);
+    }
+
     existingRecord.updatedAt = new Date();
 
     return await this.iCareRepository.save(existingRecord);
@@ -1290,24 +1943,30 @@ export class ICareService {
       throw new ForbiddenException('This record still needs HR/Management to approve its creation before it can be justified');
     }
 
-    // justify() solo aplica a records en 'pending' (flujo normal / post-downgrade / post-override
-    // L/M, actuado por el coordinator) o 'pending_hr_justify' (post-override H/C, actuado por HR/Mgmt).
+    // justify() aplica a records en 'pending' (flujo normal / post-downgrade / post-override,
+    // siempre actuado por el coordinator desde 2026-08-28) o 'pending_hr_justify' (solo
+    // backlog: casos H/C-override de antes del 2026-08-28, esos si los justifica HR/Mgmt).
     if (record.status !== ICareStatus.PENDING && record.status !== ICareStatus.PENDING_HR_JUSTIFY) {
       throw new BadRequestException('Record is not in a justifiable state');
     }
 
-    // HR/Mgmt ya revisó este caso (downgrade de H/C a Low/Medium, o override de un rejected
-    // del coordinator) y decidió tanto su legitimidad como su urgency final — quien lo justifique
-    // (coordinator o HR/Mgmt según el caso) ya no puede rechazarlo ni cambiar la urgency, solo
-    // justificarlo/aceptarlo tal cual quedó. Ver stage "Downgrade" (columnas downgraded_*),
-    // approveJustification() acción 'downgrade', y reviewRejection() override (rejection_override).
+    // Downgrade (approveJustification 'downgrade', backlog legacy): HR/Mgmt SI fija la urgency a
+    // mano. Override (reviewRejection, 2026-08-28+): la urgency ya no se toca aca (la fija la
+    // reason al crear) y el caso siempre vuelve al coordinator. En ambos, quien justifique ya no
+    // puede rechazarlo ni cambiar la urgency, solo justificarlo/aceptarlo tal cual quedó.
     if (record.downgraded || record.rejection_override) {
       if (dto.justified === false) {
         throw new ForbiddenException('This case was already reviewed by HR/Management — it cannot be rejected, only justified');
       }
-      if (dto.urgency && dto.urgency !== record.urgency) {
-        throw new ForbiddenException('Urgency was already decided by HR/Management and cannot be changed');
-      }
+    }
+
+    // 2026-08-28: la urgency ya no se elige en ningun paso del flujo -- se deriva
+    // de la reason al crear/editar el iCare (ver resolveUrgencyForReason) y queda
+    // fija. Ni coordinator, ni HR/Management, ni employee pueden cambiarla desde
+    // aqui. Si el cliente manda un dto.urgency que no coincide con record.urgency
+    // (payload viejo o manipulado), se rechaza la request en vez de ignorarlo.
+    if (dto.urgency && dto.urgency !== record.urgency) {
+      throw new ForbiddenException('Urgency is set automatically from the reason and cannot be changed');
     }
 
     const now = moment().tz('America/Chicago');
@@ -1317,9 +1976,9 @@ export class ICareService {
     record.justified_date = now.format('YYYY-MM-DD');
     record.justified_time = now.format('HH:mm');
 
-    // Guardar la urgency seleccionada (coordinator L/M → in_progress; coordinator H/C → pending_hr_review; HR/Mgmt → in_progress).
-    // Si el caso fue downgraded u override de un rejected, la urgency ya quedó fija por HR/Mgmt — no se vuelve a tocar.
-    if (dto.urgency && dto.justified && !record.downgraded && !record.rejection_override) record.urgency = dto.urgency;
+    // 2026-08-28: urgency ya no se guarda desde dto.urgency -- quedo fija desde
+    // que se creo/edito el record (derivada de la reason). Ver validacion arriba
+    // y resolveUrgencyForReason().
 
     if (dto.comment) {
       record.justified_comments = [
@@ -1384,6 +2043,14 @@ export class ICareService {
     } else {
       this.triggerCoordinatorRejectedEmails(saved.id, saved).catch((err) =>
         this.logger.error(`❌ Failed to trigger 'not_justified' emails for id=${saved.id}`, err?.message || err),
+      );
+      // 2026-08-31: mismo evento de negocio que coordinatorReject() -- ver JSDoc de
+      // triggerCoordinatorRejectedBellNotification. Este es el 2do punto de entrada
+      // (toggle "Reject" del dialog de Justify) y NUNCA tenia push a campana.
+      // record.coordinator_rejected_by no se setea en esta rama, por eso se pasa
+      // dto.approved_by como actor.
+      this.triggerCoordinatorRejectedBellNotification(saved.id, saved, dto.approved_by).catch((err) =>
+        this.logger.error(`❌ Failed to trigger 'coordinator_rejected' bell notification for id=${saved.id}`, err?.message || err),
       );
     }
 
@@ -1591,6 +2258,12 @@ export class ICareService {
         err?.message || err,
       ),
     );
+    this.triggerResolvedBellNotification(saved.id, saved).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'resolved' bell notification for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
 
     return this.transformDates([saved])[0];
   }
@@ -1659,10 +2332,22 @@ export class ICareService {
             err?.message || err,
           ),
         );
+        this.triggerCoachingSessionBellNotification(saved.id, saved).catch((err) =>
+          this.logger.error(
+            `❌ Failed to trigger 'coaching_session_completed' bell notification for id=${saved.id}`,
+            err?.message || err,
+          ),
+        );
       } else {
         this.triggerSeguimientoAddedEmails(saved.id, saved).catch((err) =>
           this.logger.error(
             `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
+            err?.message || err,
+          ),
+        );
+        this.triggerSeguimientoAddedBellNotification(saved.id, saved, dto.approved_by).catch((err) =>
+          this.logger.error(
+            `❌ Failed to trigger 'seguimiento_added' bell notification for id=${saved.id}`,
             err?.message || err,
           ),
         );
@@ -1721,6 +2406,12 @@ export class ICareService {
     this.triggerSeguimientoAddedEmails(saved.id, saved).catch((err) =>
       this.logger.error(
         `❌ Failed to trigger 'seguimiento_added' email for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+    this.triggerSeguimientoAddedBellNotification(saved.id, saved, dto.added_by).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'seguimiento_added' bell notification for id=${saved.id}`,
         err?.message || err,
       ),
     );
@@ -1786,10 +2477,22 @@ export class ICareService {
           err?.message || err,
         ),
       );
+      this.triggerCoachingSessionBellNotification(saved.id, saved).catch((err) =>
+        this.logger.error(
+          `❌ Failed to trigger 'coaching_session_completed' bell notification for id=${saved.id}`,
+          err?.message || err,
+        ),
+      );
     } else {
       this.triggerCommitFulfilledEmails(saved.id, saved).catch((err) =>
         this.logger.error(
           `❌ Failed to trigger 'commit_fulfilled' email for id=${saved.id}`,
+          err?.message || err,
+        ),
+      );
+      this.triggerCommitFulfilledBellNotification(saved.id, saved).catch((err) =>
+        this.logger.error(
+          `❌ Failed to trigger 'commit_fulfilled' bell notification for id=${saved.id}`,
           err?.message || err,
         ),
       );
@@ -1805,6 +2508,7 @@ export class ICareService {
    * Status → rejection_under_review. Se notifica a HR + Management.
    */
   async coordinatorReject(id: string, dto: CoordinatorRejectICareDto): Promise<ICare> {
+    this.logger.log(`[icare:${id}] coordinatorReject() invoked, rejected_by=${dto.rejected_by?.employee_number}`);
     const record = await this.iCareRepository.findOne({ where: { id } });
     if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
 
@@ -1845,6 +2549,12 @@ export class ICareService {
     this.triggerCoordinatorRejectedEmails(record.id, record).catch((err) =>
       this.logger.error(
         `Failed to trigger 'coordinator_rejected' email for id=${record.id}`,
+        err?.message || err,
+      ),
+    );
+    this.triggerCoordinatorRejectedBellNotification(record.id, record, record.coordinator_rejected_by).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'coordinator_rejected' bell notification for id=${record.id}`,
         err?.message || err,
       ),
     );
@@ -1890,13 +2600,14 @@ export class ICareService {
   /**
    * HR / Management revisa el rejected del coordinator.
    * accept=true  -> status REJECTED (final).
-   * accept=false -> override: HR/Mgmt asigna la urgency final (dto.urgency, requerida).
-   *   - Low/Medium  -> status PENDING, vuelve al coordinator. rejection_override=true bloquea
-   *                    que lo vuelva a rechazar o cambie la urgency (ver guard en justify());
-   *                    el coordinator solo puede justificarlo para que avance a staff.
-   *   - High/Critical -> status PENDING_HR_JUSTIFY, se queda con HR/Mgmt (el coordinator no
-   *                    puede actuar sobre H/C). HR/Mgmt lo justifica luego con el mismo
-   *                    endpoint /justify (urgency ya bloqueada) y avanza directo a IN_PROGRESS.
+   * accept=false -> override: el caso vuelve SIEMPRE al coordinator (status PENDING), sin
+   *   importar la urgency -- ya no se le pide a HR/Mgmt (la reason ya la fijo desde que se
+   *   creo/edito el record, ver resolveUrgencyForReason()). rejection_override=true bloquea
+   *   que el coordinator lo vuelva a rechazar (ver guard en justify()); solo puede
+   *   justificarlo para que avance a staff.
+   * 2026-08-28: antes High/Critical se quedaba con HR/Mgmt via PENDING_HR_JUSTIFY -- ya no
+   * aplica (el coordinator gestiona H/C de punta a punta desde el cambio del 27). Ese status
+   * queda solo para procesar backlog de casos anteriores a esta fecha.
    */
   async reviewRejection(id: string, dto: ReviewRejectionICareDto): Promise<ICare> {
     const record = await this.iCareRepository.findOne({ where: { id } });
@@ -1920,19 +2631,11 @@ export class ICareService {
       // Aceptar el rejected -> queda rechazado de forma definitiva
       record.status = ICareStatus.REJECTED;
     } else {
-      // Override -> HR/Mgmt decide la urgency final; es obligatoria para saber a quién
-      // regresa el caso (coordinator en L/M, HR/Mgmt mismos en H/C).
-      if (!dto.urgency) {
-        throw new BadRequestException('Urgency is required when overriding a rejection');
-      }
-      record.urgency = dto.urgency;
+      // 2026-08-28: override ya no le pide/asigna urgency -- la fijo la reason desde que
+      // se creo/edito el record. El caso SIEMPRE vuelve al coordinator (antes High/Critical
+      // se quedaba con HR/Mgmt via PENDING_HR_JUSTIFY; ya no aplica, ver JSDoc arriba).
       record.rejection_override = true;
-
-      if (dto.urgency === ICareUrgency.HIGH || dto.urgency === ICareUrgency.CRITICAL) {
-        record.status = ICareStatus.PENDING_HR_JUSTIFY;
-      } else {
-        record.status = ICareStatus.PENDING;
-      }
+      record.status = ICareStatus.PENDING;
     }
 
     const saved = await this.iCareRepository.save(record);
@@ -1940,6 +2643,12 @@ export class ICareService {
     this.triggerRejectionReviewedEmails(saved.id, saved, dto.accept).catch((err) =>
       this.logger.error(
         `Failed to trigger 'rejection_reviewed' email for id=${saved.id}`,
+        err?.message || err,
+      ),
+    );
+    this.triggerRejectionReviewedBellNotification(saved.id, saved, dto.accept).catch((err) =>
+      this.logger.error(
+        `❌ Failed to trigger 'rejection_reviewed' bell notification for id=${saved.id}`,
         err?.message || err,
       ),
     );

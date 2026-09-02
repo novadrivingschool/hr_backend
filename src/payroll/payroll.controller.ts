@@ -416,5 +416,30 @@ export class PayrollController {
     res.send(buf);
   }
 
+  // Reporte NOVA/V-O como imagen: se renderiza server-side (puppeteer) a
+  // partir de los mismos datos de getClockComparisonDetailRecords — no es
+  // un screenshot del navegador del usuario.
+  @Post('timesheets/clock-comparison/nova-vo-report/image')
+  async getNovaVoutReportImage(
+    @Body() body: { start_date: string; end_date: string; employees?: string[] },
+    @Res() res: Response,
+  ) {
+    const { start_date, end_date, employees } = body;
 
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+
+    const buf = await this.payrollService.generateNovaVoutReportImage(
+      start_date,
+      end_date,
+      employees,
+    );
+
+    const fname = `ReporteNovaVO_${start_date}_${end_date}.png`;
+
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.send(buf);
+  }
 }

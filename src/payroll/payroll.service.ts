@@ -6481,6 +6481,163 @@ export class PayrollService {
     return this.buildClockComparisonDetailRows(filteredTcwRows, oneIndex, voutIndex);
   }
 
+  // FIX 2026-08-31: el reporte NOVA/V-O se generaba con html2canvas en el
+  // FRONTEND (screenshot del DOM) — nada de eso es confiable para un
+  // documento de auditoría: depende de que los fonts ya hayan cargado en
+  // ESE navegador, cualquiera puede alterar el DOM antes de capturar, y no
+  // queda ningún registro server-side de qué se generó. Ahora la imagen se
+  // renderiza acá, con los mismos datos que ya sirve
+  // getClockComparisonDetailRecords (single source of truth con la tabla
+  // de auditoría) y el mismo patrón puppeteer que ya usa este service para
+  // los PDFs de payroll (ver renderEmployeePdf más arriba).
+  private buildNovaVoutReportRows(
+    detailRows: ReturnType<PayrollService['buildClockComparisonDetailRows']>,
+  ): Array<{ employee: string; nova: number; vo: number; total: number }> {
+    const byEmployee = new Map<string, { employee: string; totalHours: number; hasOne: boolean; hasVout: boolean }>();
+    for (const r of detailRows) {
+      const employee = r.tcw_employee;
+      if (!employee) continue;
+      if (!byEmployee.has(employee)) {
+        byEmployee.set(employee, { employee, totalHours: 0, hasOne: false, hasVout: false });
+      }
+      const entry = byEmployee.get(employee)!;
+      entry.totalHours += Number(r.tcw_hours || 0);
+      if (r.activity_source === 'Activity ONE') entry.hasOne = true;
+      if (r.activity_source === 'Activity VOUT') entry.hasVout = true;
+    }
+
+    // La fuente es un atributo del EMPLEADO, no del día: la sumatoria de
+    // TCW Hours va ENTERA a una sola columna (ONE→NOVA tiene prioridad
+    // sobre VOUT, igual que el fallback que ya usa activitySource más
+    // arriba; sin ningún día con fuente registrada, default a NOVA).
+    return Array.from(byEmployee.values())
+      .map((e) => {
+        const total = this.round2(e.totalHours);
+        const isVout = !e.hasOne && e.hasVout;
+        return {
+          employee: e.employee,
+          nova: isVout ? 0 : total,
+          vo: isVout ? total : 0,
+          total,
+        };
+      })
+      .sort((a, b) => a.employee.localeCompare(b.employee, 'es'));
+  }
+
+  private buildNovaVoutReportHtml(
+    rows: Array<{ employee: string; nova: number; vo: number; total: number }>,
+    start_date: string,
+    end_date: string,
+  ): string {
+    const fmtEs = (n: number): string => {
+      if (!n) return '';
+      return String(Math.round(n * 100) / 100).replace('.', ',');
+    };
+    const fmtPeriodDate = (value: string): string => {
+      const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      return m ? `${m[2]}/${m[3]}/${m[1]}` : (value || '—');
+    };
+    const escapeHtml = (s: string): string =>
+      String(s ?? '').replace(/[&<>"']/g, (c) => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+      ));
+
+    const periodo = `${fmtPeriodDate(start_date)} - ${fmtPeriodDate(end_date)}`;
+
+    const bodyRows = rows.map((r, idx) => `
+        <tr class="${idx % 2 === 1 ? 'row-alt' : ''}">
+          <td class="col-nro">${idx + 1}</td>
+          <td class="col-name">${escapeHtml(r.employee)}</td>
+          <td class="col-num">${fmtEs(r.nova)}</td>
+          <td class="col-num">${fmtEs(r.vo)}</td>
+          <td class="col-num col-total">${fmtEs(r.total)}</td>
+          <td class="col-period">${periodo}</td>
+        </tr>`).join('');
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #fff; font-family: Arial, Helvetica, sans-serif; }
+  #report-container { display: inline-block; padding: 16px; background: #fff; }
+  table { border-collapse: collapse; font-size: 13px; }
+  th {
+    background: #1e4d8c; color: #fff; font-weight: 700;
+    padding: 8px 12px; text-align: center; border: 1px solid #163a68;
+  }
+  td { padding: 6px 12px; border: 1px solid #d7e0ee; color: #1a2c4e; }
+  th.col-nro, td.col-nro { width: 48px; text-align: center; }
+  th.col-name { text-align: left; }
+  td.col-name { text-align: left; font-weight: 600; }
+  td.col-num { text-align: right; }
+  td.col-total { font-weight: 700; }
+  td.col-period { text-align: center; white-space: nowrap; }
+  tr.row-alt td { background: #eef3fb; }
+</style>
+</head>
+<body>
+  <div id="report-container">
+    <table>
+      <thead>
+        <tr>
+          <th class="col-nro">Nro.</th>
+          <th class="col-name">NOMBRE</th>
+          <th>NOVA</th>
+          <th>V-O</th>
+          <th>TOTAL HORAS</th>
+          <th>PERIODO</th>
+        </tr>
+      </thead>
+      <tbody>${bodyRows}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>`;
+  }
+
+  async generateNovaVoutReportImage(
+    start_date: string,
+    end_date: string,
+    employees?: string[],
+  ): Promise<Buffer> {
+    const detailRows = await this.getClockComparisonDetailRecords(start_date, end_date, employees);
+    const reportRows = this.buildNovaVoutReportRows(detailRows);
+    const html = this.buildNovaVoutReportHtml(reportRows, start_date, end_date);
+
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    try {
+      const page = await browser.newPage();
+      page.setDefaultNavigationTimeout(0);
+      page.setDefaultTimeout(0);
+
+      await page.setContent(html, { waitUntil: 'load', timeout: 0 });
+
+      const dimensions = await page.evaluate(() => {
+        const el = document.getElementById('report-container');
+        return el
+          ? { width: el.offsetWidth, height: el.offsetHeight }
+          : { width: 900, height: 600 };
+      });
+
+      await page.setViewport({
+        width: Math.ceil(dimensions.width),
+        height: Math.ceil(dimensions.height),
+        deviceScaleFactor: 2,
+      });
+
+      const screenshot = await page.screenshot({ type: 'png' });
+      return Buffer.from(screenshot);
+    } finally {
+      await browser.close();
+    }
+  }
+
   private async buildClockComparisonDetailWorkbook(
     data: ReturnType<PayrollService['buildClockComparisonDetailRows']>,
   ): Promise<Buffer> {
