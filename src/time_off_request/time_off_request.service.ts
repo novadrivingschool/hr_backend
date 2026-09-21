@@ -739,7 +739,15 @@ export class TimeOffRequestService {
     search?: string,
     dateFrom?: string,
     dateTo?: string,
-  ): Promise<TimeOffRequest[]> {
+    page = 1,
+    limit = 8,
+  ): Promise<{
+    data: TimeOffRequest[];
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  }> {
     const query = this.timeOffRequestRepo.createQueryBuilder('request');
 
     const depts = multi_department.map(d => d.trim()).filter(Boolean);
@@ -805,7 +813,24 @@ export class TimeOffRequestService {
       query.andWhere(`request.status = 'Cancelled'`);
     }
 
-    return query.getMany();
+    // 📄 Paginación: nunca devolver el set completo sin límite.
+    const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+    const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 8;
+
+    const [data, total] = await query
+      .orderBy('request.createdAt', 'DESC')
+      .addOrderBy('request.id', 'DESC') // desempate determinístico entre páginas
+      .skip((safePage - 1) * safeLimit)
+      .take(safeLimit)
+      .getManyAndCount();
+
+    return {
+      data,
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.max(1, Math.ceil(total / safeLimit)),
+    };
   }
 
   /* FIND COORDINATOR EMAIL BY DEPARTMENT */
@@ -1508,6 +1533,269 @@ export class TimeOffRequestService {
     const total = pendingCoordinator + pendingHR + approved + notApproved + cancelled;
 
     return { pendingCoordinator, pendingHR, approved, notApproved, cancelled, total };
+  }
+
+  /** Redondeo a 1 decimal, tolerante a null/undefined/NaN (vienen de AVG/PERCENTILE_CONT). */
+  private round1(n: number | string | null | undefined): number | null {
+    if (n === null || n === undefined) return null;
+    const v = Number(n);
+    if (!Number.isFinite(v)) return null;
+    return Math.round(v * 10) / 10;
+  }
+
+  /**
+   * TOR Analytics — agregado 100% en SQL (mismo patrón que ITTicketsService.analytics()):
+   * tiempos de aprobación por etapa, tasa de aprobación directa (HR/Management sin pasar
+   * por coordinator), departamentos/empleados que más piden, día de semana y razón más
+   * solicitados, y tendencia en el tiempo. Todas las queries comparten el mismo filtro de
+   * rango de fechas (sobre createdDate) y departamento (multi_department, "any of").
+   */
+  async getAnalytics(
+    multi_department: string[] = [],
+    dateFrom?: string,
+    dateTo?: string,
+  ): Promise<{
+    range: { from: string | null; to: string | null; bucket: 'day' | 'week' | 'month' };
+    summary: {
+      total: number;
+      pendingCoordinator: number;
+      pendingHR: number;
+      approved: number;
+      notApproved: number;
+      cancelled: number;
+      distinctEmployees: number;
+    };
+    approvalTimes: {
+      coordinator: { avgHours: number | null; medianHours: number | null; count: number };
+      hr: { avgHours: number | null; medianHours: number | null; count: number };
+      directApproval: { count: number; hrActedCount: number; ratePct: number | null };
+    };
+    byDepartment: Array<{ department: string; count: number }>;
+    topRequesters: Array<{ employeeNumber: string; name: string; count: number }>;
+    byDayOfWeek: Array<{ dow: number; count: number }>;
+    byReason: Array<{ reason: string; count: number }>;
+    trend: Array<{ bucket: string; count: number }>;
+  }> {
+    const depts = multi_department.map(d => d.trim()).filter(Boolean);
+    const deptParam = depts.length > 0 ? depts : null;
+
+    // $1=dateFrom, $2=dateTo, $3=departamentos ("any of", vía operador jsonb ?|) —
+    // mismas 3 posiciones reutilizadas en cada query, igual que en ITTicketsService.
+    const P: (string | string[] | null)[] = [dateFrom ?? null, dateTo ?? null, deptParam];
+
+    const RANGE = `
+      ($1::text IS NULL OR t."createdDate" >= $1::date)
+      AND ($2::text IS NULL OR t."createdDate" <= $2::date)
+      AND ($3::text[] IS NULL OR (t.employee_data -> 'multi_department') ?| $3::text[])`;
+
+    // Marca los TOR donde HR/Management aprobó (o rechazó) DIRECTO, sin que el
+    // coordinator decidiera de verdad. approveByHR() rellena coordinator_approval
+    // con el MISMO actor/fecha/hora que hr_approval cuando coordinator_approval
+    // seguía en {approved:false} — así se distingue de un rechazo genuino del
+    // coordinator (que también deja timestamps idénticos en ambos stages) por el
+    // texto fijo que el backend graba en hr_comments solo en ese caso.
+    const DIRECT_HR = `(
+      NULLIF(t.coordinator_approval->>'by','') IS NOT NULL
+      AND t.coordinator_approval->>'by' = t.hr_approval->>'by'
+      AND t.coordinator_approval->>'date' = t.hr_approval->>'date'
+      AND t.coordinator_approval->>'time' = t.hr_approval->>'time'
+      AND COALESCE(t.hr_comments,'') NOT LIKE 'Not approved by Coordinator:%'
+    )`;
+
+    const CREATED_TS = `(t."createdDate" + t."createdTime")`;
+    const COORD_TS = `(NULLIF(t.coordinator_approval->>'date','')::date + NULLIF(t.coordinator_approval->>'time','')::time)`;
+    const HR_TS = `(NULLIF(t.hr_approval->>'date','')::date + NULLIF(t.hr_approval->>'time','')::time)`;
+
+    // Bucket de la tendencia: igual heurística que AbsenceAnalytics (día/semana/mes
+    // según el span). Sin rango (all time) se asume "month" para no disparar una
+    // query extra solo para conocer el span real.
+    let bucket: 'day' | 'week' | 'month' = 'month';
+    if (dateFrom && dateTo) {
+      const spanDays = Math.abs(
+        (new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / 86400000,
+      );
+      bucket = spanDays <= 45 ? 'day' : spanDays <= 200 ? 'week' : 'month';
+    }
+
+    const [
+      [summaryRow],
+      [coordTimeRow],
+      [hrTimeRow],
+      [directRow],
+      byDepartmentRaw,
+      topRequestersRaw,
+      byDowRaw,
+      byReasonRaw,
+      trendRaw,
+    ] = await Promise.all([
+      // 1. Resumen de estatus en el rango — mismo criterio que getKpiCounts().
+      this.timeOffRequestRepo.query(
+        `SELECT
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE t.status = 'Pending' AND t.coordinator_approval->>'approved' = 'false')::int AS "pendingCoordinator",
+           COUNT(*) FILTER (WHERE t.status = 'Pending' AND t.coordinator_approval->>'approved' = 'true' AND t.hr_approval->>'approved' = 'false')::int AS "pendingHR",
+           COUNT(*) FILTER (WHERE t.status = 'Approved')::int AS approved,
+           COUNT(*) FILTER (WHERE t.status = 'Not Approved')::int AS "notApproved",
+           COUNT(*) FILTER (WHERE t.status = 'Cancelled')::int AS cancelled,
+           COUNT(DISTINCT t.employee_data->>'employee_number')::int AS "distinctEmployees"
+         FROM time_off_requests t
+         WHERE ${RANGE}`,
+        P,
+      ),
+
+      // 2. Tiempo del coordinator para decidir (aprobar o rechazar) desde que se
+      //    crea el TOR. Excluye los casos de aprobación directa por HR/Management.
+      this.timeOffRequestRepo.query(
+        `SELECT
+           AVG(EXTRACT(EPOCH FROM (${COORD_TS} - ${CREATED_TS})) / 3600.0) AS "avgHours",
+           PERCENTILE_CONT(0.5) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (${COORD_TS} - ${CREATED_TS})) / 3600.0
+           ) AS "medianHours",
+           COUNT(*)::int AS count
+         FROM time_off_requests t
+         WHERE ${RANGE}
+           AND NULLIF(t.coordinator_approval->>'by','') IS NOT NULL
+           AND NOT ${DIRECT_HR}`,
+        P,
+      ),
+
+      // 3. Tiempo de HR para decidir desde que el coordinator APROBÓ de verdad
+      //    (Stage 1 real, no un skip disfrazado de aprobación directa).
+      this.timeOffRequestRepo.query(
+        `SELECT
+           AVG(EXTRACT(EPOCH FROM (${HR_TS} - ${COORD_TS})) / 3600.0) AS "avgHours",
+           PERCENTILE_CONT(0.5) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (${HR_TS} - ${COORD_TS})) / 3600.0
+           ) AS "medianHours",
+           COUNT(*)::int AS count
+         FROM time_off_requests t
+         WHERE ${RANGE}
+           AND t.coordinator_approval->>'approved' = 'true'
+           AND NOT ${DIRECT_HR}
+           AND NULLIF(t.hr_approval->>'by','') IS NOT NULL`,
+        P,
+      ),
+
+      // 4. Cuántos TOR resuelve HR/Management directo, saltándose al coordinator,
+      //    de entre todos los TOR donde HR sí llegó a actuar.
+      this.timeOffRequestRepo.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE ${DIRECT_HR})::int AS count,
+           COUNT(*) FILTER (WHERE NULLIF(t.hr_approval->>'by','') IS NOT NULL)::int AS "hrActedCount"
+         FROM time_off_requests t
+         WHERE ${RANGE}`,
+        P,
+      ),
+
+      // 5. Departamentos con más TOR (un TOR con multi_department=[A,B] cuenta para ambos).
+      this.timeOffRequestRepo.query(
+        `SELECT dept AS department, COUNT(*)::int AS count
+         FROM (
+           SELECT d.value AS dept
+           FROM time_off_requests t
+           LEFT JOIN LATERAL jsonb_array_elements_text(
+             CASE WHEN jsonb_typeof(t.employee_data->'multi_department') = 'array'
+                  THEN t.employee_data->'multi_department' ELSE '[]'::jsonb END
+           ) d ON TRUE
+           WHERE ${RANGE}
+         ) x
+         WHERE dept IS NOT NULL AND dept <> ''
+         GROUP BY dept
+         ORDER BY count DESC`,
+        P,
+      ),
+
+      // 6. Top 10 empleados que más TOR piden.
+      this.timeOffRequestRepo.query(
+        `SELECT
+           t.employee_data->>'employee_number' AS "employeeNumber",
+           MAX(TRIM(CONCAT(t.employee_data->>'name', ' ', t.employee_data->>'last_name'))) AS name,
+           COUNT(*)::int AS count
+         FROM time_off_requests t
+         WHERE ${RANGE}
+         GROUP BY 1
+         ORDER BY count DESC
+         LIMIT 10`,
+        P,
+      ),
+
+      // 7. Día de semana en que ARRANCA el tiempo solicitado (Days: startDate,
+      //    Hours: hourDate) — no el día en que se somete el TOR.
+      this.timeOffRequestRepo.query(
+        `SELECT EXTRACT(ISODOW FROM COALESCE(t."startDate", t."hourDate"))::int AS dow, COUNT(*)::int AS count
+         FROM time_off_requests t
+         WHERE ${RANGE} AND COALESCE(t."startDate", t."hourDate") IS NOT NULL
+         GROUP BY 1`,
+        P,
+      ),
+
+      // 8. Razón (requestType) más solicitada.
+      this.timeOffRequestRepo.query(
+        `SELECT t."requestType" AS reason, COUNT(*)::int AS count
+         FROM time_off_requests t
+         WHERE ${RANGE}
+         GROUP BY 1
+         ORDER BY count DESC`,
+        P,
+      ),
+
+      // 9. Tendencia: TOR creados por bucket de tiempo.
+      this.timeOffRequestRepo.query(
+        `SELECT to_char(date_trunc($4, t."createdDate"::timestamp), 'YYYY-MM-DD') AS bucket, COUNT(*)::int AS count
+         FROM time_off_requests t
+         WHERE ${RANGE}
+         GROUP BY 1
+         ORDER BY 1`,
+        [...P, bucket],
+      ),
+    ]);
+
+    const byDayOfWeek = Array.from({ length: 7 }, (_, i) => {
+      const row = byDowRaw.find((r: any) => Number(r.dow) === i + 1);
+      return { dow: i + 1, count: row ? Number(row.count) : 0 };
+    });
+
+    const hrActedCount = Number(directRow?.hrActedCount ?? 0);
+    const directCount = Number(directRow?.count ?? 0);
+
+    return {
+      range: { from: dateFrom ?? null, to: dateTo ?? null, bucket },
+      summary: {
+        total: Number(summaryRow?.total ?? 0),
+        pendingCoordinator: Number(summaryRow?.pendingCoordinator ?? 0),
+        pendingHR: Number(summaryRow?.pendingHR ?? 0),
+        approved: Number(summaryRow?.approved ?? 0),
+        notApproved: Number(summaryRow?.notApproved ?? 0),
+        cancelled: Number(summaryRow?.cancelled ?? 0),
+        distinctEmployees: Number(summaryRow?.distinctEmployees ?? 0),
+      },
+      approvalTimes: {
+        coordinator: {
+          avgHours: this.round1(coordTimeRow?.avgHours),
+          medianHours: this.round1(coordTimeRow?.medianHours),
+          count: Number(coordTimeRow?.count ?? 0),
+        },
+        hr: {
+          avgHours: this.round1(hrTimeRow?.avgHours),
+          medianHours: this.round1(hrTimeRow?.medianHours),
+          count: Number(hrTimeRow?.count ?? 0),
+        },
+        directApproval: {
+          count: directCount,
+          hrActedCount,
+          ratePct: hrActedCount > 0 ? this.round1((directCount / hrActedCount) * 100) : null,
+        },
+      },
+      byDepartment: byDepartmentRaw.map((r: any) => ({ department: r.department, count: Number(r.count) })),
+      topRequesters: topRequestersRaw.map((r: any) => ({
+        employeeNumber: r.employeeNumber,
+        name: r.name,
+        count: Number(r.count),
+      })),
+      byDayOfWeek,
+      byReason: byReasonRaw.map((r: any) => ({ reason: r.reason, count: Number(r.count) })),
+      trend: trendRaw.map((r: any) => ({ bucket: r.bucket, count: Number(r.count) })),
+    };
   }
 
   async resendStaffEmail(id: string): Promise<{ message: string }> {

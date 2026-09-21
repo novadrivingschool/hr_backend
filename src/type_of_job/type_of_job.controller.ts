@@ -1,4 +1,7 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { UseGuards } from '@nestjs/common';
+import { HrJwtGuard } from '../common/guards/hr-jwt.guard';
+import { PermissionGuard, RequirePermission } from '../common/guards/permission.guard';
 import { TypeOfJobService } from './type_of_job.service';
 import { CreateTypeOfJobDto } from './dto/create-type_of_job.dto';
 import { UpdateTypeOfJobDto } from './dto/update-type_of_job.dto';
@@ -7,6 +10,8 @@ import { UpdateTypeOfJobDto } from './dto/update-type_of_job.dto';
 export class TypeOfJobController {
   constructor(private readonly typeOfJobService: TypeOfJobService) {}
 
+  @UseGuards(HrJwtGuard, PermissionGuard)
+  @RequirePermission('it_hr_catalogs')
   @Post()
   create(@Body() createTypeOfJobDto: CreateTypeOfJobDto) {
     return this.typeOfJobService.create(createTypeOfJobDto);
@@ -22,11 +27,15 @@ export class TypeOfJobController {
     return this.typeOfJobService.findOne(id);
   }
 
+  @UseGuards(HrJwtGuard, PermissionGuard)
+  @RequirePermission('it_hr_catalogs')
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateTypeOfJobDto: UpdateTypeOfJobDto) {
     return this.typeOfJobService.update(id, updateTypeOfJobDto);
   }
 
+  @UseGuards(HrJwtGuard, PermissionGuard)
+  @RequirePermission('it_hr_catalogs')
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.typeOfJobService.remove(id);

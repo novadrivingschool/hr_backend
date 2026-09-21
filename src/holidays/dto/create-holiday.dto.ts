@@ -50,6 +50,16 @@ export class CreateHolidayDto {
   @IsBoolean()
   is_mandatory?: boolean;
 
+  // Ver holiday.entity.ts. Independiente de is_mandatory — controla si se
+  // paga authorized_hours cuando el empleado no trabajó el holiday y no es
+  // is_mandatory (ej. Labor Day). Opcional: default FALSE a nivel de
+  // servicio/DB si no se envía — decisión explícita de HR por holiday, no
+  // un blanket default (afecta también el Time Clock Wizard efectivo, ver
+  // holiday.entity.ts).
+  @IsOptional()
+  @IsBoolean()
+  is_paid_holiday?: boolean;
+
   @IsOptional()
   @IsObject()
   performed_by?: PerformedByDto;

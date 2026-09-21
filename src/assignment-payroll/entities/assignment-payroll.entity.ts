@@ -25,6 +25,9 @@ export class AssignmentPayroll {
   @Column({ type: 'date' })
   date_of_btw: string
 
+  @Column({ type: 'date' })
+  payment_date: string
+
   @Column({ type: 'varchar', length: 20, nullable: true })
   btw_start_time: string | null
 

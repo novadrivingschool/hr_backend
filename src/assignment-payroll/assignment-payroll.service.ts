@@ -36,6 +36,7 @@ export class AssignmentPayrollService {
     const colType        = col(['type'])
     const colPackage     = col(['package'])
     const colDate        = col(['date of btw', 'date'])
+    const colPaymentDate = col(['payment date'])
     const colStartTime   = col(['btw start time', 'start time'])
     const colEndTime     = col(['btw end time', 'end time'])
     const colHours       = col(['number of hours', 'hours'])
@@ -45,9 +46,9 @@ export class AssignmentPayrollService {
     const colNotes       = col(['student notes', 'notes'])
     const colAssigned    = col(['assigned'])
 
-    if (!colStudentName || !colDate || !colInstructor) {
+    if (!colStudentName || !colDate || !colInstructor || !colPaymentDate) {
       throw new BadRequestException(
-        'Columnas requeridas no encontradas: Student Name, Date of BTW, Instructor',
+        'Columnas requeridas no encontradas: Student Name, Date of BTW, Instructor, Payment Date',
       )
     }
 
@@ -132,16 +133,18 @@ export class AssignmentPayrollService {
       const row        = sheet.getRow(i)
       const studentName = getCellValue(row, colStudentName).trim()
       const dateOfBtw   = getCellDate(row, colDate)
+      const paymentDate = getCellDate(row, colPaymentDate)
       const instructor  = getCellValue(row, colInstructor).trim()
 
       if (!studentName && !dateOfBtw && !instructor) continue // fila vacía
-      if (!studentName || !dateOfBtw || !instructor) { skipped++; continue }
+      if (!studentName || !dateOfBtw || !instructor || !paymentDate) { skipped++; continue }
 
       payloads.push({
         student_name:  studentName,
         type:          getCellValue(row, colType) || null,
         package:       getCellValue(row, colPackage) || null,
         date_of_btw:   dateOfBtw,
+        payment_date:  paymentDate,
         btw_start_time: getCellTimeValue(row, colStartTime) || null,
         btw_end_time:  getCellTimeValue(row, colEndTime) || null,
         number_of_hours: parseNumber(getCellValue(row, colHours)),
@@ -214,11 +217,11 @@ export class AssignmentPayrollService {
 
     const qb = this.repo
       .createQueryBuilder('ap')
-      .orderBy('ap.date_of_btw', 'DESC')
+      .orderBy('ap.payment_date', 'DESC')
       .addOrderBy('ap.btw_start_time', 'ASC')
 
-    if (start_date) qb.andWhere('ap.date_of_btw >= :start_date', { start_date })
-    if (end_date)   qb.andWhere('ap.date_of_btw <= :end_date', { end_date })
+    if (start_date) qb.andWhere('ap.payment_date >= :start_date', { start_date })
+    if (end_date)   qb.andWhere('ap.payment_date <= :end_date', { end_date })
     if (instructor) qb.andWhere('ap.instructor ILIKE :instructor', { instructor: `%${instructor}%` })
     if (status)     qb.andWhere('ap.status ILIKE :status', { status: `%${status}%` })
 

@@ -229,8 +229,13 @@ export class IpSummaryService {
     const [ipRows, tpRows, asRows, nsRows, artList] = await Promise.all([
       this.ipRepo.find({ where: { date_of_btw: Between(start_date, end_date) } as any }),
       this.tpRepo.find({ where: { session_date: Between(start_date, end_date) } as any }),
-      this.asRepo.find({ where: { date_of_btw: Between(start_date, end_date) } as any }),
-      this.nsRepo.find({ where: { date_of_btw: Between(start_date, end_date) } as any }),
+      // Assignments/No-Show: el rango de pantalla filtra por payment_date
+      // (fecha de PAGO), no por date_of_btw (fecha del servicio). date_of_btw
+      // se sigue usando más abajo (resolveSeg/findPeriod/splitByRateBoundaries)
+      // para resolver identidad y rate vigente - son ejes independientes de
+      // "qué cae en este período de pago".
+      this.asRepo.find({ where: { payment_date: Between(start_date, end_date) } as any }),
+      this.nsRepo.find({ where: { payment_date: Between(start_date, end_date) } as any }),
       this.artRepo.find(),
     ])
 

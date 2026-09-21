@@ -155,6 +155,16 @@ export function buildSummaryEmployeeHtml(emp: any): string {
           margin-top: 2px; font-size: 9px; font-weight: 700;
           color: #6d28d9; text-transform: uppercase; letter-spacing: 0.3px;
         }
+        .holiday-work-row { background: #ecfeff; }
+        .holiday-work-label {
+          margin-top: 2px; font-size: 9px; font-weight: 700;
+          color: #0e7490; text-transform: uppercase; letter-spacing: 0.3px;
+        }
+        .paid-holiday-row { background: #e0e7ff; }
+        .paid-holiday-label {
+          margin-top: 2px; font-size: 9px; font-weight: 700;
+          color: #4338ca; text-transform: uppercase; letter-spacing: 0.3px;
+        }
         .season-row { background: #fffbeb; }
         .no-rate-row { background: #fef2f2; }
         .empty-inline { color: #64748b; font-style: italic; padding: 6px 0; }
@@ -235,6 +245,7 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                 <tbody>
                   <tr><td>Work Schedule</td><td>${esc(emp?.work_schedule)}</td></tr>
                   <tr><td>Days Worked</td><td>${esc(emp?.days_worked ?? 0)}</td></tr>
+                  <tr><td>Type of Income</td><td>${esc(rate?.type_of_income)}</td></tr>
                   <tr><td>Payment Method</td><td>${esc(rate?.payment_method)}</td></tr>
                 </tbody>
               </table>
@@ -333,7 +344,7 @@ export function buildSummaryEmployeeHtml(emp: any): string {
               </colgroup>
               <tbody>
                 <tr>
-                  <td>Work Shift Amount</td>
+                  <td>Work Shift Amount Authorized</td>
                   <td class="text-right ${moneyClass(totals?.authorized_work_shift_amount, 'green')}">${fmtMoney(totals?.authorized_work_shift_amount)}</td>
                   <td>Time Off Amount</td>
                   <td class="text-right ${moneyClass(totals?.time_off_amount, 'red')}">${fmtMoney(totals?.time_off_amount)}</td>
@@ -355,6 +366,12 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                   <td class="text-right ${moneyClass(totals?.advanced_amount, 'red')}">${fmtMoney(totals?.advanced_amount)}</td>
                   <td>Outage Amount</td>
                   <td class="text-right ${moneyClass(totals?.outage_amount, 'red')}">${fmtMoney(totals?.outage_amount)}</td>
+                </tr>
+                <tr>
+                  <td>TCW Shortfall Amount</td>
+                  <td class="text-right ${moneyClass(totals?.tcw_shortfall_amount, 'red')}">${fmtMoney(totals?.tcw_shortfall_amount)}</td>
+                  <td></td>
+                  <td></td>
                 </tr>
               </tbody>
             </table>
@@ -400,11 +417,33 @@ export function buildSummaryEmployeeHtml(emp: any): string {
                       totalTcwH       += tcwH;
                       // El rate SIEMPRE se muestra (rateTag) — el holiday no lo reemplaza,
                       // solo se marca aparte (debajo de la fecha) que ese día es holiday.
-                      const holidayLabel = day?.is_holiday
+                      // Cualquier día is_holiday se marca (label + row), sea o no mandatory —
+                      // eso es informativo (esa fecha ES un holiday) y siempre se mostró así.
+                      // holiday_pay_source distingue 3 tratamientos visualmente (pedido de
+                      // Javier 2026-09-03 para el caso paid_holiday, ej. Labor Day — antes solo
+                      // existía la distinción holiday_work vs genérico):
+                      //   'holiday_work'  → se trabajó el holiday (horas reales en
+                      //                     nova_shifts/vout_shifts) → cyan.
+                      //   'paid_holiday'  → NO se trabajó pero se paga por ley/política aunque
+                      //                     nadie esté obligado a trabajarlo (is_mandatory=false,
+                      //                     is_paid_holiday=true) → indigo, para diferenciarlo de
+                      //                     un holiday mandatory.
+                      //   'mandatory' / null → violeta genérico, igual que siempre (un holiday
+                      //                     mandatory ya muestra sus authorized_hours en
+                      //                     nova_shifts/vout_shifts vía holidayOverrideHours en
+                      //                     payroll.service.ts — acá solo se etiqueta con el
+                      //                     violeta genérico, sin estilo propio).
+                      const isHolidayWorkDay = day?.holiday_pay_source === 'holiday_work';
+                      const isPaidHolidayDay = day?.holiday_pay_source === 'paid_holiday';
+                      const holidayLabel = isHolidayWorkDay
+                        ? '<div class="holiday-work-label">' + esc(day?.holiday_name || 'Holiday') + ' - Holiday Work</div>'
+                        : isPaidHolidayDay
+                        ? '<div class="paid-holiday-label">' + esc(day?.holiday_name || 'Holiday') + ' - Paid Holiday</div>'
+                        : day?.is_holiday
                         ? '<div class="holiday-date-label">' + esc(day?.holiday_name || 'Holiday') + '</div>'
                         : '';
                       return `
-                        <tr class="${day?.is_holiday ? 'holiday-row' : day?.has_rate === false ? 'no-rate-row' : ''}">
+                        <tr class="${isHolidayWorkDay ? 'holiday-work-row' : isPaidHolidayDay ? 'paid-holiday-row' : day?.is_holiday ? 'holiday-row' : day?.has_rate === false ? 'no-rate-row' : ''}">
                           <td class="nowrap">${esc(day?.date)}${holidayLabel}</td>
                           <td>${rateTag(day)}</td>
                           <td class="text-right nowrap">${novaSchedH > 0 ? fmtHours(novaSchedH) : '—'}</td>

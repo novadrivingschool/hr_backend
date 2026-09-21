@@ -34,6 +34,7 @@ export class NoShowPayrollService {
 
     const colStudentName     = col(['student name'])
     const colDate            = col(['date of btw', 'date'])
+    const colPaymentDate     = col(['payment date'])
     const colProduct         = col(['btw product'])
     const colHours           = col(['number of hours', 'hours'])
     const colStatus          = col(['status'])
@@ -53,9 +54,9 @@ export class NoShowPayrollService {
     const colStudentNotes    = col(['student notes'])
     const colApptNotes       = col(['appointment notes'])
 
-    if (!colStudentName || !colDate || !colInstructor) {
+    if (!colStudentName || !colDate || !colInstructor || !colPaymentDate) {
       throw new BadRequestException(
-        'Columnas requeridas no encontradas: Student Name, Date of BTW, Instructor',
+        'Columnas requeridas no encontradas: Student Name, Date of BTW, Instructor, Payment Date',
       )
     }
 
@@ -147,14 +148,16 @@ export class NoShowPayrollService {
       const row         = sheet.getRow(i)
       const studentName = getCellValue(row, colStudentName).trim()
       const dateOfBtw   = getCellDate(row, colDate)
+      const paymentDate = getCellDate(row, colPaymentDate)
       const instructor  = getCellValue(row, colInstructor).trim()
 
       if (!studentName && !dateOfBtw && !instructor) continue // fila vacía
-      if (!studentName || !dateOfBtw || !instructor) { skipped++; continue }
+      if (!studentName || !dateOfBtw || !instructor || !paymentDate) { skipped++; continue }
 
       payloads.push({
         student_name:             studentName,
         date_of_btw:              dateOfBtw,
+        payment_date:             paymentDate,
         btw_product:              getCellValue(row, colProduct) || null,
         number_of_hours:          parseNumber(getCellValue(row, colHours)),
         paid_hours:               calcPaidHours(parseNumber(getCellValue(row, colHours))),
@@ -238,11 +241,11 @@ export class NoShowPayrollService {
 
     const qb = this.repo
       .createQueryBuilder('ns')
-      .orderBy('ns.date_of_btw', 'DESC')
+      .orderBy('ns.payment_date', 'DESC')
       .addOrderBy('ns.btw_start_time', 'ASC')
 
-    if (start_date) qb.andWhere('ns.date_of_btw >= :start_date', { start_date })
-    if (end_date)   qb.andWhere('ns.date_of_btw <= :end_date', { end_date })
+    if (start_date) qb.andWhere('ns.payment_date >= :start_date', { start_date })
+    if (end_date)   qb.andWhere('ns.payment_date <= :end_date', { end_date })
     if (instructor) qb.andWhere('ns.instructor ILIKE :instructor', { instructor: `%${instructor}%` })
     if (status)     qb.andWhere('ns.status ILIKE :status', { status: `%${status}%` })
 

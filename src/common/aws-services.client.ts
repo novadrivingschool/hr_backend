@@ -41,3 +41,18 @@ export async function deleteHrWhatsappS3File(updateId: string, key: string): Pro
     timeout: 7000,
   });
 }
+
+/**
+ * Borra un adjunto de Candidate Tracker, vía el recurso dedicado
+ * `candidate-tracker/files` (ver CandidateTrackerFilesModule en
+ * aws_services_backend) — mismo patrón que deleteLoaS3File: el microservicio
+ * valida server-side que `key` realmente pertenezca a `candidateId` antes de
+ * borrar, así que un id incorrecto o una key ajena nunca borran el archivo de
+ * otro candidato.
+ */
+export async function deleteCandidateTrackerS3File(candidateId: string, key: string): Promise<void> {
+  await axios.delete(`${baseUrl()}/candidate-tracker/files`, {
+    params: { candidateId, key },
+    timeout: 7000,
+  });
+}

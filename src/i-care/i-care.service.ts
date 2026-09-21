@@ -1,9 +1,11 @@
 import { BadRequestException, ForbiddenException, Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Brackets, QueryRunner, Repository } from 'typeorm';
+import { Brackets, DeepPartial, QueryRunner, Repository } from 'typeorm';
 import * as moment from 'moment-timezone';
 import { Logger } from '@nestjs/common';
 import axios from 'axios';
+import * as ExcelJS from 'exceljs';
+import { Response } from 'express';
 
 import { CreateICareDto } from './dto/create-i-care.dto';
 import { UpdateICareDto } from './dto/update-i-care.dto';
@@ -22,8 +24,10 @@ import { ICareAnalyticsQueryDto } from './dto/analytics-query-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
 import { ICareReason } from '../i_care_reasons/entities/i_care_reason.entity';
+import { ICareOffenseCategory } from '../i_care_reasons/enums/offense-category.enum';
 import { pushBellNotification } from '../common/it-api.client';
 import { EmployeesV2Service } from '../employees/employees-v2.service';
+import { LogbookService } from '../logbook/logbook.service';
 
 // -- Types ----------------------------------------------------------------------
 
@@ -33,6 +37,12 @@ export interface PaginatedResult<T> {
   page: number;
   limit: number;
   pageCount: number;
+}
+
+export interface ImportICareResult {
+  inserted: number;
+  skipped: number;
+  errors: { row: number; message: string }[];
 }
 
 /**
@@ -127,6 +137,8 @@ export class ICareService {
     private readonly iCareReasonRepository: Repository<ICareReason>,
 
     private readonly employeesV2Service: EmployeesV2Service,
+
+    private readonly logbookService: LogbookService,
   ) { }
 
   /**
@@ -145,6 +157,23 @@ export class ICareService {
       throw new BadRequestException(`Reason "${reasonText}" does not have an urgency assigned yet -- ask an admin to set it in iCare Reasons before using it`);
     }
     return reasonRecord.urgency;
+  }
+
+  /**
+   * 2026-09-19: gemelo de resolveUrgencyForReason() pero para offense_category.
+   * A diferencia de urgency, offense_category es OPCIONAL en el catalogo
+   * (i_care_reason.offense_category es nullable) -- por eso esta funcion NO
+   * tira error si el reason no tiene offense_category asignada, devuelve null.
+   * Hace su propia query (en vez de fusionarse con resolveUrgencyForReason)
+   * para no tocar esa funcion ya probada en produccion -- el costo extra es
+   * una consulta mas contra una tabla chica (catalogo de reasons).
+   */
+  private async resolveOffenseCategoryForReason(reasonText: string): Promise<ICareOffenseCategory | null> {
+    const reasonRecord = await this.iCareReasonRepository.findOne({ where: { reason: reasonText } });
+    if (!reasonRecord) {
+      throw new BadRequestException(`Reason "${reasonText}" was not found in the reasons catalog`);
+    }
+    return reasonRecord.offense_category ?? null;
   }
 
   // -- Email helpers ----------------------------------------------------------
@@ -275,6 +304,176 @@ export class ICareService {
   }
 
   /**
+   * 2026-09-20: tabla de sanciones por offense_category, a pedido explicito del
+   * usuario. Cada categoria tiene su propia cantidad de escalones -- B llega a
+   * Discharge en el 4to, C y D en el 6to. `permanent: true` marca desde que
+   * escalon esa categoria "queda como registro permanente" (acta administrativa
+   * en el logbook, ver createPermanentOffenseLogbookEntry()): B lo es desde el
+   * 1er escalon (no tiene ningun escalon de "solo advertencia"), C desde el 3ro,
+   * D desde el 5to -- confirmado explicitamente por el usuario, no es una formula
+   * derivable de los dias de sancion (se probo y no hay patron matematico limpio).
+   *
+   * El indice de este array NO es "cuantas veces esta categoria en particular fue
+   * ofendida" -- ver resolveOffenseEscalation() para el porque.
+   */
+  private static readonly OFFENSE_SANCTION_LADDER: Record<ICareOffenseCategory, { label: string; permanent: boolean }[]> = {
+    [ICareOffenseCategory.CLASS_B_SERIOUS]: [
+      { label: '7 working days suspension', permanent: true },
+      { label: '15 working days suspension', permanent: true },
+      { label: '30 working days suspension', permanent: true },
+      { label: 'Discharge/Dismissal', permanent: true },
+    ],
+    [ICareOffenseCategory.CLASS_C_MODERATE]: [
+      { label: 'Written Warning', permanent: false },
+      { label: '1 day suspension', permanent: false },
+      { label: '2 working days suspension', permanent: true },
+      { label: '4 working days suspension', permanent: true },
+      { label: '6 working days suspension', permanent: true },
+      { label: 'Discharge/Dismissal', permanent: true },
+    ],
+    [ICareOffenseCategory.CLASS_D_LIGHT]: [
+      { label: 'Verbal Warning', permanent: false },
+      { label: 'Written Warning', permanent: false },
+      { label: '1 day suspension', permanent: false },
+      { label: '3 days suspension', permanent: false },
+      { label: '5 days suspension', permanent: true },
+      { label: 'Discharge/Dismissal', permanent: true },
+    ],
+  };
+
+  /**
+   * 2026-09-20: calcula la posicion (offense_number) y la sancion que le toca a
+   * UNA ofensa nueva (justify(justified=true) de un iCare con offense_category).
+   * Reglas confirmadas explicitamente por el usuario, con ejemplos concretos:
+   *
+   * 1. Hay UN solo contador compartido entre B, C y D (NO uno independiente por
+   *    categoria) -- "numero de ofensa total". Cada ofensa nueva usa ese numero
+   *    (vigentes + 1) para buscar la fila en la tabla de SU PROPIA categoria.
+   *    Ej.: si el staff ya lleva 2 ofensas vigentes (de cualquier categoria) y
+   *    comete su primera ofensa de Class C, esa NO es "1ra de C" -- es la #3,
+   *    y busca la fila 3 de la tabla de C (2 working days suspension, que ya
+   *    cruza el umbral de permanente de C).
+   * 2. "Vigentes" = todas las ofensas YA marcadas is_permanent_offense=true
+   *    (esas NUNCA expiran, por eso se llaman permanentes) + las que NO son
+   *    permanentes pero todavia no cumplen 12 meses desde su justified_date.
+   *    Una ofensa no-permanente que ya cumplio el año deja de contar para
+   *    futuras ofensas (pero su propio offense_number/sancion ya asignado en
+   *    su momento no se recalcula retroactivamente).
+   * 3. El offense_number de una ofensa NUEVA nunca se vuelve a tocar despues.
+   *
+   * Si el numero resultante excede la cantidad de escalones de la categoria
+   * (ej. #7 pero la ofensa es Class B, que solo tiene 4), se queda fijo en el
+   * ultimo escalon (Discharge/Dismissal) -- no hay nada mas severo.
+   */
+  private async resolveOffenseEscalation(
+    staffEmployeeNumber: string | undefined | null,
+    category: ICareOffenseCategory,
+    excludeId: string,
+  ): Promise<{ offenseNumber: number; isPermanent: boolean; sanctionLabel: string }> {
+    const ladder = ICareService.OFFENSE_SANCTION_LADDER[category];
+
+    if (!staffEmployeeNumber) {
+      // Sin employee_number no hay como rastrear historial -- se trata como 1ra ofensa.
+      this.logger.warn(`[offense] iCare id=${excludeId} sin staff_name.employee_number -- no se pudo calcular historial, se asume 1ra ofensa`);
+      const row = ladder[0];
+      return { offenseNumber: 1, isPermanent: row.permanent, sanctionLabel: row.label };
+    }
+
+    const oneYearAgo = moment().tz('America/Chicago').subtract(1, 'year').format('YYYY-MM-DD');
+
+    const vigentesCount = await this.iCareRepository
+      .createQueryBuilder('i_care')
+      .where('i_care.id != :excludeId', { excludeId })
+      .andWhere(`i_care.staff_name ->> 'employee_number' = :emp`, { emp: staffEmployeeNumber })
+      .andWhere('i_care.offense_number IS NOT NULL')
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('i_care.is_permanent_offense = true').orWhere('i_care.justified_date >= :oneYearAgo', { oneYearAgo });
+        }),
+      )
+      .getCount();
+
+    const offenseNumber = vigentesCount + 1;
+    const row = ladder[Math.min(offenseNumber, ladder.length) - 1];
+    this.logger.log(`[offense] iCare id=${excludeId} staff=${staffEmployeeNumber} categoria=${category} vigentes=${vigentesCount} -> offense_number=${offenseNumber} sancion="${row.label}" permanente=${row.permanent}`);
+
+    return { offenseNumber, isPermanent: row.permanent, sanctionLabel: row.label };
+  }
+
+  /**
+   * 2026-09-20: cuando una ofensa cruza el umbral de permanente (is_permanent_offense
+   * true), se crea SOLA la entrada en el logbook del empleado (seccion 'sanctions')
+   * -- a pedido explicito del usuario, sin paso manual de HR. Fire-and-forget desde
+   * justify(): nunca debe tumbar la justificacion del iCare si esto falla.
+   */
+  private async createPermanentOffenseLogbookEntry(record: ICare): Promise<void> {
+    const staffEmployeeNumber = record.staff_name?.employee_number;
+    if (!staffEmployeeNumber) {
+      this.logger.warn(`[offense] no se pudo crear registro permanente en logbook para iCare id=${record.id} -- falta staff_name.employee_number`);
+      return;
+    }
+
+    const employee = await this.employeeRepository.findOne({
+      where: { employee_number: staffEmployeeNumber },
+      select: ['multi_location', 'multi_company', 'multi_department'],
+    });
+
+    const now = moment().tz('America/Chicago');
+
+    try {
+      await this.logbookService.create({
+        employee_data: {
+          name: record.staff_name?.name ?? '',
+          last_name: record.staff_name?.last_name ?? '',
+          employee_number: staffEmployeeNumber,
+          multi_location: (employee as any)?.multi_location ?? [],
+          multi_company: (employee as any)?.multi_company ?? [],
+          multi_department: (employee as any)?.multi_department ?? [],
+        },
+        section: 'sanctions',
+        data: {
+          warning_type: record.offense_category ?? '',
+          disciplinary_action: `${record.offense_sanction_label} — iCare offense #${record.offense_number} (${record.reason})`,
+          sanction_date: now.format('YYYY-MM-DD'),
+        },
+      });
+      this.logger.log(`[offense] registro permanente creado en logbook para employee_number=${staffEmployeeNumber} (iCare id=${record.id})`);
+    } catch (err: any) {
+      this.logger.error(`❌ Failed to create permanent offense logbook entry for iCare id=${record.id}`, err?.message || err);
+    }
+  }
+
+  /**
+   * 2026-09-20: preview INFORMATIVO del numero de ofensa y sancion que le
+   * tocaria a este iCare SI se justifica ahora mismo -- a pedido explicito
+   * del usuario, para mostrarlo en el dialog de Justify antes de confirmar.
+   * NO tiene efectos secundarios (no guarda nada, no crea nada en logbook) --
+   * usa el mismo resolveOffenseEscalation() que justify(), pero solo para
+   * leer. El numero real puede cambiar si otra ofensa del mismo staff se
+   * confirma entre este preview y el submit real -- es informativo, no una
+   * reserva.
+   */
+  async previewOffenseEscalation(id: string): Promise<{
+    offenseNumber: number;
+    isPermanent: boolean;
+    sanctionLabel: string;
+    category: ICareOffenseCategory;
+  } | null> {
+    const record = await this.iCareRepository.findOne({ where: { id } });
+    if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
+
+    if (!record.offense_category) return null;
+
+    const escalation = await this.resolveOffenseEscalation(
+      record.staff_name?.employee_number,
+      record.offense_category,
+      record.id,
+    );
+
+    return { ...escalation, category: record.offense_category };
+  }
+
+  /**
    * Dispara el email al servicio externo con la lista de destinatarios ya resuelta.
    * El email service recibe el id del iCare, el evento y los recipients en el body,
    * por lo que no necesita hacer consultas adicionales para saber a quiénes enviar.
@@ -374,8 +573,12 @@ export class ICareService {
     if (staffEmail && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_staff', [staffEmail]));
     }
-    // Coordinator does NOT receive email for High/Critical, coordinator-as-staff, or creation-review cases
-    if (coordinatorEmails.length > 0 && !isHighCritical && !isCoordinatorCase && !isCreationReviewCase) {
+    // 2026-09-20: a pedido explicito del usuario, coordinator SI recibe email en
+    // High/Critical (antes se excluia a proposito -- la campana, en cambio, nunca
+    // tuvo este gate por urgency, ver triggerCreatedBellNotification). Sigue
+    // excluido solo si el staff reportado ES coordinator, o si es caso de
+    // creation-review (personal propio, oculto hasta aprobacion de HR/Mgmt).
+    if (coordinatorEmails.length > 0 && !isCoordinatorCase && !isCreationReviewCase) {
       sends.push(this.triggerEmail(id, 'created_coordinator', coordinatorEmails));
     }
     if (allHrEmails.length > 0 && !isCreationReviewCase) {
@@ -1271,6 +1474,7 @@ export class ICareService {
   async create(createICareDto: CreateICareDto): Promise<ICare> {
     const record = this.iCareRepository.create(createICareDto);
     record.urgency = await this.resolveUrgencyForReason(record.reason);
+    record.offense_category = await this.resolveOffenseCategoryForReason(record.reason);
 
     // Embed is_coordinator inside the existing staff_name JSONB (no migration needed)
     let isStaffCoordinator = false;
@@ -1369,7 +1573,30 @@ export class ICareService {
     try {
       const record = await this.iCareRepository.findOne({ where: { id } });
       if (!record) throw new NotFoundException(`ICare record with id ${id} not found`);
-      return this.transformDates([record])[0];
+      const transformed = this.transformDates([record])[0];
+
+      // 2026-09-20: preview INFORMATIVO (no vinculante) del numero de ofensa
+      // y sancion que le tocaria a este registro SI se justifica ahora --
+      // a pedido explicito del usuario, para mostrarlo en los correos de
+      // creacion (created_hr/coordinator/management) ANTES de que exista un
+      // offense_number committed. Una vez justificado, offense_number ya no
+      // es null y este bloque no vuelve a calcular nada (se usa el valor real).
+      if (record.offense_category && record.offense_number == null) {
+        try {
+          const preview = await this.resolveOffenseEscalation(
+            record.staff_name?.employee_number,
+            record.offense_category,
+            record.id,
+          );
+          (transformed as any).potential_offense_number = preview.offenseNumber;
+          (transformed as any).potential_offense_sanction_label = preview.sanctionLabel;
+          (transformed as any).potential_is_permanent_offense = preview.isPermanent;
+        } catch (previewError) {
+          this.logger.warn(`[offense] no se pudo calcular preview para iCare id=${id}: ${previewError}`);
+        }
+      }
+
+      return transformed;
     } catch (error) {
       this.logger.error(`Error fetching ICare record with ID: ${id}`, error);
       throw error;
@@ -1397,6 +1624,7 @@ export class ICareService {
 
     if (updateICareDto.reason) {
       existingRecord.urgency = await this.resolveUrgencyForReason(existingRecord.reason);
+      existingRecord.offense_category = await this.resolveOffenseCategoryForReason(existingRecord.reason);
     }
 
     existingRecord.updatedAt = new Date();
@@ -1670,13 +1898,151 @@ export class ICareService {
    */
   async findByStaff(employeeNumber: string): Promise<ICare[]> {
     try {
-      const records = await this.iCareRepository.find({
-        where: { staff_name: { employee_number: employeeNumber } },
-        order: { createdAt: 'DESC' },
-      });
+      // BUG (encontrado 2026-09-20, probando ICarePeople.vue): el `where`
+      // anidado de TypeORM de abajo NUNCA matcheaba contra la columna
+      // jsonb `staff_name` -- TypeORM compara el JSON COMPLETO contra
+      // `{"employee_number": "..."}` en vez de hacer un path query, y el
+      // objeto real tiene mas keys (name, last_name, nova_email, ...), asi
+      // que esto devolvia [] siempre. Nadie lo habia notado porque ningun
+      // frontend llamaba a este metodo hasta ahora. Mismo patron que ya usa
+      // findByCurrentSubmitter() (arriba) para `submitter`, que si funciona:
+      //
+      //   const records = await this.iCareRepository.find({
+      //     where: { staff_name: { employee_number: employeeNumber } },
+      //     order: { createdAt: 'DESC' },
+      //   });
+      // 2026-09-20: a pedido explicito del usuario, la vista de iCare People
+      // (esta lista Y los conteos de getStaffSummary) NO debe considerar
+      // registros 'pending' ni 'rejected' -- mismo criterio en ambos lados,
+      // sino los conteos ("1 total") no cuadran con lo que se ve en la lista.
+      const records = await this.iCareRepository
+        .createQueryBuilder('icare')
+        .where(`TRIM(icare.staff_name->>'employee_number') = TRIM(:employeeNumber)`, {
+          employeeNumber: employeeNumber.trim(),
+        })
+        .andWhere('icare.status NOT IN (:...excludedStatuses)', {
+          excludedStatuses: [ICareStatus.PENDING, ICareStatus.REJECTED],
+        })
+        .orderBy('icare.createdAt', 'DESC')
+        .getMany();
       return this.transformDates(records);
     } catch (error) {
       this.logger.error('Error fetching ICare records by staff:', error);
+      throw error;
+    }
+  }
+
+  // -- GetStaffSummary ---------------------------------------------------------
+
+  /**
+   * Listado paginado de personas (staff) con al menos un iCare en su contra:
+   * nombre, departamento, total acumulado de iCares y fecha del mas reciente.
+   * Alimenta la vista "iCare People" (historial por persona), agrupando por
+   * staff_name->>'employee_number' -- mismo criterio jsonb que ya usa
+   * topReportedStaff() dentro de analytics(), pero sin el LIMIT 10 y con
+   * paginacion/busqueda propias para poder listar a todo el mundo.
+   *
+   * @param filters - search (nombre o employee_number), department, sortBy
+   *                  ('total_count' | 'name' | 'last_icare_date'), sortDir
+   *                  ('asc' | 'desc'), page, limit
+   */
+  async getStaffSummary(filters: {
+    page: number;
+    limit: number;
+    search?: string;
+    department?: string;
+    sortBy?: string;
+    sortDir?: string;
+  }): Promise<{ data: any[]; total: number; page: number; limit: number; pageCount: number }> {
+    const page = Math.max(1, filters.page || 1);
+    const limit = Math.min(100, Math.max(1, filters.limit || 15));
+    const offset = (page - 1) * limit;
+
+    const SORT_COLUMNS: Record<string, string> = {
+      total_count: 'total_count',
+      name: 'name',
+      last_icare_date: 'last_icare_date',
+    };
+    const sortColumn = SORT_COLUMNS[filters.sortBy ?? 'total_count'] ?? 'total_count';
+    const sortDir = (filters.sortDir ?? 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const tieBreaker = sortColumn === 'name' ? '' : ', name ASC';
+
+    const params: any[] = [];
+    const conds: string[] = [
+      `i.staff_name IS NOT NULL`,
+      `NULLIF(TRIM(i.staff_name->>'employee_number'), '') IS NOT NULL`,
+      // 2026-09-20: a pedido explicito del usuario, la vista de iCare People
+      // (conteos total/permanent/active + de quien aparece en la lista) NO
+      // debe considerar registros todavia 'pending' -- aun no fueron
+      // justificados/rechazados, no son un historial disciplinario real --
+      // NI registros 'rejected' -- a pedido explicito del usuario, un
+      // rechazo tampoco cuenta como ofensa/historial disciplinario.
+      `i.status != '${ICareStatus.PENDING}'`,
+      `i.status != '${ICareStatus.REJECTED}'`,
+    ];
+
+    if (filters.search?.trim()) {
+      params.push(`%${filters.search.trim()}%`);
+      conds.push(`(
+        i.staff_name->>'employee_number' ILIKE $${params.length}
+        OR TRIM(CONCAT(i.staff_name->>'name', ' ', i.staff_name->>'last_name')) ILIKE $${params.length}
+      )`);
+    }
+    if (filters.department?.trim()) {
+      params.push(`%${filters.department.trim()}%`);
+      conds.push(`i.department ILIKE $${params.length}`);
+    }
+
+    const WHERE = conds.join(' AND ');
+
+    try {
+      const [totalRow] = await this.iCareRepository.query(
+        `SELECT COUNT(DISTINCT i.staff_name->>'employee_number')::int AS total
+           FROM i_care i WHERE ${WHERE}`,
+        params,
+      );
+      const total = Number(totalRow?.total ?? 0);
+
+      // 2026-09-20: "numero de ofensas" vigentes por persona -- a pedido
+      // explicito del usuario, mismo criterio EXACTO que resolveOffenseEscalation():
+      // permanentes (nunca expiran) + no-permanentes que todavia no cumplen 12
+      // meses desde justified_date. Confirmado con ejemplo concreto: 1 permanente
+      // viejo (sigue) + 2 ofensas nuevas (ambas vigentes, una de ellas permanente) = 3.
+      const oneYearAgo = moment().tz('America/Chicago').subtract(1, 'year').format('YYYY-MM-DD');
+      const oneYearAgoIdx = params.length + 1;
+      const limitIdx = params.length + 2;
+      const offsetIdx = params.length + 3;
+      const data = await this.iCareRepository.query(
+        `SELECT
+             i.staff_name->>'employee_number' AS employee_number,
+             MAX(TRIM(i.staff_name->>'name')) AS name,
+             MAX(TRIM(i.staff_name->>'last_name')) AS last_name,
+             MAX(i.staff_name->>'nova_email') AS nova_email,
+             MAX(NULLIF(i.department, '')) AS department,
+             COUNT(*)::int AS total_count,
+             COUNT(*) FILTER (WHERE i.is_permanent_offense = true)::int AS permanent_count,
+             COUNT(*) FILTER (
+               WHERE i.offense_number IS NOT NULL
+                 AND (i.is_permanent_offense = true OR i.justified_date >= $${oneYearAgoIdx})
+             )::int AS active_offense_count,
+             MAX(i.date) AS last_icare_date
+           FROM i_care i
+           WHERE ${WHERE}
+           GROUP BY 1
+           ORDER BY ${sortColumn} ${sortDir} NULLS LAST${tieBreaker}
+           LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+        [...params, oneYearAgo, limit, offset],
+      );
+
+      return {
+        data,
+        total,
+        page,
+        limit,
+        pageCount: Math.max(1, Math.ceil(total / limit)),
+      };
+    } catch (error) {
+      this.logger.error('Error fetching ICare staff summary:', error);
       throw error;
     }
   }
@@ -2018,6 +2384,20 @@ export class ICareService {
         record.escalated_comment = dto.comment ?? null;
         record.escalated_attachments = dto.attachments?.length ? [...dto.attachments] : [];
       }
+
+      // 2026-09-20: escalada de sanciones por offense_category -- ver JSDoc de
+      // resolveOffenseEscalation(). Solo aplica si el reason tiene categoria
+      // asignada (offense_category es opcional en el catalogo).
+      if (record.offense_category) {
+        const escalation = await this.resolveOffenseEscalation(
+          record.staff_name?.employee_number,
+          record.offense_category,
+          record.id,
+        );
+        record.offense_number = escalation.offenseNumber;
+        record.is_permanent_offense = escalation.isPermanent;
+        record.offense_sanction_label = escalation.sanctionLabel;
+      }
     } else {
       record.status = ICareStatus.REJECTION_UNDER_REVIEW;
     }
@@ -2038,6 +2418,15 @@ export class ICareService {
         // people — see JustifyICareDto.skip_notification.
         this.triggerJustifiedEmails(saved.id, saved).catch((err) =>
           this.logger.error(`❌ Failed to trigger 'justified' emails for id=${saved.id}`, err?.message || err),
+        );
+      }
+
+      // 2026-09-20: si esta ofensa cruzo el umbral de permanente, crear sola
+      // la entrada en el logbook (seccion 'sanctions') -- ver JSDoc de
+      // createPermanentOffenseLogbookEntry().
+      if (saved.is_permanent_offense) {
+        this.createPermanentOffenseLogbookEntry(saved).catch((err) =>
+          this.logger.error(`❌ Failed to create permanent offense logbook entry for id=${saved.id}`, err?.message || err),
         );
       }
     } else {
@@ -2836,6 +3225,440 @@ export class ICareService {
       this.logger.error('Error in batch delete:', error);
       throw error;
     }
+  }
+
+  // ============================================================================
+  // -- Bulk Import (Excel) -------------------------------------------------------
+  // GET /i-care/template/excel  -> genera una plantilla de EJEMPLO (10 filas
+  //   sinteticas, 5 "New" y 5 "Completed") para que HR vea el formato esperado
+  //   por /import/excel antes de cargar datos reales. Las "Reason" de las filas
+  //   de ejemplo se toman en vivo del catalogo i_care_reason (misma tabla que
+  //   valida create()/resolveUrgencyForReason) para que el archivo generado
+  //   siempre sea importable sin ajustes manuales.
+  // POST /i-care/import/excel   -> crea registros iCare en bulk desde un Excel
+  //   con ese mismo formato.
+  //
+  // DECISION DE DISENO: esto NO reutiliza create()/justify()/commit()/
+  // approveCommit()/addSeguimiento()/fulfillCommit()/resolve() -- esos metodos
+  // disparan emails y campanas reales a Staff/Coordinator/HR/Management en
+  // cada paso (ver triggerCreatedEmails, triggerJustifiedEmails, etc. mas
+  // arriba en este archivo). Un import masivo de datos de EJEMPLO/seed no debe
+  // notificar a personas reales sobre casos ficticios. Por eso las filas
+  // "Completed" arman el registro ya resuelto directamente contra el
+  // repositorio (status SOLVED + el trail justified/committed/commit_approved/
+  // seguimientos/commit_fulfilled/resolved ya poblado), sin pasar por el state
+  // machine ni sus notificaciones -- ver seedAsCompleted() abajo. Si en el
+  // futuro se necesita un import "real" (no de ejemplo) que SI dispare
+  // notificaciones, debe ser un flujo separado que llame a los metodos de
+  // arriba registro por registro, no una extension de este.
+  // ============================================================================
+
+  private static readonly IMPORT_STATUS_LABELS: Record<'new' | 'completed', string[]> = {
+    new: ['nuevo', 'new', 'pending', 'pendiente'],
+    completed: ['completado', 'completed', 'solved', 'resuelto', 'resolved'],
+  };
+
+  private static normalizeImportStatus(raw: string): 'new' | 'completed' | null {
+    const key = raw.trim().toLowerCase();
+    if (!key) return 'new'; // fila sin status explicito -> se trata como "New"
+    if (ICareService.IMPORT_STATUS_LABELS.new.includes(key)) return 'new';
+    if (ICareService.IMPORT_STATUS_LABELS.completed.includes(key)) return 'completed';
+    return null;
+  }
+
+  async generateImportTemplate(res: Response): Promise<void> {
+    const reasons = await this.iCareReasonRepository.find();
+    const usableReasons = reasons.filter(r => !!r.urgency);
+    const pickReason = (i: number): ICareReason | null =>
+      usableReasons.length ? usableReasons[i % usableReasons.length] : null;
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Nova API';
+    workbook.created = new Date();
+
+    // Paleta y bordes reutilizados en ambas hojas para que el archivo se vea
+    // como un documento profesional (encabezado con relleno, zebra striping,
+    // contornos suaves, texto envuelto) en vez de una hoja cruda sin estilo.
+    const HEADER_FILL = 'FF1E293B'; // slate-800
+    const HEADER_FONT_COLOR = 'FFFFFFFF';
+    const ZEBRA_FILL = 'FFF1F5F9'; // slate-100
+    const BORDER_COLOR = 'FFCBD5E1'; // slate-300
+    const THIN_BORDER = {
+      top: { style: 'thin' as const, color: { argb: BORDER_COLOR } },
+      left: { style: 'thin' as const, color: { argb: BORDER_COLOR } },
+      bottom: { style: 'thin' as const, color: { argb: BORDER_COLOR } },
+      right: { style: 'thin' as const, color: { argb: BORDER_COLOR } },
+    };
+
+    // ── Instructions sheet ──────────────────────────────────────────────────
+    const instructions = workbook.addWorksheet('Instructions', {
+      views: [{ showGridLines: false }],
+    });
+    instructions.columns = [{ width: 110 }];
+
+    const titleRow = instructions.addRow(['iCare - Bulk import template']);
+    titleRow.height = 32;
+    titleRow.getCell(1).font = { bold: true, size: 16, color: { argb: HEADER_FONT_COLOR } };
+    titleRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL } };
+    titleRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+    instructions.addRow(['']);
+
+    [
+      'Fill one row per iCare in the "iCare Import" sheet, then upload it from the iCare view ("Upload Excel").',
+      'Required columns: Date, Submitter Employee Number/Name/Last Name/Email, Reason, Details.',
+      'Reason must match EXACTLY an entry already registered in "Reasons I Care" -- urgency is derived from it automatically and cannot be set here.',
+      'Status accepts "New" (creates the case pending, like a normal submission) or "Completed" (creates it already resolved, for demos/testing). Neither option sends emails or notifications.',
+      'Staff / Responsible columns are optional but recommended -- replace the sample NOVAEX-xxx people with real employees before importing for real use.',
+      'Department, Staff Type and Multi Position accept comma-separated values when there is more than one.',
+    ].forEach((line) => {
+      const row = instructions.addRow([line]);
+      row.height = 34;
+      const cell = row.getCell(1);
+      cell.font = { size: 11, color: { argb: 'FF334155' } };
+      cell.alignment = { wrapText: true, vertical: 'middle', indent: 1 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };
+      cell.border = THIN_BORDER;
+    });
+
+    // ── iCare Import sheet ──────────────────────────────────────────────────
+    const sheet = workbook.addWorksheet('iCare Import', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    sheet.columns = [
+      { header: 'Date (YYYY-MM-DD)', key: 'date', width: 16 },
+      { header: 'Submitter Employee Number', key: 'submitter_number', width: 22 },
+      { header: 'Submitter Name', key: 'submitter_name', width: 18 },
+      { header: 'Submitter Last Name', key: 'submitter_last_name', width: 18 },
+      { header: 'Submitter Email', key: 'submitter_email', width: 28 },
+      { header: 'Staff Employee Number', key: 'staff_number', width: 20 },
+      { header: 'Staff Name', key: 'staff_name', width: 18 },
+      { header: 'Staff Last Name', key: 'staff_last_name', width: 18 },
+      { header: 'Staff Email', key: 'staff_email', width: 28 },
+      { header: 'Responsible Employee Number', key: 'resp_number', width: 24 },
+      { header: 'Responsible Name', key: 'resp_name', width: 18 },
+      { header: 'Responsible Last Name', key: 'resp_last_name', width: 18 },
+      { header: 'Responsible Email', key: 'resp_email', width: 28 },
+      { header: 'Department', key: 'department', width: 20 },
+      { header: 'Staff Type', key: 'staffType', width: 18 },
+      { header: 'Multi Position', key: 'multi_position', width: 18 },
+      { header: 'Reason', key: 'reason', width: 32 },
+      { header: 'Details', key: 'details', width: 45 },
+      { header: 'DN Account Link', key: 'dnAccountLink', width: 20 },
+      { header: 'Account Phone', key: 'accountPhone', width: 16 },
+      { header: 'Status (example)', key: 'status', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.height = 30;
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: HEADER_FONT_COLOR } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = THIN_BORDER;
+    });
+    sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: sheet.columns.length } };
+
+    // Nombres de ejemplo (claramente ficticios, no PII real) solo para dar
+    // variedad fila a fila -- se rotan entre submitter/staff/responsible con
+    // offsets distintos para que no se repita la misma persona en los 3 roles
+    // dentro de una misma fila.
+    const EXAMPLE_PEOPLE = [
+      ['Ana', 'Ramirez'], ['Luis', 'Herrera'], ['Sofia', 'Castillo'], ['Diego', 'Morales'],
+      ['Valentina', 'Reyes'], ['Carlos', 'Mendoza'], ['Camila', 'Ortiz'], ['Andres', 'Salazar'],
+      ['Isabella', 'Vargas'], ['Miguel', 'Cordero'],
+    ];
+
+    const today = moment().tz('America/Chicago');
+    for (let i = 0; i < 10; i++) {
+      const isCompleted = i % 2 === 1; // alterna: 5 "New", 5 "Completed"
+      const reason = pickReason(i);
+      const reasonText = reason?.reason ?? 'REPLACE WITH A VALID REASON FROM "REASONS I CARE"';
+      const date = today.clone().subtract(isCompleted ? 15 + i : i, 'days').format('YYYY-MM-DD');
+      const n = i + 1;
+
+      const [subName, subLast] = EXAMPLE_PEOPLE[i % EXAMPLE_PEOPLE.length];
+      const [staffFirst, staffLast] = EXAMPLE_PEOPLE[(i + 3) % EXAMPLE_PEOPLE.length];
+      const [respName, respLast] = EXAMPLE_PEOPLE[(i + 6) % EXAMPLE_PEOPLE.length];
+
+      const row = sheet.addRow({
+        date,
+        // NOVAEX = prefijo reservado para ejemplos de este template -- no
+        // coincide con ningun prefijo real usado en produccion (NOVAIC,
+        // NOVATC, NOVAMT, etc.), asi no choca con employee_number reales.
+        submitter_number: `NOVAEX${1000 + i}`,
+        submitter_name: subName,
+        submitter_last_name: subLast,
+        submitter_email: `${subName.toLowerCase()}.${subLast.toLowerCase()}@novadriving.com`,
+        staff_number: `NOVAEX${2000 + i}`,
+        staff_name: staffFirst,
+        staff_last_name: staffLast,
+        staff_email: `${staffFirst.toLowerCase()}.${staffLast.toLowerCase()}@novadriving.com`,
+        resp_number: `NOVAEX${3000 + i}`,
+        resp_name: respName,
+        resp_last_name: respLast,
+        resp_email: `${respName.toLowerCase()}.${respLast.toLowerCase()}@novadriving.com`,
+        // department/staffType/multi_position NO vienen de un catalogo propio --
+        // en ICareForm.vue se auto-copian del empleado seleccionado (multi_department,
+        // multi_type_of_job, multi_position respectivamente). Se usan aqui valores
+        // reales de ejemplo (mismo formato que aparece en produccion) en vez de
+        // placeholders inventados.
+        department: 'Information Technology Department',
+        staffType: 'Admin Staff - Remote',
+        multi_position: 'Specialist',
+        reason: reasonText,
+        details: isCompleted
+          ? `Caso de ejemplo: "${reasonText}" reportado el ${date} sobre el staff indicado. Se le dio seguimiento y se cerro siguiendo el flujo normal (justificacion, compromiso, seguimiento y resolucion).`
+          : `Caso de ejemplo: "${reasonText}" reportado el ${date} sobre el staff indicado. Pendiente de revision.`,
+        dnAccountLink: '',
+        accountPhone: '',
+        status: isCompleted ? 'Completed' : 'New',
+      });
+
+      // Estilo por fila: bordes + wrap en todas las celdas, zebra striping
+      // cada 2 filas, y la columna Status resaltada en verde/azul segun el
+      // valor para que se distinga de un vistazo cual fila es cual.
+      row.height = 46;
+      row.eachCell((cell) => {
+        cell.border = THIN_BORDER;
+        cell.alignment = { wrapText: true, vertical: 'top' };
+        if (n % 2 === 0) {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: ZEBRA_FILL } };
+        }
+      });
+
+      const statusCell = row.getCell('status');
+      statusCell.font = { bold: true, color: { argb: isCompleted ? 'FF065F46' : 'FF1E40AF' } };
+      statusCell.fill = {
+        type: 'pattern', pattern: 'solid',
+        fgColor: { argb: isCompleted ? 'FFD1FAE5' : 'FFDBEAFE' },
+      };
+      statusCell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'center' };
+    }
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', 'attachment; filename="i-care-import-template.xlsx"');
+
+    await workbook.xlsx.write(res);
+    res.end();
+  }
+
+  async importExcel(buffer: Buffer): Promise<ImportICareResult> {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+
+    const sheet =
+      workbook.getWorksheet('iCare Import') ??
+      workbook.worksheets.find(ws => ws.name !== 'Instructions') ??
+      workbook.worksheets[0];
+    if (!sheet) throw new BadRequestException('The Excel file has no sheets');
+
+    const headerRow = sheet.getRow(1);
+    const headers: Record<string, number> = {};
+    headerRow.eachCell((cell, colNum) => {
+      const key = String(cell.value ?? '').trim().toLowerCase();
+      headers[key] = colNum;
+    });
+
+    const col = (names: string[]): number | null => {
+      for (const n of names) if (headers[n] !== undefined) return headers[n];
+      return null;
+    };
+
+    const colDate = col(['date (yyyy-mm-dd)', 'date']);
+    const colSubNum = col(['submitter employee number']);
+    const colSubName = col(['submitter name']);
+    const colSubLast = col(['submitter last name']);
+    const colSubEmail = col(['submitter email']);
+    const colStaffNum = col(['staff employee number']);
+    const colStaffName = col(['staff name']);
+    const colStaffLast = col(['staff last name']);
+    const colStaffEmail = col(['staff email']);
+    const colRespNum = col(['responsible employee number']);
+    const colRespName = col(['responsible name']);
+    const colRespLast = col(['responsible last name']);
+    const colRespEmail = col(['responsible email']);
+    const colDept = col(['department']);
+    const colStaffType = col(['staff type']);
+    const colMultiPos = col(['multi position']);
+    const colReason = col(['reason']);
+    const colDetails = col(['details']);
+    const colDnLink = col(['dn account link']);
+    const colPhone = col(['account phone']);
+    const colStatus = col(['status (example)', 'status']);
+
+    if (!colDate || !colSubNum || !colSubName || !colSubLast || !colSubEmail || !colReason || !colDetails) {
+      throw new BadRequestException(
+        'Required columns not found: Date, Submitter Employee Number/Name/Last Name/Email, Reason, Details',
+      );
+    }
+
+    const getCellValue = (row: ExcelJS.Row, colIdx: number | null): string => {
+      if (!colIdx) return '';
+      const cell = row.getCell(colIdx);
+      if (cell.value === null || cell.value === undefined) return '';
+      if (cell.value instanceof Date) return moment(cell.value).format('YYYY-MM-DD');
+      if (typeof cell.value === 'object' && 'richText' in (cell.value as any)) {
+        return (cell.value as any).richText.map((r: any) => r.text).join('');
+      }
+      return String(cell.value).trim();
+    };
+
+    const splitList = (raw: string): string[] =>
+      raw.split(',').map(s => s.trim()).filter(Boolean);
+
+    const errors: { row: number; message: string }[] = [];
+    let inserted = 0;
+    let skipped = 0;
+
+    for (let i = 2; i <= sheet.rowCount; i++) {
+      const row = sheet.getRow(i);
+      const date = getCellValue(row, colDate);
+      const reasonText = getCellValue(row, colReason);
+      const details = getCellValue(row, colDetails);
+      const submitterNumber = getCellValue(row, colSubNum);
+
+      if (!date && !reasonText && !details && !submitterNumber) continue; // fila vacia
+
+      try {
+        if (!date || !reasonText || !details || !submitterNumber) {
+          throw new Error('Missing one of the required fields (Date, Submitter Employee Number, Reason, Details)');
+        }
+        if (!moment(date, 'YYYY-MM-DD', true).isValid()) {
+          throw new Error(`Invalid date "${date}" -- expected YYYY-MM-DD`);
+        }
+
+        const statusFlag = ICareService.normalizeImportStatus(getCellValue(row, colStatus));
+        if (statusFlag === null) {
+          throw new Error('Invalid Status value -- expected "New" or "Completed"');
+        }
+
+        const urgency = await this.resolveUrgencyForReason(reasonText);
+        const offenseCategory = await this.resolveOffenseCategoryForReason(reasonText);
+
+        const submitter = {
+          employee_number: submitterNumber,
+          name: getCellValue(row, colSubName),
+          last_name: getCellValue(row, colSubLast),
+          nova_email: getCellValue(row, colSubEmail),
+        };
+        if (!submitter.name || !submitter.last_name || !submitter.nova_email) {
+          throw new Error('Submitter Name, Last Name and Email are required');
+        }
+
+        const staffNumber = getCellValue(row, colStaffNum);
+        const staff_name = staffNumber
+          ? {
+              employee_number: staffNumber,
+              name: getCellValue(row, colStaffName),
+              last_name: getCellValue(row, colStaffLast),
+              nova_email: getCellValue(row, colStaffEmail),
+            }
+          : null;
+
+        const respNumber = getCellValue(row, colRespNum);
+        const responsiblePerson = respNumber
+          ? {
+              employee_number: respNumber,
+              name: getCellValue(row, colRespName),
+              last_name: getCellValue(row, colRespLast),
+              nova_email: getCellValue(row, colRespEmail),
+            }
+          : null;
+
+        const payload: DeepPartial<ICare> = {
+          date,
+          submitter,
+          staff_name,
+          responsible: responsiblePerson ? [responsiblePerson] : [],
+          department: colDept ? getCellValue(row, colDept) : '',
+          staffType: colStaffType ? splitList(getCellValue(row, colStaffType)) : [],
+          multi_position: colMultiPos ? splitList(getCellValue(row, colMultiPos)) : [],
+          reason: reasonText,
+          details,
+          dnAccountLink: colDnLink ? (getCellValue(row, colDnLink) || undefined) : undefined,
+          accountPhone: colPhone ? (getCellValue(row, colPhone) || undefined) : undefined,
+          attachments: [],
+          urgency,
+          offense_category: offenseCategory,
+          status: ICareStatus.PENDING,
+        };
+        const record = this.iCareRepository.create(payload);
+
+        if (statusFlag === 'completed') {
+          this.seedAsCompleted(record, responsiblePerson ?? submitter);
+        }
+
+        await this.iCareRepository.save(record);
+        inserted++;
+      } catch (err) {
+        errors.push({ row: i, message: err instanceof Error ? err.message : String(err) });
+        skipped++;
+      }
+    }
+
+    return { inserted, skipped, errors };
+  }
+
+  /**
+   * Puebla el registro con el trail completo justified -> committed ->
+   * commit_approved -> seguimiento -> commit_fulfilled -> resolved, dejandolo
+   * en SOLVED. Usado SOLO por importExcel() para filas "Completed" -- ver
+   * nota de diseno en el bloque de arriba (no dispara notificaciones).
+   */
+  private seedAsCompleted(
+    record: ICare,
+    actor: { name: string; last_name: string; employee_number: string; nova_email: string },
+  ): void {
+    const base = moment(record.date, 'YYYY-MM-DD');
+    const at = (days: number) => base.clone().add(days, 'days');
+    const noteSuffix = '(sample record imported from the bulk template)';
+
+    record.justified = true;
+    record.justified_approved_by = actor;
+    record.justified_date = at(0).format('YYYY-MM-DD');
+    record.justified_time = '09:00';
+    record.justified_comments = [`Justified ${noteSuffix}`];
+
+    record.committed = true;
+    record.committed_date = at(1).format('YYYY-MM-DD');
+    record.committed_time = '09:00';
+    record.committed_notes = `Committed ${noteSuffix}`;
+
+    record.commit_approved = true;
+    record.commit_approved_by = actor;
+    record.commit_approved_date = at(2).format('YYYY-MM-DD');
+    record.commit_approved_time = '09:00';
+    record.commit_approved_notes = `Commit approved ${noteSuffix}`;
+
+    record.seguimientos = [
+      {
+        id: `seg_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        scheduled_date: at(2).format('YYYY-MM-DD'),
+        actual_date: at(7).format('YYYY-MM-DD'),
+        notes: `Follow-up completed ${noteSuffix}`,
+        added_by: actor,
+        created_at: at(7).format('YYYY-MM-DD HH:mm'),
+        attachments: [],
+      },
+    ];
+    record.next_followup_scheduled_date = null;
+
+    record.commit_fulfilled = true;
+    record.commit_fulfilled_by = actor;
+    record.commit_fulfilled_date = at(7).format('YYYY-MM-DD');
+    record.commit_fulfilled_time = '09:00';
+    record.commit_fulfilled_notes = `Commit fulfilled ${noteSuffix}`;
+
+    record.resolved_by = actor;
+    record.resolved_date = at(8).format('YYYY-MM-DD');
+    record.resolved_time = '09:00';
+    record.resolved_notes = `Resolved ${noteSuffix}`;
+
+    record.status = ICareStatus.SOLVED;
   }
 
   // ============================================================================

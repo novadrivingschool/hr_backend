@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { ICareOffenseCategory } from '../../i_care_reasons/enums/offense-category.enum';
 
 export enum ICareStatus {
   PENDING = 'pending',
@@ -38,6 +39,34 @@ export class ICare {
 
   @Column({ type: 'enum', enum: ICareUrgency, nullable: true, default: null })
   urgency: ICareUrgency | null;
+
+  // 2026-09-19: snapshot de i_care_reason.offense_category en el momento de
+  // crear/editar el iCare (resolveOffenseCategoryForReason(), mismo criterio
+  // que urgency arriba, ver i-care.service.ts). A diferencia de urgency,
+  // nullable/opcional a proposito: el catalogo de reasons no obliga a tener
+  // offense_category asignada. varchar(100) (no 20): son frases descriptivas
+  // ("Class C Moderate Offense" = 24 chars), no codigos cortos -- ver el bug
+  // real que esto mismo causo en i_care_reason.offense_category.
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  offense_category: ICareOffenseCategory | null;
+
+  // 2026-09-20: escalada de sanciones por offense_category -- resuelta y fijada
+  // una sola vez en justify(justified=true), ver ICareService.resolveOffenseEscalation().
+  // Los 3 quedan NULL/false si el iCare no tiene offense_category o nunca fue justified=true.
+  /** Posicion (1, 2, 3...) que le tocó a este iCare dentro de la tabla de su categoria,
+   *  segun el contador compartido de ofensas vigentes del staff en ese momento. */
+  @Column({ type: 'int', nullable: true })
+  offense_number: number | null;
+
+  /** Si offense_number cruza el umbral de permanente de su categoria (B desde la 1ra,
+   *  C desde la 3ra, D desde la 5ta). Los permanentes nunca expiran. */
+  @Column({ type: 'boolean', default: false })
+  is_permanent_offense: boolean;
+
+  /** Sancion en texto (ej. "15 working days suspension") para mostrar en UI sin
+   *  duplicar la tabla de sanciones ahi. */
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  offense_sanction_label: string | null;
 
   @Column({ type: 'enum', enum: ICareStatus, default: ICareStatus.PENDING })
   status: ICareStatus;

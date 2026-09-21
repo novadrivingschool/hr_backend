@@ -7,6 +7,7 @@ import { Repository } from 'typeorm';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { ICareUrgency } from '../i-care/entities/i-care.entity';
+import { ICareOffenseCategory } from './enums/offense-category.enum';
 
 export interface ImportICareReasonsResult {
   inserted: number;
@@ -65,6 +66,7 @@ export class ICareReasonsService {
       { header: 'Category', key: 'category', width: 25 },
       { header: 'Reason', key: 'reason', width: 35 },
       { header: 'Urgency', key: 'urgency', width: 15 },
+      { header: 'Offense Category', key: 'offense_category', width: 18 },
       { header: 'Description', key: 'description', width: 50 },
     ];
 
@@ -76,6 +78,7 @@ export class ICareReasonsService {
         category: item.category,
         reason: item.reason,
         urgency: item.urgency ?? '',
+        offense_category: item.offense_category ?? '',
         description: item.description ?? '',
       });
     });
@@ -116,6 +119,7 @@ export class ICareReasonsService {
     const colCategory = col(['category', 'categoria', 'categor\u00eda']);
     const colReason = col(['reason', 'razon', 'raz\u00f3n']);
     const colUrgency = col(['urgency', 'urgencia']);
+    const colOffenseCategory = col(['offense category', 'offensecategory', 'offense_category']);
     const colDescription = col(['description', 'descripcion', 'descripci\u00f3n']);
 
     if (!colCategory || !colReason || !colUrgency) {
@@ -155,9 +159,20 @@ export class ICareReasonsService {
       return URGENCY_MAP[key] ?? null;
     };
 
+    // Sin mapa ES/EN como urgency (no hay traduccion corta natural para
+    // "Class B Serious Offense", etc). Match exacto case-insensitive /
+    // sin acentos contra los 3 valores del enum.
+    const OFFENSE_CATEGORY_VALUES = Object.values(ICareOffenseCategory) as string[];
+    const normalizeOffenseCategory = (raw: string): ICareOffenseCategory | null => {
+      if (!raw.trim()) return null;
+      const key = stripAccents(raw.trim().toLowerCase());
+      const match = OFFENSE_CATEGORY_VALUES.find((v) => stripAccents(v.toLowerCase()) === key);
+      return (match as ICareOffenseCategory) ?? null;
+    };
+
     // -- 1. Parsear filas (con forward-fill de Category: la planilla trae
     //       celdas combinadas/vacias para las filas que comparten categoria) --
-    const payloads: { category: string; reason: string; urgency: ICareUrgency; description: string | undefined }[] = [];
+    const payloads: { category: string; reason: string; urgency: ICareUrgency; offense_category: ICareOffenseCategory | null; description: string | undefined }[] = [];
     const errors: { row: number; reason: string; message: string }[] = [];
     let skipped = 0;
     let lastCategory = '';
@@ -167,6 +182,7 @@ export class ICareReasonsService {
       const rawCategory = getCellValue(row, colCategory);
       const reasonText = getCellValue(row, colReason);
       const rawUrgency = getCellValue(row, colUrgency);
+      const rawOffenseCategory = colOffenseCategory ? getCellValue(row, colOffenseCategory) : '';
       const description = colDescription ? getCellValue(row, colDescription) : '';
 
       if (rawCategory) lastCategory = rawCategory;
@@ -186,7 +202,18 @@ export class ICareReasonsService {
         continue;
       }
 
-      payloads.push({ category, reason: reasonText, urgency, description: description || undefined });
+      // Offense Category es opcional: columna ausente o celda vacia -> null
+      // sin abortar la fila (a diferencia de urgency). Valor presente pero no
+      // reconocido -> se reporta como aviso y la fila se guarda igual.
+      let offenseCategory: ICareOffenseCategory | null = null;
+      if (rawOffenseCategory) {
+        offenseCategory = normalizeOffenseCategory(rawOffenseCategory);
+        if (!offenseCategory) {
+          errors.push({ row: i, reason: reasonText, message: `Unrecognized offense category: "${rawOffenseCategory}" (row saved, field left unset)` });
+        }
+      }
+
+      payloads.push({ category, reason: reasonText, urgency, offense_category: offenseCategory, description: description || undefined });
     }
 
     if (payloads.length === 0) {
@@ -211,7 +238,9 @@ export class ICareReasonsService {
       const match = existingMap.get(rowKey(p.category, p.reason));
       if (match) {
         match.urgency = p.urgency;
-        // No pisar una descripcion ya cargada con una celda vacia del Excel.
+        // No pisar un offense_category/description ya cargado con una celda
+        // vacia o no reconocida del Excel (mismo criterio que description).
+        if (p.offense_category) match.offense_category = p.offense_category;
         if (p.description) match.description = p.description;
         toUpdate.push(match);
       } else {
@@ -220,6 +249,7 @@ export class ICareReasonsService {
             category: p.category,
             reason: p.reason,
             urgency: p.urgency,
+            offense_category: p.offense_category,
             description: p.description,
           }),
         );

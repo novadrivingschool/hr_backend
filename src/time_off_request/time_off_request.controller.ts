@@ -70,6 +70,9 @@ export class TimeOffRequestController {
     // rango de fechas SOLICITADAS (no createdDate), formato YYYY-MM-DD
     @Query('date_from') date_from?: string,
     @Query('date_to') date_to?: string,
+    // paginación (por defecto 6 por página; nunca se regresa el set completo)
+    @Query('page') pageRaw?: string,
+    @Query('limit') limitRaw?: string,
   ) {
     const normalizeToArray = (input?: string | string[]): string[] => {
       if (!input) return [];
@@ -91,6 +94,13 @@ export class TimeOffRequestController {
     // Si vienen invertidas, se corrigen
     if (dateFrom && dateTo && dateFrom > dateTo) [dateFrom, dateTo] = [dateTo, dateFrom];
 
+    const parsedPage = parseInt(pageRaw ?? '', 10);
+    const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+
+    const parsedLimit = parseInt(limitRaw ?? '', 10);
+    // Cap defensivo: evita que ?limit=999999 tire una query sin límite real.
+    const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 50) : 8;
+
     return this.timeOffRequestService.findHrByStatusDepartmentAndEmployee(
       status,
       depts, // siempre array (posible vacío)
@@ -98,7 +108,43 @@ export class TimeOffRequestController {
       search?.trim() || undefined,
       dateFrom,
       dateTo,
+      page,
+      limit,
     );
+  }
+
+  /**
+   * GET /time-off-request/hr/analytics
+   * Analítica agregada de TOR: tiempos de aprobación por etapa (coordinator y
+   * HR), tasa de aprobación directa (HR/Management sin pasar por coordinator),
+   * departamentos/empleados que más piden, día de semana y razón más
+   * solicitados, y tendencia en el tiempo. Filtro de rango de fechas propio
+   * (independiente del filtro de status/fecha de la tabla de cards) y mismo
+   * alcance de departamento que el resto de endpoints /hr/*.
+   */
+  @Get('hr/analytics')
+  getAnalytics(
+    @Query('multi_department') multi_department?: string | string[],
+    @Query('department') departmentLegacy?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const normalizeToArray = (input?: string | string[]): string[] => {
+      if (!input) return [];
+      if (Array.isArray(input)) return input.map(s => s?.trim()).filter(Boolean);
+      return input.split(',').map(s => s.trim()).filter(Boolean);
+    };
+
+    let depts = normalizeToArray(multi_department);
+    if (depts.length === 0) depts = normalizeToArray(departmentLegacy);
+    if (depts.some(d => d.toLowerCase?.() === 'all')) depts = [];
+
+    const isValidDate = (v?: string) => !!v && /^\d{4}-\d{2}-\d{2}$/.test(v);
+    let dateFrom = isValidDate(from) ? from : undefined;
+    let dateTo = isValidDate(to) ? to : undefined;
+    if (dateFrom && dateTo && dateFrom > dateTo) [dateFrom, dateTo] = [dateTo, dateFrom];
+
+    return this.timeOffRequestService.getAnalytics(depts, dateFrom, dateTo);
   }
 
   @Get('hr/kpis')

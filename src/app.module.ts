@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TimeOffRequestModule } from './time_off_request/time_off_request.module';
+import { ActivityRequestModule } from './activity_request/activity_request.module';
 import { EmployeesModule } from './employees/employees.module';
 import { DepartmentsModule } from './departments/departments.module';
 import { EmployeeScheduleModule } from './employee_schedule/employee_schedule.module';
@@ -24,6 +25,7 @@ import { FacilitiesModule } from './facilities/facilities.module';
 import { Facility } from './facilities/entities/facility.entity';
 import { ChecklistModule } from './checklist/checklist.module';
 import { ICareModule } from './i-care/i-care.module';
+import { AgreementModule } from './agreement/agreement.module';
 import { EmployeesV2Module } from './employees/employees-v2.module';
 import { ICareReasonsModule } from './i_care_reasons/i_care_reasons.module';
 import { EmployeeAccountingModule } from './employee-accounting/employee-accounting.module';
@@ -47,6 +49,7 @@ import { AbsenceModule } from './absence/absence.module';
 import { DanubenetHistoryModule } from './danubenet-history/danubenet-history.module';
 import { HrWhatsappUpdatesModule } from './hr-whatsapp-updates/hr-whatsapp-updates.module';
 import { LeaveOfAbsenceModule } from './leave_of_absence/leave_of_absence.module';
+import { CandidateTrackerModule } from './candidate-tracker/candidate-tracker.module';
 
 
 dotenv.config();
@@ -80,6 +83,7 @@ dotenv.config();
       // ✅ Aquí defines solo las entidades que SÍ quieres que entren en las migraciones
       entities: [
         __dirname + '/time_off_request/entities/*.entity.{ts,js}',
+        __dirname + '/activity_request/entities/*.entity.{ts,js}',
         __dirname + '/schedule/entities/*.entity.{ts,js}',
         __dirname + '/departments/entities/*.entity.{ts,js}',
         __dirname + '/fixed_schedule/entities/*.entity.{ts,js}',
@@ -116,9 +120,11 @@ dotenv.config();
         __dirname + '/absence/entities/*.entity.{ts,js}',
         __dirname + '/danubenet-history/entities/*.entity.{ts,js}', // <-- Tabla la crea/administra nova-one-backend, hr_backend solo lee
         __dirname + '/leave_of_absence/entities/*.entity.{ts,js}',
+        __dirname + '/candidate-tracker/entities/*.entity.{ts,js}',
       ],
     }),
     TimeOffRequestModule,
+    ActivityRequestModule,
     AbsenceModule,
     EmployeesModule,
     DepartmentsModule,
@@ -141,6 +147,7 @@ dotenv.config();
     Facility,
     ChecklistModule,
     ICareModule,
+    AgreementModule,
     EmployeesV2Module,
     ICareReasonsModule,
     EmployeeAccountingModule,
@@ -163,6 +170,7 @@ dotenv.config();
     HrWhatsappUpdatesModule,
     LeaveOfAbsenceModule,
     TimesheetRecordsModule,
+    CandidateTrackerModule,
   ],
 })
 export class AppModule { }

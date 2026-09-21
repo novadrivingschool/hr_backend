@@ -19,6 +19,9 @@ export class NoShowPayroll {
   @Column({ type: 'date' })
   date_of_btw: string
 
+  @Column({ type: 'date' })
+  payment_date: string
+
   @Column({ type: 'text', nullable: true })
   btw_product: string | null
 

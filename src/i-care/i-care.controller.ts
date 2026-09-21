@@ -15,7 +15,12 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
   BadRequestException,
+  UploadedFile,
+  UseInterceptors,
+  Res,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
 import { ICareService } from './i-care.service';
 import { CreateICareDto } from './dto/create-i-care.dto';
 import { UpdateICareDto } from './dto/update-i-care.dto';
@@ -55,6 +60,24 @@ export class ICareController {
       return result;
     } catch (error) {
       console.error('Error creating ICare record:', error);
+      throw error;
+    }
+  }
+
+  // ── POST /i-care/import/excel ────────────────────────────────────────────────
+  // Crea iCares en bulk desde un Excel con el formato de la plantilla de
+  // GET /i-care/template/excel. No dispara emails/campanas -- ver nota de
+  // diseno en ICareService.importExcel().
+
+  @Post('import/excel')
+  @UseInterceptors(FileInterceptor('file'))
+  @HttpCode(HttpStatus.OK)
+  async importExcel(@UploadedFile() file: Express.Multer.File) {
+    try {
+      if (!file) throw new BadRequestException('No file received');
+      return await this.iCareService.importExcel(file.buffer);
+    } catch (error) {
+      console.error('Error importing ICare records from Excel:', error);
       throw error;
     }
   }
@@ -146,6 +169,37 @@ export class ICareController {
       return await this.iCareService.analytics(query);
     } catch (error) {
       console.error('Error computing ICare analytics:', error);
+      throw error;
+    }
+  }
+
+  // ── GET /i-care/staff-summary ─────────────────────────────────────────────
+  // Listado paginado de personas (staff) con al menos un iCare en su contra:
+  // nombre, departamento, total de iCares y fecha del mas reciente. Alimenta
+  // la vista "iCare People" (historial por persona). Ruta estatica -- va
+  // ANTES de /:id (mismo cuidado que /template/excel) para no chocar con ella.
+
+  @Get('staff-summary')
+  @HttpCode(HttpStatus.OK)
+  async getStaffSummary(
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(15), ParseIntPipe) limit: number,
+    @Query('search') search?: string,
+    @Query('department') department?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortDir') sortDir?: string,
+  ) {
+    try {
+      return await this.iCareService.getStaffSummary({
+        page,
+        limit,
+        search,
+        department,
+        sortBy,
+        sortDir,
+      });
+    } catch (error) {
+      console.error('Error fetching ICare staff summary:', error);
       throw error;
     }
   }
@@ -309,6 +363,21 @@ export class ICareController {
     }
   }
 
+  // ── GET /i-care/template/excel ───────────────────────────────────────────────
+  // Descarga una plantilla de EJEMPLO (10 filas sinteticas: 5 "New" + 5
+  // "Completed") con el formato esperado por POST /i-care/import/excel.
+  // IMPORTANTE: ruta estatica ANTES de /:id para evitar conflicto de rutas.
+
+  @Get('template/excel')
+  async downloadImportTemplate(@Res() res: Response) {
+    try {
+      return await this.iCareService.generateImportTemplate(res);
+    } catch (error) {
+      console.error('Error generating ICare import template:', error);
+      throw error;
+    }
+  }
+
   // ── GET /i-care/:id ─────────────────────────────────────────────────────────
   // Retorna un único iCare por su UUID. Lanza 404 si no existe.
   // IMPORTANTE: debe ir DESPUÉS de todas las rutas GET con segmentos estáticos.
@@ -350,6 +419,23 @@ export class ICareController {
   // HR justifica (o rechaza) un iCare.
   // Si justified=true: avanza a IN_PROGRESS y notifica a Staff + Coordinator + Management.
   // Si justified=false: cambia status a REJECTED. El flujo termina aquí, no se envían emails.
+
+  // ── GET /i-care/:id/offense-preview ─────────────────────────────────────────
+  // Preview informativo (sin efectos secundarios) del numero de ofensa y la
+  // sancion que le tocaria a este iCare si se justifica ahora -- ver JSDoc de
+  // ICareService.previewOffenseEscalation(). Se llama al abrir el dialog de
+  // Justify, antes de que el usuario confirme nada.
+
+  @Get(':id/offense-preview')
+  @HttpCode(HttpStatus.OK)
+  async getOffensePreview(@Param('id', ParseUUIDPipe) id: string) {
+    try {
+      return await this.iCareService.previewOffenseEscalation(id);
+    } catch (error) {
+      console.error('Error fetching ICare offense preview:', id, error);
+      throw error;
+    }
+  }
 
   @Patch(':id/justify')
   @UsePipes(new ValidationPipe({

@@ -2267,6 +2267,55 @@ export class PayrollService {
     return best;
   }
 
+  // Regla recurrente (Fixed) solo aplica dentro de su vigencia. Si venció el 10
+  // de mayo, del 11 en adelante ya no existe y no debe pagarse. Compartido por
+  // calculateMasterMetrics (Work Shift/Lunch) y resolveDayLunchWindow.
+  private isFixedRuleActiveOn(f: FixedSchedule, dateStr: string): boolean {
+    return (!f.start_date || f.start_date <= dateStr) && (!f.end_date || f.end_date >= dateStr);
+  }
+
+  // ISO weekday (1=Lun … 7=Dom) de una fecha 'YYYY-MM-DD'. fixed_schedule.weekdays
+  // se guarda en ISO, mientras que Date.getDay() devuelve 0=Dom … 6=Sáb.
+  private isoDayOfWeek(dateStr: string): number {
+    const jsDay = new Date(`${dateStr}T00:00:00`).getDay();
+    return jsDay === 0 ? 7 : jsDay;
+  }
+
+  // Lunch efectivo de un empleado en una fecha puntual: gana el evento puntual
+  // (register Lunch ese día); si no hay, se usa la regla Fixed recurrente. Esto
+  // importa porque el setup por defecto crea el Lunch como RECURRENTE: un turno
+  // variable ese día igual tiene que descontarlo. Extraído de
+  // calculateMasterMetrics (2026-09-02) para reusarlo con Holiday Work en
+  // getPayrollSummary — ver holidays-mandatory-field.
+  private resolveDayLunchWindow(
+    schedule: EmployeeSchedule | undefined,
+    dateStr: string,
+    dayOfWeek: number,
+  ): { start: string | null; end: string | null } {
+    if (!schedule) return { start: null, end: null };
+
+    const eventLunch = schedule.events?.find(
+      (e) => e.date === dateStr && e.register === RegisterEnum.LUNCH,
+    );
+
+    const fixedLunchRule = schedule.fixed?.find(
+      (f) =>
+        f.weekdays.includes(dayOfWeek) &&
+        f.register === 'Lunch' &&
+        this.isFixedRuleActiveOn(f, dateStr),
+    );
+
+    const hasEventLunchRaw = Boolean(eventLunch?.start && eventLunch?.end);
+    const start = hasEventLunchRaw
+      ? this.formatToChicago(dateStr, eventLunch!.start)
+      : (fixedLunchRule?.start ?? null);
+    const end = hasEventLunchRaw
+      ? this.formatToChicago(dateStr, eventLunch!.end)
+      : (fixedLunchRule?.end ?? null);
+
+    return { start, end };
+  }
+
   private calculateMasterMetrics(schedule: EmployeeSchedule | undefined, start: string, end: string) {
     let totalHours = 0;
     let daysWorked = 0;
@@ -2333,34 +2382,15 @@ export class PayrollService {
       const eventShifts = (schedule.events ?? []).filter(
         (e) => e.date === dateStr && e.register === RegisterEnum.WORK_SHIFT && e.start && e.end,
       );
-      const eventLunch = schedule.events?.find(
-        (e) => e.date === dateStr && e.register === RegisterEnum.LUNCH,
+
+      // Lunch efectivo del día (evento puntual gana sobre la regla recurrente) —
+      // extraído a resolveDayLunchWindow() para reusarlo también con Holiday Work
+      // en getPayrollSummary (2026-09-02, ver holidays-mandatory-field).
+      const { start: dayLunchStart, end: dayLunchEnd } = this.resolveDayLunchWindow(
+        schedule,
+        dateStr,
+        dayOfWeek,
       );
-
-      // Una regla recurrente solo aplica dentro de su vigencia. Si venció el
-      // 10 de mayo, del 11 en adelante ya no existe y no debe pagarse.
-      const isActiveOn = (f: FixedSchedule) =>
-        (!f.start_date || f.start_date <= dateStr) &&
-        (!f.end_date || f.end_date >= dateStr);
-
-      const fixedLunchRule = schedule.fixed?.find(
-        (f) =>
-          f.weekdays.includes(dayOfWeek) &&
-          f.register === 'Lunch' &&
-          isActiveOn(f),
-      );
-
-      // Lunch efectivo del día. Gana el evento puntual; si no hay, se usa la
-      // regla recurrente. Esto importa porque el setup por defecto crea el
-      // Lunch como RECURRENTE: un Work Shift variable ese día igual tiene que
-      // descontarlo.
-      const hasEventLunchRaw = Boolean(eventLunch?.start && eventLunch?.end);
-      const dayLunchStart = hasEventLunchRaw
-        ? this.formatToChicago(dateStr, eventLunch!.start)
-        : (fixedLunchRule?.start ?? null);
-      const dayLunchEnd = hasEventLunchRaw
-        ? this.formatToChicago(dateStr, eventLunch!.end)
-        : (fixedLunchRule?.end ?? null);
       // Outage del día: es una DEDUCCIÓN INDEPENDIENTE (mismo tratamiento que Time Off
       // Request) — NO se resta de las horas de Work Shift, se descuenta aparte a nivel de
       // Total/Payroll. Solo necesita el Work Shift del día como fallback de `end` cuando el
@@ -2427,7 +2457,7 @@ export class PayrollService {
           (f) =>
             f.weekdays.includes(dayOfWeek) &&
             f.register === 'Work Shift' &&
-            isActiveOn(f),
+            this.isFixedRuleActiveOn(f, dateStr),
         );
         if (fixedShifts.length > 0) {
           lunchDeducted = Number(
@@ -2897,6 +2927,8 @@ export class PayrollService {
       name: h.name,
       date: h.date,
       authorized_hours: h.authorized_hours,
+      is_mandatory: h.is_mandatory,
+      is_paid_holiday: h.is_paid_holiday,
     }));
 
     const masterSchedules = await this.scheduleRepo.find({
@@ -2910,7 +2942,7 @@ export class PayrollService {
     const events = await this.scheduleEventRepository.find({
       where: {
         date: Between(start_date, end_date),
-        register: In([RegisterEnum.TIME_OFF_REQUEST, RegisterEnum.EXTRA_HOURS]),
+        register: In([RegisterEnum.TIME_OFF_REQUEST, RegisterEnum.EXTRA_HOURS, RegisterEnum.HOLIDAY_WORK]),
         schedule: { employee_number: In(employeeNumbers) },
       },
       relations: ['schedule'],
@@ -2921,6 +2953,12 @@ export class PayrollService {
       timeOffCount: number; extraHoursCount: number;
       timeOffDetails: Array<{ date: string; start: string; end: string; total_hours: number; will_make_up_hours: boolean; deducted_hours: number }>;
       extraHoursDetails: Array<{ date: string; start: string; end: string; total_hours: number }>;
+      // Horas reales de eventos "Holiday Work" (guardia de holiday — ver
+      // AddHolidayWorkToRegisterEnum) por fecha. A diferencia de timeOffHours/
+      // extraHours (totales del período) esto vive por día: son las horas que
+      // reemplazan tanto al Work Shift normal como al override plano del
+      // Holiday para esa fecha puntual — ver holidayWorkHoursByDate más abajo.
+      holidayWorkHoursByDate: Record<string, number>;
     }> = {};
 
     for (const ev of events) {
@@ -2930,6 +2968,7 @@ export class PayrollService {
           timeOffHours: 0, extraHours: 0,
           timeOffCount: 0, extraHoursCount: 0,
           timeOffDetails: [], extraHoursDetails: [],
+          holidayWorkHoursByDate: {},
         };
       }
       if (!ev.start || !ev.end) continue;
@@ -2948,6 +2987,26 @@ export class PayrollService {
           will_make_up_hours: willMakeUp,
           deducted_hours: Number(applied.toFixed(2)),
         });
+      } else if (ev.register === RegisterEnum.HOLIDAY_WORK) {
+        // Empleado que SÍ trabajó el holiday (guardia): sus horas reales mandan
+        // sobre el override plano del Holiday y sobre "sin schedule ese día" —
+        // ver holidayWorkHoursByDate más abajo (mainAuthorizedHoursByDate, Pase 2,
+        // y holidaysForFallback). Si hay más de un evento Holiday Work el mismo
+        // día (raro), se suman. Descuenta Lunch igual que Work Shift (mismo flag
+        // includes_lunch, ver ScheduleEventDialog.vue) — confirmado con Javier
+        // 2026-09-02.
+        const holidayWorkSchedule = scheduleMap.get(n);
+        const { start: hwLunchStart, end: hwLunchEnd } = this.resolveDayLunchWindow(
+          holidayWorkSchedule,
+          ev.date,
+          this.isoDayOfWeek(ev.date),
+        );
+        const hwLunchDeducted = this.lunchHoursForShift(
+          fStart, fEnd, !!ev.includes_lunch, hwLunchStart, hwLunchEnd,
+        );
+        const hwNetHours = Math.max(0, h - hwLunchDeducted);
+        eventsByEmployee[n].holidayWorkHoursByDate[ev.date] =
+          Number(((eventsByEmployee[n].holidayWorkHoursByDate[ev.date] ?? 0) + hwNetHours).toFixed(2));
       } else {
         const appliedExtra = h > 8 ? h - 1 : h;
         eventsByEmployee[n].extraHours += appliedExtra;
@@ -3024,15 +3083,42 @@ export class PayrollService {
       const getRateForDay = (date: string): number => findOfficePeriod(date)?.rate ?? 0;
 
       // Holiday CON Work Shift ese día: las horas configuradas en el Holiday mandan
-      // sobre las horas reales del Work Shift (no se suman, se reemplazan). Sin
-      // authorized_hours configurado en el holiday (campo nullable), se mantiene el
-      // comportamiento anterior — horas del Work Shift. Esto no toca Time Off/Extra
-      // Hours/Outage: son deducciones independientes a nivel de período, siguen
-      // aplicando igual sobre el resultado.
+      // sobre las horas reales del Work Shift (no se suman, se reemplazan) — esto
+      // aplica si el Holiday es is_mandatory (empleado obligado a trabajarlo, hasta
+      // ese tope de horas) O is_paid_holiday (se paga aunque nadie esté obligado a
+      // trabajarlo, ej. Labor Day — confirmado con Javier 2026-09-03, ver memoria
+      // holidays-mandatory-field). Si ninguno de los dos aplica, gana el Work Shift
+      // real (o "sin schedule" si no tenía) — el Holiday queda como informativo.
+      // Sin authorized_hours configurado en el holiday (campo nullable), se
+      // mantiene el comportamiento anterior — horas del Work Shift. Esto no toca
+      // Time Off/Extra Hours/Outage: son deducciones independientes a nivel de
+      // período, siguen aplicando igual sobre el resultado.
       const holidayHoursByDate = new Map(
         holidaysNormalized
-          .filter((h) => h.authorized_hours !== null && h.authorized_hours !== undefined)
+          .filter((h) => (h.is_mandatory || h.is_paid_holiday) && h.authorized_hours !== null && h.authorized_hours !== undefined)
           .map((h) => [h.date, Number(h.authorized_hours)]),
+      );
+
+      // Mismo filtro que holidayHoursByDate arriba (mismo patrón: new Map(arr.map(...))
+      // sin generics explícitos, igual que el resto de este método) — guarda
+      // is_mandatory por fecha para saber CUÁL de los dos motivos aplicó
+      // (holiday_pay_source, usado por el PDF/Daily Log). is_mandatory gana el
+      // label si ambos flags están en true (combinación no diseñada
+      // explícitamente, pero no debe romper nada), por ser la condición más
+      // específica de las dos.
+      const holidayIsMandatoryByDate = new Map(
+        holidaysNormalized
+          .filter((h) => (h.is_mandatory || h.is_paid_holiday) && h.authorized_hours !== null && h.authorized_hours !== undefined)
+          .map((h) => [h.date, h.is_mandatory]),
+      );
+
+      // Holiday Work: horas reales de guardia de ESTE empleado, por fecha (ver
+      // eventsByEmployee más arriba). Tienen prioridad sobre holidayHoursByDate
+      // (mandatory/paid_holiday) y sobre el Work Shift normal: si trabajó el
+      // holiday, se pagan esas horas puntuales, sea cual sea el tratamiento del
+      // holiday.
+      const holidayWorkHoursByDate = new Map(
+        Object.entries(eventsByEmployee[employeeNumber]?.holidayWorkHoursByDate ?? {}),
       );
 
       // PASE 1 — horas autorizadas por día (Work Shift o el override del
@@ -3040,8 +3126,26 @@ export class PayrollService {
       // solo necesita las fechas ya cubiertas (detailsWithHolidays) para filtrar
       // holidays sin schedule ese día, así que se puede construir acá, antes de
       // saber el total corregido.
+      //
+      // holidaysForFallback: mismo criterio que holidayHoursByDate/holidayWorkHoursByDate
+      // arriba — un holiday SIN schedule ese día solo genera fila si (a) el empleado
+      // trabajó ese holiday (Holiday Work: sus horas reales reemplazan
+      // authorized_hours), (b) el holiday es is_mandatory (empleado obligado a
+      // trabajarlo, paga authorized_hours aunque no haya trabajado), o (c) el
+      // holiday es is_paid_holiday (nadie obligado a trabajarlo, pero se paga por
+      // ley/política — ej. Labor Day, confirmado con Javier 2026-09-03). Ninguno
+      // de los tres = no se genera fila, que es "el work schedule normal" (sin
+      // schedule ese día = 0h, igual que cualquier otro día no-holiday sin Work
+      // Shift).
+      const holidaysForFallback = holidaysNormalized
+        .map((h) => {
+          const workHours = holidayWorkHoursByDate.get(h.date);
+          return workHours !== undefined ? { ...h, authorized_hours: workHours } : h;
+        })
+        .filter((h) => holidayWorkHoursByDate.has(h.date) || h.is_mandatory || h.is_paid_holiday);
+
       const holidayFallback = this.buildHolidayFallbackScheduleDetails({
-        holidays: holidaysNormalized,
+        holidays: holidaysForFallback,
         existingScheduleDetails: detailsWithHolidays as any,
         baseScheduleDetailsForRate: metrics.daily_details || [],
         rates: rawRates,
@@ -3049,8 +3153,11 @@ export class PayrollService {
 
       const mainAuthorizedHoursByDate = new Map(
         detailsWithHolidays.map((day: any) => {
-          const holidayOverrideHours = day.is_holiday ? holidayHoursByDate.get(day.date) : undefined;
-          return [day.date, round(holidayOverrideHours ?? (day.total_hours ?? 0))];
+          const holidayWorkHours = day.is_holiday ? holidayWorkHoursByDate.get(day.date) : undefined;
+          const holidayOverrideHours = (day.is_holiday && holidayWorkHours === undefined)
+            ? holidayHoursByDate.get(day.date)
+            : undefined;
+          return [day.date, round(holidayWorkHours ?? holidayOverrideHours ?? (day.total_hours ?? 0))];
         }),
       );
 
@@ -3062,7 +3169,22 @@ export class PayrollService {
       // PASE 2 — internalRate/day_payable_amount ya con el total corregido.
       let scheduleDetails = detailsWithHolidays.map((day) => {
         const d: any = day;
-        const holidayOverrideHours  = d.is_holiday ? holidayHoursByDate.get(d.date) : undefined;
+        // Holiday Work (horas reales trabajadas) > override mandatory/paid_holiday
+        // del Holiday > Work Shift/hours normales — ver PASE 1 arriba para el
+        // mismo criterio.
+        const holidayOverrideHours  =
+          !d.is_holiday ? undefined :
+          holidayWorkHoursByDate.has(d.date) ? holidayWorkHoursByDate.get(d.date) :
+          holidayHoursByDate.get(d.date);
+        // Mismo criterio que holidayOverrideHours arriba, para que el PDF (Daily
+        // Log) sepa CUÁL de los tres tratamientos aplicó y no pinte como "Holiday"
+        // un día que en realidad se pagó con el Work Shift normal (holiday sin
+        // is_mandatory ni is_paid_holiday, y sin Holiday Work ese día).
+        const holidayPaySource: 'holiday_work' | 'mandatory' | 'paid_holiday' | null =
+          !d.is_holiday ? null :
+          holidayWorkHoursByDate.has(d.date) ? 'holiday_work' :
+          !holidayHoursByDate.has(d.date) ? null :
+          holidayIsMandatoryByDate.get(d.date) ? 'mandatory' : 'paid_holiday';
         const authorizedHours       = mainAuthorizedHoursByDate.get(d.date)!;
         const authorizedLunchHours  = round(d.lunch_hours ?? 0);
         const authorizedOutageHours = round(d.outage_hours ?? 0);
@@ -3105,6 +3227,7 @@ export class PayrollService {
           date: d.date,
           is_holiday: d.is_holiday ?? false,
           holiday_name: d.holiday_name ?? null,
+          holiday_pay_source: holidayPaySource,
           has_rate: hasRateForDay(d.date),
           rate_period: periodInfoForDay(d.date),
           nova_shifts: displayNovaShifts,
@@ -3130,10 +3253,17 @@ export class PayrollService {
           ? getRateForDay(d.date)
           : (correctedTotalAuthorizedHours > 0 ? getRateForDay(d.date) / correctedTotalAuthorizedHours : 0);
         const authorizedHours = round(d.total_hours ?? 0);
+        // holidaysForFallback (Pase 1) ya garantiza que todo lo que llega aca es
+        // Holiday Work, mandatory o paid_holiday (o combinaciones, priorizando
+        // Holiday Work y luego mandatory) - ver filtro mas arriba.
+        const holidayPaySource: 'holiday_work' | 'mandatory' | 'paid_holiday' =
+          holidayWorkHoursByDate.has(d.date) ? 'holiday_work' :
+          holidayIsMandatoryByDate.get(d.date) === false ? 'paid_holiday' : 'mandatory';
         return {
           date: d.date,
           is_holiday: true,
           holiday_name: d.holiday_name ?? null,
+          holiday_pay_source: holidayPaySource,
           has_rate: hasRateForDay(d.date),
           rate_period: periodInfoForDay(d.date),
           nova_shifts: [] as Array<{ customer: string | null; hours: number }>,
@@ -3167,6 +3297,25 @@ export class PayrollService {
       authLunch  = round(authLunch);
       authOutage = round(authOutage);
 
+      // Holidays pagados SIN trabajar (holiday_pay_source 'mandatory' o
+      // 'paid_holiday' — ver holidayHoursByDate/holidayIsMandatoryByDate más
+      // arriba): ya suman a authWork como si fueran horas de Work Shift, pero
+      // NADIE los clockea en el Time Clock Wizard (el empleado no fue a trabajar
+      // ese día) — así que tcwWork (abajo) viene corto por exactamente esas
+      // horas, aunque el pago sea 100% legítimo. Sin este ajuste,
+      // tcwShortfallAmount (más abajo) las tomaría como un hueco de asistencia
+      // real y las restaría del pago — justo lo contrario de lo pedido por
+      // Javier 2026-09-03 para holidays pagados (ej. Labor Day): "esas hrs se
+      // tienen que sumar a las hrs del TCW... si no, no se pagarían". holiday_work
+      // (SÍ trabajado) queda afuera a propósito: esas horas deberían reflejarse
+      // en el TCW real si el empleado de verdad clockeó ese día.
+      const holidayPaidNotWorkedHours = round(
+        scheduleDetails.reduce((s, d) => {
+          const src = (d as any).holiday_pay_source;
+          return (src === 'mandatory' || src === 'paid_holiday') ? s + d.payroll_day.authorized_hours : s;
+        }, 0),
+      );
+
       // TCW hours summary — usar el total pre-computado (raw, sin redondeo por día)
       // para que coincida con el frontend que también acumula sin redondear cada día
       let tcwWork = round(tcwDaily.totals?.[employeeNumber]?.total_hours ?? 0);
@@ -3176,15 +3325,25 @@ export class PayrollService {
         ),
       );
 
+      // effectiveTcwWork: tcwWork "completado" con las horas de holiday
+      // pagado-sin-trabajar de arriba, SOLO para la comparación de
+      // payable_hours/shortfall de abajo — time_clock_wizard_hours
+      // (payroll_totals, expuesto más abajo) sigue mostrando el tcwWork crudo
+      // del reloj checador, sin inflar, para no mentir sobre qué se clockeó de
+      // verdad.
+      const effectiveTcwWork = round(tcwWork + holidayPaidNotWorkedHours);
+
       // payable_hours: la fuente real de cuántas horas de Work Shift se pagan — el menor
-      // entre TCW y las horas autorizadas ajustadas (Time Off/Extra/Outage). Antes este
-      // valor se calculaba pero nunca se usaba para el dinero; ahora sí escala
-      // Work Shift Amount.
+      // entre TCW (ya completado con holidays pagados-sin-trabajar, ver arriba) y las
+      // horas autorizadas ajustadas (Time Off/Extra/Outage). Se usa más abajo en
+      // tcwShortfallAmount (única pieza que sí escala el dinero — ver ese comentario
+      // para el porqué de NO escalar daysAmount/officePeriodBreakdown directo, que ya
+      // se intentó y doble-restaba Time Off/Outage).
       const timeOffHours       = round(eventsByEmployee[employeeNumber]?.timeOffHours ?? 0);
       const extraHoursHrs      = round(eventsByEmployee[employeeNumber]?.extraHours ?? 0);
       const adjustedHours      = round(authWork - timeOffHours + extraHoursHrs - authOutage);
-      const payableHours       = tcwWork > 0 && tcwWork < adjustedHours ? tcwWork : adjustedHours;
-      const payableHoursSource = tcwWork > 0 && tcwWork < adjustedHours ? 'tcw' : 'authorized_hours_with_adjustments';
+      const payableHours       = effectiveTcwWork > 0 && effectiveTcwWork < adjustedHours ? effectiveTcwWork : adjustedHours;
+      const payableHoursSource = effectiveTcwWork > 0 && effectiveTcwWork < adjustedHours ? 'tcw' : 'authorized_hours_with_adjustments';
 
       // days_amount: suma de day_payable_amount (a rate por hora / día, respeta tramos de
       // employee_rate_history) — BRUTO, sin escalar por payable_hours/authWork.
@@ -3200,6 +3359,22 @@ export class PayrollService {
       const daysAmount = round(
         scheduleDetails.reduce((s, d) => s + d.payroll_day.day_payable_amount, 0),
       );
+
+      // TCW shortfall: daysAmount de arriba es el BRUTO de Work Shift a partir de
+      // authorized_hours (correcto, ver comentario de arriba) — pero si el empleado
+      // clockeó en el Time Clock Wizard MENOS horas que adjustedHours
+      // (payableHoursSource === 'tcw'), esa diferencia nunca se restaba de ningún
+      // lado: Time Off/Outage/Extra ya tienen su propia línea (abajo) y no cubren
+      // este caso (ausencia sin Time Off/Outage registrado, o TCW simplemente por
+      // debajo de lo agendado+ajustado). Bug reportado por Javier 2026-09-03: Payable
+      // Hrs ya mostraba el número correcto (min(tcw, adjustedHours)) pero el dinero
+      // (Work Shift Amount / Total Payroll Amount) seguía pagando el bruto completo.
+      // Se resta acá como línea propia (mismo patrón que Outage/Time Off), a un rate
+      // promedio ($/hr implícito en daysAmount) porque el hueco es a nivel de período
+      // (tcwWork es un total, sin detalle de a qué día(s) exactos corresponde).
+      const tcwShortfallHours  = round(Math.max(0, adjustedHours - payableHours));
+      const avgAuthorizedRate  = authWork > 0 ? daysAmount / authWork : 0;
+      const tcwShortfallAmount = round(-(tcwShortfallHours * avgAuthorizedRate));
 
       // Desglose real de cuánto se ganó (y cuántas horas) en cada tramo de
       // rate_office_staff dentro del rango filtrado — bruto, mismo criterio que
@@ -3285,7 +3460,7 @@ export class PayrollService {
       const commissionsAmount      = this.sumCommissions(commissionsMap[employeeNumber] ?? []);
       const advancedAmount         = round(-(advancedByEmployee[employeeNumber]?.total_advanced ?? 0));
       const totalPayroll           = round(
-        daysAmount + timeOffAmount + extraHoursAmount + outageAmount +
+        daysAmount + timeOffAmount + extraHoursAmount + outageAmount + tcwShortfallAmount +
         compensationsInFavor + compensationsToDeduct +
         commissionsAmount + advancedAmount,
       );
@@ -3364,15 +3539,18 @@ export class PayrollService {
               total_hours: round(authWork + authLunch),
             },
             time_clock_wizard_hours: tcwWork,
+            holiday_paid_hours_not_worked: holidayPaidNotWorkedHours,
             time_off_hours: timeOffHours,
             extra_hours_hours: extraHoursHrs,
             authorized_hours_with_adjustments: adjustedHours,
             payable_hours: payableHours,
             payable_hours_source: payableHoursSource,
+            tcw_shortfall_hours: tcwShortfallHours,
             authorized_work_shift_amount: daysAmount,
             time_off_amount: timeOffAmount,
             extra_hours_amount: extraHoursAmount,
             outage_amount: outageAmount,
+            tcw_shortfall_amount: tcwShortfallAmount,
             compensations_in_favor_amount: compensationsInFavor,
             compensations_to_deduct_amount: compensationsToDeduct,
             commissions_amount: commissionsAmount,

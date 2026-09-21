@@ -2,6 +2,7 @@ import { DataSource } from 'typeorm';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { TimeOffRequest } from 'src/time_off_request/entities/time_off_request.entity';
+import { ActivityRequest } from 'src/activity_request/entities/activity_request.entity';
 import { Department } from 'src/departments/entities/department.entity';
 import { FixedSchedule } from 'src/fixed_schedule/entities/fixed_schedule.entity';
 import { EmployeeSchedule } from 'src/employee_schedule/entities/employee_schedule.entity';
@@ -72,6 +73,7 @@ export const AppDataSource = new DataSource({
   database: process.env.POSTGRES_DB,
   entities: [
     TimeOffRequest,
+    ActivityRequest,
     Department,
     FixedSchedule,
     EmployeeSchedule,
