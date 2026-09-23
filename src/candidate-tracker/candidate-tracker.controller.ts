@@ -20,6 +20,7 @@ import { CreateCandidateTrackerDto } from './dto/create-candidate-tracker.dto';
 import { UpdateCandidateTrackerDto } from './dto/update-candidate-tracker.dto';
 import { QueryCandidateTrackerDto } from './dto/query-candidate-tracker.dto';
 import { QueryCandidateTrackerHistoryDto } from './dto/query-candidate-tracker-history.dto';
+import { QueryWeeklyKpisDto } from './dto/query-weekly-kpis.dto';
 import { AddAttachmentDto } from './dto/add-attachment.dto';
 
 /**
@@ -55,6 +56,12 @@ export class CandidateTrackerController {
   @Get('history')
   findHistory(@Query() query: QueryCandidateTrackerHistoryDto) {
     return this.service.findHistory(query);
+  }
+
+  // Mismo motivo que 'history' arriba: rutas literales antes de ':id'.
+  @Get('kpis/weekly')
+  getWeeklyKpis(@Query() query: QueryWeeklyKpisDto) {
+    return this.service.getWeeklyKpis(query);
   }
 
   @Get(':id')

@@ -11,9 +11,11 @@ import {
   CandidateSourceEnum,
   CandidateStatusEnum,
   CandidateResultEnum,
+  CandidateFinalResultEnum,
   EnglishInterviewResultEnum,
   InterviewTypeEnum,
   EmploymentTypeEnum,
+  ContactAttemptEnum,
 } from '../enums';
 
 export class CreateCandidateTrackerDto {
@@ -25,6 +27,26 @@ export class CreateCandidateTrackerDto {
   @IsString()
   @MaxLength(160)
   position?: string | null;
+
+  /** Catalogo `locations` (locations_service) -- ver comentario de
+   * `location` en candidate-tracker.entity.ts. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  location?: string | null;
+
+  /** Catalogo `type_of_staffs` (hr_backend) -- ver comentario de
+   * `typeOfStaff` en candidate-tracker.entity.ts. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  typeOfStaff?: string | null;
+
+  /** Nombre del departamento (catalogo `departments`); texto libre, no un id. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  department?: string | null;
 
   @IsOptional()
   @IsString()
@@ -69,6 +91,14 @@ export class CreateCandidateTrackerDto {
   countryAddress?: string | null;
 
   @IsOptional()
+  @IsEnum(ContactAttemptEnum)
+  contactAttempt?: ContactAttemptEnum | null;
+
+  @IsOptional()
+  @IsString()
+  contactAttemptNotes?: string | null;
+
+  @IsOptional()
   @IsBoolean()
   driversLicense?: boolean;
 
@@ -83,6 +113,30 @@ export class CreateCandidateTrackerDto {
   @IsOptional()
   @IsBoolean()
   typingTestPassed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  ageVerified?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  diplomaTranscript?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  twentyOnePlus?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  backgroundCheckPassed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  psychometricTestPassed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  noAtFaultAccident?: boolean;
 
   @IsOptional()
   @IsEnum(EnglishInterviewResultEnum)
@@ -100,6 +154,22 @@ export class CreateCandidateTrackerDto {
   @IsString()
   interviewFeedback?: string | null;
 
+  /** Formato YYYY-MM-DD (v-date-picker en el frontend) o vacio para
+   * limpiar el campo -- se normaliza a Date/null en el service. */
+  @IsOptional()
+  @IsString()
+  @Matches(/^$|^\d{4}-\d{2}-\d{2}$/, {
+    message: 'interviewScheduledAt debe tener el formato YYYY-MM-DD',
+  })
+  interviewScheduledAt?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^$|^\d{4}-\d{2}-\d{2}$/, {
+    message: 'interviewCompletedAt debe tener el formato YYYY-MM-DD',
+  })
+  interviewCompletedAt?: string | null;
+
   @IsOptional()
   @IsEnum(CandidateStatusEnum)
   status?: CandidateStatusEnum;
@@ -107,6 +177,20 @@ export class CreateCandidateTrackerDto {
   @IsOptional()
   @IsEnum(CandidateResultEnum)
   result?: CandidateResultEnum | null;
+
+  /** Seccion "In-Person Interview" -- opcional, no mandatory. */
+  @IsOptional()
+  @IsEnum(CandidateResultEnum)
+  inPersonInterviewResult?: CandidateResultEnum | null;
+
+  @IsOptional()
+  @IsString()
+  inPersonInterviewNotes?: string | null;
+
+  /** Resultado definitivo del proceso, seccion final. */
+  @IsOptional()
+  @IsEnum(CandidateFinalResultEnum)
+  finalResult?: CandidateFinalResultEnum | null;
 
   @IsOptional()
   @IsString()
