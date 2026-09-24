@@ -21,6 +21,7 @@ import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
 import { ReviewCreationICareDto } from './dto/review-creation-i-care.dto';
 import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
 import { ICareAnalyticsQueryDto } from './dto/analytics-query-i-care.dto';
+import { SeedICareDto } from './dto/seed-i-care.dto';
 import { ICare, ICareStatus, ICareUrgency } from './entities/i-care.entity';
 import { Employee } from '../employees/entities/employee.entity'; // ajusta el path si es necesario
 import { ICareReason } from '../i_care_reasons/entities/i_care_reason.entity';
@@ -369,6 +370,10 @@ export class ICareService {
     staffEmployeeNumber: string | undefined | null,
     category: ICareOffenseCategory,
     excludeId: string,
+    /** 2026-09-23: solo seedHistorical(). Fecha (YYYY-MM-DD) contra la que se evalua
+     *  la ventana de 12 meses y el tope superior (no cuenta ofensas justificadas
+     *  despues de esa fecha). Sin valor = comportamiento normal (hoy, sin tope). */
+    asOfDate?: string,
   ): Promise<{ offenseNumber: number; isPermanent: boolean; sanctionLabel: string }> {
     const ladder = ICareService.OFFENSE_SANCTION_LADDER[category];
 
@@ -379,9 +384,12 @@ export class ICareService {
       return { offenseNumber: 1, isPermanent: row.permanent, sanctionLabel: row.label };
     }
 
-    const oneYearAgo = moment().tz('America/Chicago').subtract(1, 'year').format('YYYY-MM-DD');
+    const reference = asOfDate
+      ? moment.tz(asOfDate, 'YYYY-MM-DD', 'America/Chicago')
+      : moment().tz('America/Chicago');
+    const oneYearAgo = reference.clone().subtract(1, 'year').format('YYYY-MM-DD');
 
-    const vigentesCount = await this.iCareRepository
+    const vigentesQuery = this.iCareRepository
       .createQueryBuilder('i_care')
       .where('i_care.id != :excludeId', { excludeId })
       .andWhere(`i_care.staff_name ->> 'employee_number' = :emp`, { emp: staffEmployeeNumber })
@@ -390,8 +398,11 @@ export class ICareService {
         new Brackets((qb) => {
           qb.where('i_care.is_permanent_offense = true').orWhere('i_care.justified_date >= :oneYearAgo', { oneYearAgo });
         }),
-      )
-      .getCount();
+      );
+    if (asOfDate) {
+      vigentesQuery.andWhere('i_care.justified_date <= :asOfDate', { asOfDate });
+    }
+    const vigentesCount = await vigentesQuery.getCount();
 
     const offenseNumber = vigentesCount + 1;
     const row = ladder[Math.min(offenseNumber, ladder.length) - 1];
@@ -406,7 +417,7 @@ export class ICareService {
    * -- a pedido explicito del usuario, sin paso manual de HR. Fire-and-forget desde
    * justify(): nunca debe tumbar la justificacion del iCare si esto falla.
    */
-  private async createPermanentOffenseLogbookEntry(record: ICare): Promise<void> {
+  private async createPermanentOffenseLogbookEntry(record: ICare, sanctionDate?: string): Promise<void> {
     const staffEmployeeNumber = record.staff_name?.employee_number;
     if (!staffEmployeeNumber) {
       this.logger.warn(`[offense] no se pudo crear registro permanente en logbook para iCare id=${record.id} -- falta staff_name.employee_number`);
@@ -434,7 +445,7 @@ export class ICareService {
         data: {
           warning_type: record.offense_category ?? '',
           disciplinary_action: `${record.offense_sanction_label} — iCare offense #${record.offense_number} (${record.reason})`,
-          sanction_date: now.format('YYYY-MM-DD'),
+          sanction_date: sanctionDate ?? now.format('YYYY-MM-DD'),
         },
       });
       this.logger.log(`[offense] registro permanente creado en logbook para employee_number=${staffEmployeeNumber} (iCare id=${record.id})`);
@@ -3659,6 +3670,164 @@ export class ICareService {
     record.resolved_notes = `Resolved ${noteSuffix}`;
 
     record.status = ICareStatus.SOLVED;
+  }
+
+  // ============================================================================
+  // -- Seed historico (SOLO PRUEBAS) ------------------------------------------
+  // POST /i-care/seed -- 2026-09-23, a pedido del usuario para probar la escalada
+  // de ofensas / records permanentes con registros de fechas pasadas (ej. 2024)
+  // desde Postman. Solo `pending` y `solved`.
+  //
+  // Diferencias deliberadas vs create()/importExcel():
+  // - Deshabilitado salvo ICARE_SEED_ENABLED=true, y nunca en NODE_ENV=production
+  //   (responde 404 para no revelar la ruta). El controller no tiene guards.
+  // - No dispara emails ni campana.
+  // - createdAt/updatedAt quedan en la fecha historica (Analytics mide tiempos
+  //   contra createdAt; con createdAt=hoy saldrian negativos).
+  // - `solved`: reutiliza seedAsCompleted() (mismo trail que el import) y ADEMAS
+  //   calcula offense_number/is_permanent_offense/offense_sanction_label con
+  //   resolveOffenseEscalation(asOfDate = justified_date). El import de Excel
+  //   NO lo hace, por eso sus registros no cuentan para la escalada.
+  // - Se procesa en orden cronologico: offense_number nunca se recalcula
+  //   (regla #3 de resolveOffenseEscalation), asi que sembrar 2024 DESPUES de
+  //   que el staff ya tenga ofensas mas nuevas deja esas ultimas mal numeradas.
+  //   Usar un staff de prueba limpio o sembrar primero lo mas viejo.
+  // ============================================================================
+
+  private static readonly SEED_SOLVED_MIN_AGE_DAYS = 8; // seedAsCompleted() resuelve en date+8
+
+  async seedHistorical(dto: SeedICareDto): Promise<{
+    inserted: number;
+    skipped: number;
+    records: Array<{
+      id: string;
+      date: string;
+      status: ICareStatus;
+      reason: string;
+      staff_employee_number: string;
+      offense_category: ICareOffenseCategory | null;
+      offense_number: number | null;
+      is_permanent_offense: boolean;
+      offense_sanction_label: string | null;
+    }>;
+    errors: { index: number; date: string; message: string }[];
+  }> {
+    if (process.env.ICARE_SEED_ENABLED !== 'true' || process.env.NODE_ENV === 'production') {
+      throw new NotFoundException();
+    }
+
+    const tz = 'America/Chicago';
+    const today = moment().tz(tz).startOf('day');
+
+    // Orden cronologico estable (conserva el orden original en empates).
+    const items = dto.records
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => a.item.date.localeCompare(b.item.date) || a.index - b.index);
+
+    const result = {
+      inserted: 0,
+      skipped: 0,
+      records: [] as any[],
+      errors: [] as { index: number; date: string; message: string }[],
+    };
+
+    for (const { item, index } of items) {
+      try {
+        const base = moment.tz(item.date, 'YYYY-MM-DD', true, tz);
+        if (!base.isValid()) throw new BadRequestException(`Invalid date "${item.date}"`);
+        if (base.isAfter(today)) throw new BadRequestException('date cannot be in the future');
+        if (
+          item.target_status === 'solved' &&
+          base.clone().add(ICareService.SEED_SOLVED_MIN_AGE_DAYS, 'days').isAfter(today)
+        ) {
+          throw new BadRequestException(
+            `solved records need date <= today - ${ICareService.SEED_SOLVED_MIN_AGE_DAYS} days (resolved_date = date + ${ICareService.SEED_SOLVED_MIN_AGE_DAYS})`,
+          );
+        }
+
+        const urgency = await this.resolveUrgencyForReason(item.reason);
+        const offenseCategory = await this.resolveOffenseCategoryForReason(item.reason);
+        const responsible = item.responsible ?? [];
+
+        const record = this.iCareRepository.create({
+          date: item.date,
+          submitter: item.submitter,
+          staff_name: item.staff_name,
+          responsible,
+          department: item.department ?? '',
+          staffType: item.staffType ?? [],
+          multi_position: item.multi_position ?? [],
+          reason: item.reason,
+          details: item.details,
+          attachments: [],
+          urgency,
+          offense_category: offenseCategory,
+          status: ICareStatus.PENDING,
+        } as DeepPartial<ICare>);
+
+        let updatedAt = base.clone().hour(9);
+        if (item.target_status === 'solved') {
+          this.seedAsCompleted(record, responsible[0] ?? item.submitter);
+          updatedAt = moment.tz(`${record.resolved_date} ${record.resolved_time}`, 'YYYY-MM-DD HH:mm', tz);
+        }
+
+        // Se guarda primero para tener id (resolveOffenseEscalation excluye por id uuid).
+        const saved = await this.iCareRepository.save(record);
+
+        if (item.target_status === 'solved' && saved.offense_category) {
+          const escalation = await this.resolveOffenseEscalation(
+            saved.staff_name?.employee_number,
+            saved.offense_category,
+            saved.id,
+            saved.justified_date ?? item.date,
+          );
+          saved.offense_number = escalation.offenseNumber;
+          saved.is_permanent_offense = escalation.isPermanent;
+          saved.offense_sanction_label = escalation.sanctionLabel;
+          await this.iCareRepository.save(saved);
+        }
+
+        // createdAt/updatedAt historicos. Va al final y por QueryBuilder porque
+        // save() sobreescribe updatedAt en cada llamada.
+        await this.iCareRepository
+          .createQueryBuilder()
+          .update(ICare)
+          .set({ createdAt: base.clone().hour(9).toDate(), updatedAt: updatedAt.toDate() })
+          .where('id = :id', { id: saved.id })
+          .execute();
+
+        if (item.create_logbook_entry && saved.is_permanent_offense) {
+          await this.createPermanentOffenseLogbookEntry(saved, saved.justified_date ?? item.date);
+        }
+
+        this.logger.log(
+          `[seed] iCare id=${saved.id} date=${item.date} status=${saved.status} staff=${saved.staff_name?.employee_number} ` +
+          `offense=${saved.offense_number ?? '-'} permanent=${saved.is_permanent_offense}`,
+        );
+
+        result.inserted++;
+        result.records.push({
+          id: saved.id,
+          date: saved.date,
+          status: saved.status,
+          reason: saved.reason,
+          staff_employee_number: saved.staff_name?.employee_number,
+          offense_category: saved.offense_category,
+          offense_number: saved.offense_number ?? null,
+          is_permanent_offense: saved.is_permanent_offense,
+          offense_sanction_label: saved.offense_sanction_label ?? null,
+        });
+      } catch (err) {
+        result.skipped++;
+        result.errors.push({
+          index,
+          date: item.date,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return result;
   }
 
   // ============================================================================

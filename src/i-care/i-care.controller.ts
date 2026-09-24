@@ -36,6 +36,7 @@ import { ReviewRejectionICareDto } from './dto/review-rejection-i-care.dto';
 import { ReviewCreationICareDto } from './dto/review-creation-i-care.dto';
 import { ApproveJustificationICareDto } from './dto/approve-justification-i-care.dto';
 import { ICareAnalyticsQueryDto } from './dto/analytics-query-i-care.dto';
+import { SeedICareDto } from './dto/seed-i-care.dto';
 import { ICareStatus, ICareUrgency } from './entities/i-care.entity';
 
 @Controller('i-care')
@@ -80,6 +81,23 @@ export class ICareController {
       console.error('Error importing ICare records from Excel:', error);
       throw error;
     }
+  }
+
+  // ── POST /i-care/seed ────────────────────────────────────────────────────────
+  // SOLO PRUEBAS (Postman). Crea iCares con fecha historica en pending/solved,
+  // calculando la escalada de ofensas contra esa fecha. 404 salvo
+  // ICARE_SEED_ENABLED=true y NODE_ENV != production. Sin emails ni campana.
+  // Ver ICareService.seedHistorical().
+
+  @Post('seed')
+  @UsePipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }))
+  @HttpCode(HttpStatus.CREATED)
+  async seed(@Body() dto: SeedICareDto) {
+    return this.iCareService.seedHistorical(dto);
   }
 
   // ── GET /i-care ─────────────────────────────────────────────────────────────
