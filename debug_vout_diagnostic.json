@@ -1,17 +1,30 @@
 {
-  "generated_at": "2026-08-31T16:33:13.458Z",
-  "start_date": "2026-08-21",
-  "end_date": "2026-08-27",
-  "activityOneData_count": 3,
-  "activityVoutData_count": 2,
+  "generated_at": "2026-09-25T18:11:54.089Z",
+  "start_date": "2026-09-17",
+  "end_date": "2026-09-25",
+  "activityOneData_count": 5,
+  "activityVoutData_count": 1,
   "activityOneData_sample": [
     {
-      "date": "2026-08-25",
+      "date": "2026-09-18",
       "employee_number": "NOVAJG232701",
       "employee_name": "Javier Daniel González Torres",
-      "clock_in": "15:15:19",
-      "clock_out": "15:15:24",
-      "clock_out_status": "registered",
+      "clock_in": "12:28:37",
+      "clock_out": "17:49:13",
+      "clock_out_status": "no_clock_out",
+      "lunch_start": "No lunch",
+      "lunch_end": "No lunch",
+      "lunch_minutes": 0,
+      "net_work_minutes": 321,
+      "net_work_hours": 5.35
+    },
+    {
+      "date": "2026-09-21",
+      "employee_number": "NOVAJG232701",
+      "employee_name": "Javier Daniel González Torres",
+      "clock_in": "11:36:41",
+      "clock_out": "11:37:06",
+      "clock_out_status": "no_clock_out",
       "lunch_start": "No lunch",
       "lunch_end": "No lunch",
       "lunch_minutes": 0,
@@ -19,106 +32,71 @@
       "net_work_hours": 0
     },
     {
-      "date": "2026-08-25",
-      "employee_number": "NOVAXI160812",
-      "employee_name": "Ximena Izurieta",
-      "clock_in": "13:37:29",
-      "clock_out": "15:13:06",
-      "clock_out_status": "registered",
-      "lunch_start": "No lunch",
-      "lunch_end": "No lunch",
-      "lunch_minutes": 0,
-      "net_work_minutes": 96,
-      "net_work_hours": 1.6
-    },
-    {
-      "date": "2026-08-27",
+      "date": "2026-09-22",
       "employee_number": "NOVAJG232701",
       "employee_name": "Javier Daniel González Torres",
-      "clock_in": "11:10:31",
-      "clock_out": "14:30:34",
-      "clock_out_status": "registered",
+      "clock_in": "10:48:51",
+      "clock_out": "No clock out",
+      "clock_out_status": "no_records",
       "lunch_start": "No lunch",
       "lunch_end": "No lunch",
       "lunch_minutes": 0,
-      "net_work_minutes": 200,
-      "net_work_hours": 3.33
+      "net_work_minutes": 0,
+      "net_work_hours": 0
     }
   ],
   "activityVoutData_sample": [
     {
-      "date": "2026-08-21",
+      "date": "2026-09-18",
       "employee_number": "VOUTJAV204545",
       "employee_name": "Javier Daniel González Torres",
-      "clock_in": "08:00:00",
+      "clock_in": "12:45:18",
       "clock_out": null,
       "segments": [
         {
-          "in_time": "08:00:00",
+          "in_time": "12:45:18",
           "in_label": "clock in",
-          "out_time": "12:00:00",
-          "out_label": "go lunch"
-        },
-        {
-          "in_time": "13:00:00",
-          "in_label": "back lunch",
           "out_time": null,
           "out_label": null
-        }
-      ]
-    },
-    {
-      "date": "2026-08-24",
-      "employee_number": "VOUTJAV204545",
-      "employee_name": "Javier Daniel González Torres",
-      "clock_in": "08:00:00",
-      "clock_out": "12:00:00",
-      "segments": [
-        {
-          "in_time": "08:00:00",
-          "in_label": "clock in",
-          "out_time": "12:00:00",
-          "out_label": "go lunch"
         }
       ]
     }
   ],
   "oneError": null,
   "voutError": null,
-  "oneIndex_employee_count": 2,
+  "oneIndex_employee_count": 1,
   "voutIndex_employee_count": 1,
   "oneIndex_employee_names": [
-    "javier daniel gonzalez torres",
-    "ximena izurieta"
+    "javier daniel gonzalez torres"
   ],
   "voutIndex_employee_names": [
     "javier daniel gonzalez torres"
   ],
   "tcw_employee_names_sample": [
     "Abad Herrera Pablo",
-    "Abug Joanalyn",
+    "Aguilos Cristine",
     "Alvarez Daniela",
-    "Arcos Vanessa",
     "Argudo Paula",
+    "Arguello Anthony",
     "Aya Katerine",
-    "Azpiazu Carlos",
     "Blanco Nazareth",
+    "Cabezas Adrian",
     "Cadena Joselyn",
     "Calle Jessica"
   ],
   "voutRawEventTypeCounts": {
-    "lunch": 3,
-    "clock_in": 2
+    "lunch": 2,
+    "clock_in": 1
   },
   "voutRawEventsSample": [
     {
-      "date": "2026-08-21",
-      "id": "ff363ceb-6fbf-467a-820b-4347d36050bb_out",
+      "date": "2026-09-18",
+      "id": "89fe61b7-ce34-4b21-b68c-40b5ac492c15_out",
       "type": "lunch",
       "status": "out",
-      "started_at": "2026-08-21T13:00:00-05:00",
+      "started_at": "2026-09-18T12:46:09-05:00",
       "ended_at": null,
-      "duration": "01:00:00",
+      "duration": "00:00:18",
       "employee_number": "VOUTJAV204545",
       "employee_name": "Javier Daniel",
       "employee_last_name": "González Torres",
@@ -126,11 +104,11 @@
       "source": "vout"
     },
     {
-      "date": "2026-08-21",
-      "id": "ff363ceb-6fbf-467a-820b-4347d36050bb_in",
+      "date": "2026-09-18",
+      "id": "89fe61b7-ce34-4b21-b68c-40b5ac492c15_in",
       "type": "lunch",
       "status": "in",
-      "started_at": "2026-08-21T12:00:00-05:00",
+      "started_at": "2026-09-18T12:45:51-05:00",
       "ended_at": null,
       "duration": null,
       "employee_number": "VOUTJAV204545",
@@ -140,39 +118,11 @@
       "source": "vout"
     },
     {
-      "date": "2026-08-21",
-      "id": "89f9aa94-bd62-4496-836d-43ca81c05622",
+      "date": "2026-09-18",
+      "id": "9c3a6c8f-a58f-4c57-a709-e61e23569272",
       "type": "clock_in",
       "status": "in",
-      "started_at": "2026-08-21T08:00:00-05:00",
-      "ended_at": null,
-      "duration": null,
-      "employee_number": "VOUTJAV204545",
-      "employee_name": "Javier Daniel",
-      "employee_last_name": "González Torres",
-      "departments": [],
-      "source": "vout"
-    },
-    {
-      "date": "2026-08-24",
-      "id": "40ae2ff4-d5d4-4c70-a8b5-2ce377c120cc_in",
-      "type": "lunch",
-      "status": "in",
-      "started_at": "2026-08-24T12:00:00-05:00",
-      "ended_at": null,
-      "duration": null,
-      "employee_number": "VOUTJAV204545",
-      "employee_name": "Javier Daniel",
-      "employee_last_name": "González Torres",
-      "departments": [],
-      "source": "vout"
-    },
-    {
-      "date": "2026-08-24",
-      "id": "33e3fe7a-81bd-4955-81bb-b4c6d2c8e10d",
-      "type": "clock_in",
-      "status": "in",
-      "started_at": "2026-08-24T08:00:00-05:00",
+      "started_at": "2026-09-18T12:45:18-05:00",
       "ended_at": null,
       "duration": null,
       "employee_number": "VOUTJAV204545",

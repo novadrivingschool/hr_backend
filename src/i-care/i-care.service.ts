@@ -314,8 +314,9 @@ export class ICareService {
    * D desde el 5to -- confirmado explicitamente por el usuario, no es una formula
    * derivable de los dias de sancion (se probo y no hay patron matematico limpio).
    *
-   * El indice de este array NO es "cuantas veces esta categoria en particular fue
-   * ofendida" -- ver resolveOffenseEscalation() para el porque.
+   * 2026-09-29: el indice de este array SI es "cuantas ofensas vigentes de esta
+   * misma categoria lleva el staff + 1" (contador independiente por categoria) --
+   * ver resolveOffenseEscalation().
    */
   private static readonly OFFENSE_SANCTION_LADDER: Record<ICareOffenseCategory, { label: string; permanent: boolean }[]> = {
     [ICareOffenseCategory.CLASS_B_SERIOUS]: [
@@ -347,20 +348,22 @@ export class ICareService {
    * UNA ofensa nueva (justify(justified=true) de un iCare con offense_category).
    * Reglas confirmadas explicitamente por el usuario, con ejemplos concretos:
    *
-   * 1. Hay UN solo contador compartido entre B, C y D (NO uno independiente por
-   *    categoria) -- "numero de ofensa total". Cada ofensa nueva usa ese numero
-   *    (vigentes + 1) para buscar la fila en la tabla de SU PROPIA categoria.
-   *    Ej.: si el staff ya lleva 2 ofensas vigentes (de cualquier categoria) y
-   *    comete su primera ofensa de Class C, esa NO es "1ra de C" -- es la #3,
-   *    y busca la fila 3 de la tabla de C (2 working days suspension, que ya
-   *    cruza el umbral de permanente de C).
-   * 2. "Vigentes" = todas las ofensas YA marcadas is_permanent_offense=true
+   * 1. 2026-09-29 (CAMBIO, reemplaza la regla del 2026-09-20): cada categoria (B, C, D)
+   *    tiene su PROPIO contador independiente. offense_number = ofensas vigentes de
+   *    ESA MISMA categoria + 1, y busca la fila en la tabla de esa categoria. Las
+   *    ofensas de otras categorias NO cuentan. Ej.: 2 ofensas vigentes de B y la
+   *    primera de C -> C #1 (Written Warning), no #3.
+   * 2. "Vigentes" (de la misma categoria) = todas las ofensas YA marcadas is_permanent_offense=true
    *    (esas NUNCA expiran, por eso se llaman permanentes) + las que NO son
    *    permanentes pero todavia no cumplen 12 meses desde su justified_date.
    *    Una ofensa no-permanente que ya cumplio el año deja de contar para
    *    futuras ofensas (pero su propio offense_number/sancion ya asignado en
    *    su momento no se recalcula retroactivamente).
    * 3. El offense_number de una ofensa NUEVA nunca se vuelve a tocar despues.
+   * 4. 2026-09-29: is_permanent_offense -- B: siempre. C/D: solo si la ofensa cae
+   *    EXACTAMENTE en el umbral (C=3, D=5), o si el umbral se "brinco" por expiracion
+   *    (historial + 1 >= umbral y sin permanentes previos en la categoria). Las
+   *    ofensas posteriores al umbral (#4, #5...) NO son permanentes.
    *
    * Si el numero resultante excede la cantidad de escalones de la categoria
    * (ej. #7 pero la ofensa es Class B, que solo tiene 4), se queda fijo en el
@@ -394,6 +397,7 @@ export class ICareService {
       .where('i_care.id != :excludeId', { excludeId })
       .andWhere(`i_care.staff_name ->> 'employee_number' = :emp`, { emp: staffEmployeeNumber })
       .andWhere('i_care.offense_number IS NOT NULL')
+      .andWhere('i_care.offense_category = :category', { category })
       .andWhere(
         new Brackets((qb) => {
           qb.where('i_care.is_permanent_offense = true').orWhere('i_care.justified_date >= :oneYearAgo', { oneYearAgo });
@@ -406,9 +410,47 @@ export class ICareService {
 
     const offenseNumber = vigentesCount + 1;
     const row = ladder[Math.min(offenseNumber, ladder.length) - 1];
-    this.logger.log(`[offense] iCare id=${excludeId} staff=${staffEmployeeNumber} categoria=${category} vigentes=${vigentesCount} -> offense_number=${offenseNumber} sancion="${row.label}" permanente=${row.permanent}`);
 
-    return { offenseNumber, isPermanent: row.permanent, sanctionLabel: row.label };
+    // 2026-09-29: regla del registro permanente (confirmada por el usuario).
+    // Umbral = primer escalon con permanent=true (B=1, C=3, D=5).
+    //  - B (umbral 1): TODAS las ofensas son permanentes.
+    //  - C/D: el registro permanente se crea SOLO cuando la ofensa cae EXACTAMENTE en el
+    //    umbral (vigentes + 1 === umbral). Las siguientes (#4, #5...) NO son permanentes.
+    //  - Excepcion "se brinca el umbral": si el historial completo de la categoria
+    //    (incluyendo expiradas) + 1 >= umbral y el staff NO tiene ningun registro
+    //    permanente en esa categoria, esta ofensa si es permanente (las anteriores
+    //    expiraron antes de llegar al umbral, y el contador de vigentes se lo salto).
+    //  - Los permanentes cuentan siempre como vigentes, asi que cuando las no-permanentes
+    //    expiran y se vuelve a llegar al umbral, se genera otro registro permanente.
+    const permanentThreshold = ladder.findIndex((r) => r.permanent) + 1;
+    let isPermanent = false;
+    if (permanentThreshold === 1) {
+      isPermanent = true;
+    } else if (permanentThreshold > 1) {
+      if (offenseNumber === permanentThreshold) {
+        isPermanent = true;
+      } else {
+        const baseQuery = () => {
+          const q = this.iCareRepository
+            .createQueryBuilder('i_care')
+            .where('i_care.id != :excludeId', { excludeId })
+            .andWhere(`i_care.staff_name ->> 'employee_number' = :emp`, { emp: staffEmployeeNumber })
+            .andWhere('i_care.offense_number IS NOT NULL')
+            .andWhere('i_care.offense_category = :category', { category });
+          if (asOfDate) q.andWhere('i_care.justified_date <= :asOfDate', { asOfDate });
+          return q;
+        };
+        const historyCount = await baseQuery().getCount();
+        if (historyCount + 1 >= permanentThreshold) {
+          const permanentCount = await baseQuery().andWhere('i_care.is_permanent_offense = true').getCount();
+          isPermanent = permanentCount === 0;
+        }
+      }
+    }
+
+    this.logger.log(`[offense] iCare id=${excludeId} staff=${staffEmployeeNumber} categoria=${category} vigentes=${vigentesCount} umbralPermanente=${permanentThreshold} -> offense_number=${offenseNumber} sancion="${row.label}" permanente=${isPermanent}`);
+
+    return { offenseNumber, isPermanent, sanctionLabel: row.label };
   }
 
   /**
@@ -3623,9 +3665,17 @@ export class ICareService {
   private seedAsCompleted(
     record: ICare,
     actor: { name: string; last_name: string; employee_number: string; nova_email: string },
+    /** 2026-09-23: solo seedHistorical(). Tope (YYYY-MM-DD) para cada paso del
+     *  trail: si date+N cae en el futuro se usa este valor. Sin valor = import de
+     *  Excel, comportamiento original sin tope. */
+    maxDate?: string,
   ): void {
     const base = moment(record.date, 'YYYY-MM-DD');
-    const at = (days: number) => base.clone().add(days, 'days');
+    const cap = maxDate ? moment(maxDate, 'YYYY-MM-DD') : null;
+    const at = (days: number) => {
+      const d = base.clone().add(days, 'days');
+      return cap && d.isAfter(cap) ? cap.clone() : d;
+    };
     const noteSuffix = '(sample record imported from the bulk template)';
 
     record.justified = true;
@@ -3694,8 +3744,6 @@ export class ICareService {
   //   Usar un staff de prueba limpio o sembrar primero lo mas viejo.
   // ============================================================================
 
-  private static readonly SEED_SOLVED_MIN_AGE_DAYS = 8; // seedAsCompleted() resuelve en date+8
-
   async seedHistorical(dto: SeedICareDto): Promise<{
     inserted: number;
     skipped: number;
@@ -3736,14 +3784,6 @@ export class ICareService {
         const base = moment.tz(item.date, 'YYYY-MM-DD', true, tz);
         if (!base.isValid()) throw new BadRequestException(`Invalid date "${item.date}"`);
         if (base.isAfter(today)) throw new BadRequestException('date cannot be in the future');
-        if (
-          item.target_status === 'solved' &&
-          base.clone().add(ICareService.SEED_SOLVED_MIN_AGE_DAYS, 'days').isAfter(today)
-        ) {
-          throw new BadRequestException(
-            `solved records need date <= today - ${ICareService.SEED_SOLVED_MIN_AGE_DAYS} days (resolved_date = date + ${ICareService.SEED_SOLVED_MIN_AGE_DAYS})`,
-          );
-        }
 
         const urgency = await this.resolveUrgencyForReason(item.reason);
         const offenseCategory = await this.resolveOffenseCategoryForReason(item.reason);
@@ -3767,7 +3807,7 @@ export class ICareService {
 
         let updatedAt = base.clone().hour(9);
         if (item.target_status === 'solved') {
-          this.seedAsCompleted(record, responsible[0] ?? item.submitter);
+          this.seedAsCompleted(record, responsible[0] ?? item.submitter, today.format('YYYY-MM-DD'));
           updatedAt = moment.tz(`${record.resolved_date} ${record.resolved_time}`, 'YYYY-MM-DD HH:mm', tz);
         }
 

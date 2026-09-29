@@ -11,6 +11,7 @@ import * as puppeteer from 'puppeteer';
 import { buildSingleEmployeeHtml } from './templates/payroll-report.template';
 import { buildSummaryEmployeeHtml } from './templates/payroll-summary-report.template';
 import axios from 'axios';
+import * as jwt from 'jsonwebtoken';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as ExcelJS from 'exceljs';
@@ -3636,6 +3637,30 @@ export class PayrollService {
     }
   }
 
+  /**
+   * Activity Report ONE (ACTIVITY_REPORT_ONE_API) exige desde su
+   * JwtAuthGuard (backend_activity_report/src/common/guards/jwt-auth.guard.ts)
+   * un header `Authorization: Bearer <token>` firmado HS256 con
+   * SECRET_KEY_TOKEN. Ese guard solo valida firma + exp (no exige ningún
+   * claim puntual), y SECRET_KEY_TOKEN en este .env ya coincide con el que
+   * usa ese servicio, así que hr_backend firma su propio token de servicio
+   * sin necesidad de llamar a ningún endpoint de login externo.
+   */
+  private getActivityOneAuthHeaders(): { Authorization: string } {
+    const secret = process.env.SECRET_KEY_TOKEN;
+    if (!secret) {
+      throw new UnauthorizedException(
+        'SECRET_KEY_TOKEN no está configurado — requerido para autenticar contra Activity Report ONE.',
+      );
+    }
+    const token = jwt.sign(
+      { service: 'hr_backend', purpose: 'activity-report-one-sync' },
+      secret,
+      { algorithm: 'HS256', expiresIn: '5m' },
+    );
+    return { Authorization: `Bearer ${token}` };
+  }
+
   private async fetchWorkHoursNewActivity(
     employeeNumbers: string[],
     start_date: string,
@@ -3643,11 +3668,14 @@ export class PayrollService {
   ): Promise<Record<string, { total_hours: number; total_minutes: number }>> {
     try {
       const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
+      const url = `${baseUrl}/new-activity/work-hours`;
+      console.log(`🔵 [Activity ONE] POST ${url}`);
       const { data } = await axios.post<{ ok: boolean; data: any[] }>(
-        `${baseUrl}/new-activity/work-hours`,
+        url,
         { employee_numbers: employeeNumbers, start_date, end_date },
-        { timeout: 10_000 },
+        { timeout: 10_000, headers: this.getActivityOneAuthHeaders() },
       );
+      console.log(`🔵 [Activity ONE] OK -> ${data?.data?.length ?? 0} registros (work-hours)`);
 
       const map: Record<string, { total_hours: number; total_minutes: number }> = {};
       for (const row of data.data ?? []) {
@@ -3658,7 +3686,9 @@ export class PayrollService {
       }
       return map;
     } catch (error) {
-      console.error('⚠️  fetchWorkHoursNewActivity falló:', error.message);
+      console.error(
+        `🔴 [Activity ONE] FALLÓ (work-hours) -> status=${error.response?.status ?? 'sin respuesta'} | mensaje="${error.message}"`,
+      );
       return {};
     }
   }
@@ -4207,17 +4237,22 @@ export class PayrollService {
 
     try {
       const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
+      const url = `${baseUrl}/new-activity/clock-report/data`;
+      console.log(`🔵 [Activity ONE] POST ${url}`);
       const { data } = await axios.post(
-        `${baseUrl}/new-activity/clock-report/data`,
+        url,
         { start_date, end_date },
-        { timeout: 15_000 },
+        { timeout: 15_000, headers: this.getActivityOneAuthHeaders() },
       );
+      console.log(`🔵 [Activity ONE] OK -> ${data?.data?.length ?? 0} registros`);
 
       for (const row of data?.data ?? []) {
         upsertActivityRow(oneByEmployee, 'one', row);
       }
     } catch (error) {
-      console.error('⚠️ Activity ONE clock-report/data failed:', error.message);
+      console.error(
+        `🔴 [Activity ONE] FALLÓ -> status=${error.response?.status ?? 'sin respuesta'} | mensaje="${error.message}"`,
+      );
     }
 
     try {
@@ -4522,14 +4557,19 @@ export class PayrollService {
     let activityOneData: any[] = [];
     try {
       const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
+      const url = `${baseUrl}/new-activity/clock-report/data`;
+      console.log(`🔵 [Activity ONE] POST ${url}`);
       const { data } = await axios.post(
-        `${baseUrl}/new-activity/clock-report/data`,
+        url,
         { start_date, end_date },
-        { timeout: 15_000 },
+        { timeout: 15_000, headers: this.getActivityOneAuthHeaders() },
       );
       activityOneData = data?.data ?? [];
+      console.log(`🔵 [Activity ONE] OK -> ${activityOneData.length} registros`);
     } catch (error) {
-      console.error('⚠️ Activity ONE clock-report/data failed:', error.message);
+      console.error(
+        `🔴 [Activity ONE] FALLÓ -> status=${error.response?.status ?? 'sin respuesta'} | mensaje="${error.message}"`,
+      );
     }
 
     let activityVoutData: any[] = [];
@@ -5755,16 +5795,21 @@ export class PayrollService {
     let activityOneData: any[] = [];
     try {
       const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
+      const url = `${baseUrl}/new-activity/clock-report/data`;
+      console.log(`🔵 [Activity ONE] POST ${url}`);
       const { data } = await axios.post(
-        `${baseUrl}/new-activity/clock-report/data`,
+        url,
         { start_date, end_date },
-        { timeout: 15_000 },
+        { timeout: 15_000, headers: this.getActivityOneAuthHeaders() },
       );
       activityOneData = data?.data ?? [];
+      console.log(`🔵 [Activity ONE] OK -> ${activityOneData.length} registros`);
       console.log('=== ACTIVITY ONE SAMPLE ===');
       console.log(JSON.stringify(activityOneData.slice(0, 3), null, 2));
     } catch (error) {
-      console.error('⚠️ Activity ONE clock-report/data failed:', error.message);
+      console.error(
+        `🔴 [Activity ONE] FALLÓ -> status=${error.response?.status ?? 'sin respuesta'} | mensaje="${error.message}"`,
+      );
     }
 
     let activityVoutData: any[] = [];
@@ -6566,12 +6611,15 @@ export class PayrollService {
     let oneError: any = null;
     try {
       const baseUrl = process.env.ACTIVITY_REPORT_ONE_API;
+      const url = `${baseUrl}/new-activity/clock-report/data`;
+      console.log(`🔵 [detail-records][Activity ONE] POST ${url} | rango ${start_date} a ${end_date}`);
       const { data } = await axios.post(
-        `${baseUrl}/new-activity/clock-report/data`,
+        url,
         { start_date, end_date },
-        { timeout: 15_000 },
+        { timeout: 15_000, headers: this.getActivityOneAuthHeaders() },
       );
       activityOneData = data?.data ?? [];
+      console.log(`🔵 [detail-records][Activity ONE] OK -> ${activityOneData.length} registros`);
     } catch (error) {
       oneError = {
         message: error.message,
@@ -6579,7 +6627,9 @@ export class PayrollService {
         response_data: error.response?.data ?? null,
         base_url: process.env.ACTIVITY_REPORT_ONE_API ?? null,
       };
-      console.error('⚠️ [detail-records] Activity ONE clock-report/data failed:', error.message);
+      console.error(
+        `🔴 [detail-records][Activity ONE] FALLÓ -> status=${error.response?.status ?? 'sin respuesta'} | url=${process.env.ACTIVITY_REPORT_ONE_API}/new-activity/clock-report/data | mensaje="${error.message}" | body=${JSON.stringify(error.response?.data ?? null)}`,
+      );
     }
 
     let activityVoutData: any[] = [];
