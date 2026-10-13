@@ -582,6 +582,22 @@ export class EmployeesService {
     };
   }
 
+  /**
+   * Trae name/last_name/address para un set de employee_number.
+   * Usado por DanubenetHistoryController.resolveBatch para enriquecer la
+   * resolución (name, date) → employee_number con los datos que necesitan
+   * los microservicios externos (ej. fleet_service/mapping) sin tener que
+   * exponerles un endpoint de employees completo.
+   */
+  async findBasicByNumbers(employeeNumbers: string[]): Promise<Pick<Employee, 'employee_number' | 'name' | 'last_name' | 'address'>[]> {
+    if (!employeeNumbers.length) return [];
+
+    return this.employeeRepo.find({
+      where: { employee_number: In(employeeNumbers) },
+      select: ['employee_number', 'name', 'last_name', 'address'],
+    });
+  }
+
   async updateEmployeeByNumber(employeeNumber: string, updateDto: UpdateEmployeeDto) {
     // 1. Ejecutamos el update directamente usando el employee_number
     const updateResult = await this.employeeRepo.update(

@@ -48,6 +48,29 @@ type PayableHoursSource =
   | 'holiday_schedule'
   | 'holiday_default_8h';
 
+// Un día de un empleado en el reporte NOVA/V-O (hoja "Detalle por día"): las
+// horas del TCW junto a las horas de Activity de ese mismo día.
+type NovaVoutDay = {
+  employee: string;
+  date: string;
+  // TCW: suma de todos los turnos del día.
+  hours: number;
+  // 'Activity ONE' | 'Activity VOUT' | null (ninguno de los dos trae datos).
+  source: string | null;
+  // Suma de los pares entrada/salida completos de Activity. null = no hay
+  // ningún par completo ("sin dato"), que NO es lo mismo que 0 horas.
+  activityHours: number | null;
+  hasActivityEvents: boolean;
+  // Algún turno del TCW sin su entrada o su salida de Activity (igual que la
+  // tabla: los eventos de Activity se asignan por turno, no por día).
+  activityIncomplete: boolean;
+  // Algún turno fuera de tolerancia contra TCW (lo decide
+  // buildClockComparisonDetailRows, igual que el ERROR de la tabla). Es por
+  // turno: el total del día puede cuadrar igual (p.ej. almuerzo marcado a
+  // distinta hora en cada sistema).
+  diffExceeded: boolean;
+};
+
 
 
 @Injectable()
@@ -3122,6 +3145,19 @@ export class PayrollService {
         Object.entries(eventsByEmployee[employeeNumber]?.holidayWorkHoursByDate ?? {}),
       );
 
+      // Paid Holiday (is_paid_holiday, NO mandatory) CON schedule ese día: se paga
+      // lo del schedule hasta el tope de authorized_hours del holiday (típicamente
+      // 8h) — quien tiene 3h o 5h agendadas cobra 3h o 5h, no las 8h completas
+      // (confirmado con Javier 2026-10-09). Sin schedule (0h / Off / sin Work
+      // Shift) se mantiene authorized_hours completo. Mandatory no cambia.
+      const resolveHolidayOverrideHours = (date: string, scheduledHours: number | null | undefined) => {
+        const base = holidayHoursByDate.get(date);
+        if (base === undefined) return undefined;
+        if (holidayIsMandatoryByDate.get(date)) return base;
+        const sched = Number(scheduledHours ?? 0);
+        return sched > 0 ? Math.min(base, sched) : base;
+      };
+
       // PASE 1 — horas autorizadas por día (Work Shift o el override del
       // Holiday), sin calcular internalRate todavía. buildHolidayFallbackScheduleDetails
       // solo necesita las fechas ya cubiertas (detailsWithHolidays) para filtrar
@@ -3156,7 +3192,7 @@ export class PayrollService {
         detailsWithHolidays.map((day: any) => {
           const holidayWorkHours = day.is_holiday ? holidayWorkHoursByDate.get(day.date) : undefined;
           const holidayOverrideHours = (day.is_holiday && holidayWorkHours === undefined)
-            ? holidayHoursByDate.get(day.date)
+            ? resolveHolidayOverrideHours(day.date, day.total_hours)
             : undefined;
           return [day.date, round(holidayWorkHours ?? holidayOverrideHours ?? (day.total_hours ?? 0))];
         }),
@@ -3176,7 +3212,7 @@ export class PayrollService {
         const holidayOverrideHours  =
           !d.is_holiday ? undefined :
           holidayWorkHoursByDate.has(d.date) ? holidayWorkHoursByDate.get(d.date) :
-          holidayHoursByDate.get(d.date);
+          resolveHolidayOverrideHours(d.date, d.total_hours);
         // Mismo criterio que holidayOverrideHours arriba, para que el PDF (Daily
         // Log) sepa CUÁL de los tres tratamientos aplicó y no pinte como "Holiday"
         // un día que en realidad se pagó con el Work Shift normal (holiday sin
@@ -6569,11 +6605,14 @@ export class PayrollService {
     return result;
   }
 
-  async getClockComparisonDetailRecords(
+  // TCW (payroll_timesheet_records) del rango, filtrado por empleado con
+  // búsqueda parcial por texto. Lo comparten el detalle de auditoría y los
+  // controles del Excel NOVA/V-O, para que ambos lean exactamente lo mismo.
+  private async loadFilteredTcwRecords(
     start_date: string,
     end_date: string,
     employees?: string[],
-  ) {
+  ): Promise<TimesheetRecord[]> {
     const tcwRows = await this.timesheetRecordRepository
       .createQueryBuilder('t')
       .where('t.day_date >= :start_date::date', { start_date })
@@ -6586,12 +6625,20 @@ export class PayrollService {
     // cruda, que hace LIKE %texto%): esto es un search box, no un cruce
     // TCW-vs-Activity, así que NO se usa matchScoreDetail aquí (esa función
     // exige tokens completos y rompe la búsqueda por nombre parcial).
-    const filteredTcwRows = employees?.length
+    return employees?.length
       ? tcwRows.filter(row => {
         const name = row.employee.toLowerCase();
         return employees.some(emp => name.includes(String(emp).toLowerCase().trim()));
       })
       : tcwRows;
+  }
+
+  async getClockComparisonDetailRecords(
+    start_date: string,
+    end_date: string,
+    employees?: string[],
+  ) {
+    const filteredTcwRows = await this.loadFilteredTcwRecords(start_date, end_date, employees);
 
     // Sin filtro de empleado, esto compara CADA registro TCW del rango contra
     // TODOS los empleados de Activity Report (costo O(TCW x Activity), y el
@@ -6718,27 +6765,97 @@ export class PayrollService {
   // getClockComparisonDetailRecords (single source of truth con la tabla
   // de auditoría) y el mismo patrón puppeteer que ya usa este service para
   // los PDFs de payroll (ver renderEmployeePdf más arriba).
+  // Agrupa el detalle por empleado y por día para el reporte NOVA/V-O. La
+  // clave de agrupado se normaliza (minúsculas, sin acentos, sin puntuación
+  // ni espacios repetidos): si TCW trae a la misma persona escrita distinto
+  // ("GONZALEZ JAVIER" vs "Gonzalez  Javier"), antes se partía en 2 filas
+  // del reporte, cada una con un total parcial. Se muestra el primer
+  // nombre que aparece. Cada intervalo de TCW suma UNA sola vez: en el
+  // detalle solo la fila "ganadora" de cada intervalo trae tcw_hours > 0.
+  //
+  // Por día también se junta lo de Activity (horas, si está completo, si cae
+  // fuera de tolerancia) para la hoja "Detalle por día" del Excel. Cada
+  // segmento de Activity cae en UNA sola fila del detalle (los eventos in/out
+  // se reparten entre los turnos del TCW sin repetirse), así que sumar
+  // activity_worked_hours de las filas del día no duplica horas. Si el MISMO
+  // día llega con 2 escrituras del nombre en TCW, cada una se cruza por
+  // separado contra TODO el Activity del día: sus horas de Activity se toman
+  // de UNA sola (la mayor) en vez de sumarse, o el día quedaría duplicado.
+  private aggregateNovaVoutDetail(
+    detailRows: ReturnType<PayrollService['buildClockComparisonDetailRows']>,
+  ): {
+    employees: Array<{ employee: string; totalHours: number; hasOne: boolean; hasVout: boolean }>;
+    days: NovaVoutDay[];
+  } {
+    const employeesByKey = new Map<string, { employee: string; totalHours: number; hasOne: boolean; hasVout: boolean }>();
+    const daysByKey = new Map<string, Omit<NovaVoutDay, 'activityHours'> & { activityByName: Map<string, number> }>();
+
+    for (const r of detailRows) {
+      const rawName = r.tcw_employee;
+      if (!rawName) continue;
+      const empKey = this.normalizeName(rawName) || rawName;
+
+      let emp = employeesByKey.get(empKey);
+      if (!emp) {
+        emp = { employee: rawName, totalHours: 0, hasOne: false, hasVout: false };
+        employeesByKey.set(empKey, emp);
+      }
+
+      const hours = Number(r.tcw_hours || 0);
+      emp.totalHours += hours;
+      if (r.activity_source === 'Activity ONE') emp.hasOne = true;
+      if (r.activity_source === 'Activity VOUT') emp.hasVout = true;
+
+      const dayKey = `${empKey}__${r.tcw_date}`;
+      let day = daysByKey.get(dayKey);
+      if (!day) {
+        day = {
+          employee: emp.employee,
+          date: r.tcw_date,
+          hours: 0,
+          source: null,
+          activityByName: new Map<string, number>(),
+          hasActivityEvents: false,
+          activityIncomplete: false,
+          diffExceeded: false,
+        };
+        daysByKey.set(dayKey, day);
+      }
+      day.hours += hours;
+      if (!day.source && r.activity_source) day.source = r.activity_source;
+
+      // Activity: horas de los pares completos (null = el par no está
+      // completo, no suma), y banderas para el estado del día. difference_hours
+      // solo viene en la fila de cierre del turno y su status es el de la tabla.
+      if (r.activity_worked_hours !== null && r.activity_worked_hours !== undefined) {
+        day.activityByName.set(rawName, (day.activityByName.get(rawName) ?? 0) + Number(r.activity_worked_hours));
+      }
+      if (r.activity_in_time || r.activity_out_time) day.hasActivityEvents = true;
+      if (!(r.activity_in_time && r.activity_out_time)) day.activityIncomplete = true;
+      if (r.difference_hours !== null && r.status === 'error') day.diffExceeded = true;
+    }
+
+    return {
+      employees: Array.from(employeesByKey.values()),
+      days: Array.from(daysByKey.values()).map(({ activityByName, ...day }) => ({
+        ...day,
+        activityHours: activityByName.size
+          ? this.round2(Math.max(...Array.from(activityByName.values())))
+          : null,
+      })),
+    };
+  }
+
   private buildNovaVoutReportRows(
     detailRows: ReturnType<PayrollService['buildClockComparisonDetailRows']>,
-  ): Array<{ employee: string; nova: number; vo: number; total: number }> {
-    const byEmployee = new Map<string, { employee: string; totalHours: number; hasOne: boolean; hasVout: boolean }>();
-    for (const r of detailRows) {
-      const employee = r.tcw_employee;
-      if (!employee) continue;
-      if (!byEmployee.has(employee)) {
-        byEmployee.set(employee, { employee, totalHours: 0, hasOne: false, hasVout: false });
-      }
-      const entry = byEmployee.get(employee)!;
-      entry.totalHours += Number(r.tcw_hours || 0);
-      if (r.activity_source === 'Activity ONE') entry.hasOne = true;
-      if (r.activity_source === 'Activity VOUT') entry.hasVout = true;
-    }
+  ): Array<{ employee: string; nova: number; vo: number; total: number; column: 'NOVA' | 'V-O' }> {
+    const { employees } = this.aggregateNovaVoutDetail(detailRows);
 
     // La fuente es un atributo del EMPLEADO, no del día: la sumatoria de
     // TCW Hours va ENTERA a una sola columna (ONE→NOVA tiene prioridad
     // sobre VOUT, igual que el fallback que ya usa activitySource más
     // arriba; sin ningún día con fuente registrada, default a NOVA).
-    return Array.from(byEmployee.values())
+    return employees
       .map((e) => {
         const total = this.round2(e.totalHours);
         const isVout = !e.hasOne && e.hasVout;
@@ -6747,6 +6864,7 @@ export class PayrollService {
           nova: isVout ? 0 : total,
           vo: isVout ? total : 0,
           total,
+          column: (isVout ? 'V-O' : 'NOVA') as 'NOVA' | 'V-O',
         };
       })
       .sort((a, b) => a.employee.localeCompare(b.employee, 'es'));
@@ -6864,6 +6982,356 @@ export class PayrollService {
     } finally {
       await browser.close();
     }
+  }
+
+  // Hallazgos de calidad de datos en los registros TCW del rango, que son las
+  // causas típicas de que un total "no cuadre" con lo que alguien espera. La
+  // suma del reporte NO los corrige (suma lo que hay en la tabla): solo los
+  // señala para revisarlos contra TCW.
+  private buildTcwDataFindings(
+    rows: TimesheetRecord[],
+  ): Array<{ type: string; employee: string; date: string; detail: string }> {
+    const findings: Array<{ type: string; employee: string; date: string; detail: string }> = [];
+    const fmt = (n: number | string) => this.round2(n).toFixed(2);
+    const dayOf = (r: TimesheetRecord) => String(r.day_date).slice(0, 10);
+    const keyOf = (r: TimesheetRecord) => this.normalizeName(r.employee) || r.employee;
+    const validClock = (v: string | null | undefined) =>
+      /^\d{1,2}:\d{2}(:\d{2})?(\s*(AM|PM))?$/i.test(String(v ?? '').trim());
+
+    // 1. Misma persona escrita distinto en TCW (el reporte las une en una fila).
+    const spellingsByKey = new Map<string, Set<string>>();
+    for (const r of rows) {
+      const key = keyOf(r);
+      if (!spellingsByKey.has(key)) spellingsByKey.set(key, new Set());
+      spellingsByKey.get(key)!.add(r.employee);
+    }
+    for (const spellings of spellingsByKey.values()) {
+      if (spellings.size > 1) {
+        const list = [...spellings];
+        findings.push({
+          type: 'Nombre escrito distinto',
+          employee: list[0],
+          date: '—',
+          detail: `Se unieron en una sola fila: ${list.map((s) => `"${s}"`).join(' + ')}`,
+        });
+      }
+    }
+
+    // 2. Registros idénticos repetidos (suman más de una vez).
+    const seen = new Map<string, { count: number; row: TimesheetRecord }>();
+    for (const r of rows) {
+      const k = [keyOf(r), dayOf(r), r.time_in ?? '', r.time_out ?? '', r.hour_type ?? '', fmt(r.hours)].join('|');
+      const entry = seen.get(k);
+      if (entry) entry.count += 1;
+      else seen.set(k, { count: 1, row: r });
+    }
+    for (const { count, row } of seen.values()) {
+      if (count > 1) {
+        findings.push({
+          type: 'Registro repetido',
+          employee: row.employee,
+          date: dayOf(row),
+          detail: `${count} registros idénticos (${row.time_in ?? '—'} → ${row.time_out ?? '—'}, ${fmt(row.hours)} h c/u): suman ${fmt(count * Number(row.hours))} h`,
+        });
+      }
+    }
+
+    // 3. Marcaciones con entrada y sin salida: TCW las guarda con 0 horas.
+    for (const r of rows) {
+      if (validClock(r.time_in) && !validClock(r.time_out)) {
+        findings.push({
+          type: 'Sin hora de salida',
+          employee: r.employee,
+          date: dayOf(r),
+          detail: `Entrada ${r.time_in} sin salida: cuenta ${fmt(r.hours)} h`,
+        });
+      }
+    }
+
+    // 4. Tipos de hora distintos de Regular (se incluyen en el total).
+    const byType = new Map<string, { employee: string; date: string; type: string; hours: number }>();
+    for (const r of rows) {
+      const type = String(r.hour_type ?? '').trim() || 'Regular';
+      if (type.toLowerCase() === 'regular') continue;
+      const k = `${keyOf(r)}|${dayOf(r)}|${type.toLowerCase()}`;
+      const entry = byType.get(k);
+      if (entry) entry.hours += Number(r.hours || 0);
+      else byType.set(k, { employee: r.employee, date: dayOf(r), type, hours: Number(r.hours || 0) });
+    }
+    for (const t of byType.values()) {
+      findings.push({
+        type: 'Tipo de hora distinto de Regular',
+        employee: t.employee,
+        date: t.date,
+        detail: `${t.type}: ${fmt(t.hours)} h (incluidas en el total)`,
+      });
+    }
+
+    return findings.sort(
+      (a, b) =>
+        a.type.localeCompare(b.type, 'es') ||
+        a.employee.localeCompare(b.employee, 'es') ||
+        a.date.localeCompare(b.date),
+    );
+  }
+
+  // Excel del reporte NOVA/V-O: misma fuente de datos y misma regla de
+  // clasificación que la imagen (buildNovaVoutReportRows), más una hoja
+  // "Detalle por día" para poder rastrear de dónde sale cada total (horas de
+  // TCW y de Activity del mismo día, su diferencia y el estado FINE/ERROR; los
+  // días con 0.00 horas de TCW quedan resaltados) y una hoja "Controles" con
+  // los hallazgos de calidad de datos de TCW (buildTcwDataFindings).
+  private async buildNovaVoutReportWorkbook(
+    rows: Array<{ employee: string; nova: number; vo: number; total: number; column: 'NOVA' | 'V-O' }>,
+    days: NovaVoutDay[],
+    findings: Array<{ type: string; employee: string; date: string; detail: string }>,
+    start_date: string,
+    end_date: string,
+  ): Promise<Buffer> {
+    const HEADER_BG = 'FF1E4D8C';
+    const ALT_BG = 'FFEEF3FB';
+    const TOTAL_BG = 'FFD9E4F5';
+    const ZERO_BG = 'FFFDE8E8';
+    const ERROR_BG = ZERO_BG;
+    const ERROR_FG = 'FFB42318';
+    const OK_BG = 'FFE6F4EA';
+    const OK_FG = 'FF1B6E3C';
+    // Misma tolerancia con la que buildClockComparisonDetailRows marca un
+    // turno como ERROR: diferencia TCW vs Activity mayor a 0.08 h (≈5 min).
+    const DIFF_TOLERANCE_HOURS = 0.08;
+    const LINE_COLOR = 'FFD7E0EE';
+    const HOURS_FMT = '0.00';
+
+    const thin = { style: 'thin' as const, color: { argb: LINE_COLOR } };
+    const cellBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
+    const fmtPeriodDate = (value: string): string => {
+      const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      return m ? `${m[2]}/${m[3]}/${m[1]}` : (value || '—');
+    };
+    const periodo = `${fmtPeriodDate(start_date)} - ${fmtPeriodDate(end_date)}`;
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Nova ONE';
+    wb.created = new Date();
+
+    const styleHeaderRow = (row: ExcelJS.Row, columnCount: number) => {
+      row.height = 24;
+      for (let c = 1; c <= columnCount; c++) {
+        const cell = row.getCell(c);
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11, name: 'Arial' };
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_BG } };
+        cell.border = cellBorder;
+      }
+    };
+
+    // ── Hoja 1: resumen (mismas columnas que la imagen) ──────────────
+    const ws = wb.addWorksheet('Reporte NOVA-VO', {
+      properties: { tabColor: { argb: HEADER_BG } },
+    });
+    ws.columns = [
+      { header: 'Nro.', key: 'nro', width: 7 },
+      { header: 'NOMBRE', key: 'employee', width: 34 },
+      { header: 'NOVA', key: 'nova', width: 12 },
+      { header: 'V-O', key: 'vo', width: 12 },
+      { header: 'TOTAL HORAS', key: 'total', width: 15 },
+      { header: 'PERIODO', key: 'periodo', width: 25 },
+    ];
+    styleHeaderRow(ws.getRow(1), 6);
+
+    rows.forEach((r, idx) => {
+      const rowNumber = idx + 2;
+      const excelRow = ws.addRow({
+        nro: idx + 1,
+        employee: r.employee,
+        nova: r.nova || null,
+        vo: r.vo || null,
+        total: { formula: `SUM(C${rowNumber}:D${rowNumber})`, result: r.total },
+        periodo,
+      });
+      excelRow.height = 20;
+      const bg = idx % 2 === 1 ? ALT_BG : 'FFFFFFFF';
+      for (let c = 1; c <= 6; c++) {
+        const cell = excelRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+        cell.font = { name: 'Arial', size: 10, color: { argb: 'FF1A2C4E' }, bold: c === 2 || c === 5 };
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: c === 2 ? 'left' : (c >= 3 && c <= 5 ? 'right' : 'center'),
+        };
+        cell.border = cellBorder;
+        if (c >= 3 && c <= 5) cell.numFmt = HOURS_FMT;
+      }
+    });
+
+    if (rows.length) {
+      const first = 2;
+      const last = rows.length + 1;
+      const sumNova = this.round2(rows.reduce((s, r) => s + r.nova, 0));
+      const sumVo = this.round2(rows.reduce((s, r) => s + r.vo, 0));
+      const totalRow = ws.addRow({
+        nro: null,
+        employee: 'TOTAL',
+        nova: { formula: `SUM(C${first}:C${last})`, result: sumNova },
+        vo: { formula: `SUM(D${first}:D${last})`, result: sumVo },
+        total: { formula: `SUM(E${first}:E${last})`, result: this.round2(sumNova + sumVo) },
+        periodo,
+      });
+      totalRow.height = 22;
+      for (let c = 1; c <= 6; c++) {
+        const cell = totalRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TOTAL_BG } };
+        cell.font = { name: 'Arial', size: 10.5, bold: true, color: { argb: 'FF1A2C4E' } };
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: c === 2 ? 'left' : (c >= 3 && c <= 5 ? 'right' : 'center'),
+        };
+        cell.border = cellBorder;
+        if (c >= 3 && c <= 5) cell.numFmt = HOURS_FMT;
+      }
+    }
+
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+
+    // ── Hoja 2: detalle por empleado y día (para rastrear cada total) ──
+    // Horas de TCW junto a las de Activity del mismo día. Sin datos de
+    // Activity se muestra "—" y no 0: "sin dato" no es lo mismo que 0 horas.
+    const detail = wb.addWorksheet('Detalle por día', {
+      properties: { tabColor: { argb: 'FF37474F' } },
+    });
+    detail.columns = [
+      { header: 'EMPLEADO', key: 'employee', width: 34 },
+      { header: 'FECHA', key: 'date', width: 14 },
+      { header: 'TCW HORAS (DÍA)', key: 'hours', width: 17 },
+      { header: 'ACTIVITY HORAS (DÍA)', key: 'activityHours', width: 20 },
+      { header: 'DIFERENCIA (TCW − ACTIVITY)', key: 'diff', width: 21 },
+      { header: 'FUENTE ACTIVITY', key: 'source', width: 18 },
+      { header: 'COLUMNA', key: 'column', width: 16 },
+      { header: 'ESTADO', key: 'status', width: 14 },
+      { header: 'OBSERVACIÓN', key: 'note', width: 68 },
+    ];
+    styleHeaderRow(detail.getRow(1), 9);
+    detail.getRow(1).height = 36; // encabezados de 2 líneas, sin recortar
+
+    const columnByEmployee = new Map<string, string>(rows.map((r) => [r.employee, r.column]));
+    const sortedDays = [...days].sort(
+      (a, b) => a.employee.localeCompare(b.employee, 'es') || a.date.localeCompare(b.date),
+    );
+
+    sortedDays.forEach((d, idx) => {
+      const rowNumber = idx + 2;
+      const hours = this.round2(d.hours);
+      // La diferencia solo se calcula con Activity completo: con un par
+      // incompleto las horas de Activity son parciales y restarlas contra
+      // TCW mostraría una diferencia que en realidad es un dato faltante.
+      const diff = d.activityHours !== null && !d.activityIncomplete
+        ? this.round2(hours - d.activityHours)
+        : null;
+      const dayOff = diff !== null && Math.abs(diff) > DIFF_TOLERANCE_HOURS;
+
+      // FINE/ERROR sobre el TOTAL DEL DÍA (lo que muestran las columnas): sin
+      // Activity, Activity incompleto o diferencia fuera de tolerancia = ERROR.
+      // La tabla de In/Out Auditoría lo evalúa por turno; si algún turno
+      // difiere pero el total del día cuadra (p.ej. el almuerzo se marcó a
+      // distinta hora en cada sistema) el día queda FINE y se avisa en la nota.
+      const isError = !d.source || d.activityIncomplete || dayOff;
+      const notes: string[] = [];
+      if (!d.source) notes.push('Sin datos de Activity');
+      else if (!d.hasActivityEvents) notes.push('Activity sin marcaciones ese día');
+      else if (d.activityIncomplete) notes.push('Activity incompleto: falta entrada o salida en algún turno');
+      if (hours === 0 && (d.activityHours ?? 0) > 0) notes.push('TCW en 0 h, pero Activity sí registra horas');
+      else if (dayOff) notes.push('Diferencia fuera de tolerancia (≈5 min)');
+      else if (!isError && d.diffExceeded) notes.push('El total del día cuadra, pero algún turno difiere entre TCW y Activity');
+
+      const excelRow = detail.addRow({
+        employee: d.employee,
+        date: d.date,
+        hours,
+        activityHours: d.activityHours ?? '—',
+        diff: diff === null ? '—' : { formula: `ROUND(C${rowNumber}-D${rowNumber},2)`, result: diff },
+        source: d.source ?? '—',
+        column: columnByEmployee.get(d.employee) ?? '—',
+        status: isError ? 'ERROR' : 'FINE',
+        note: notes.join('; '),
+      });
+      excelRow.height = 18;
+      const bg = hours === 0 ? ZERO_BG : 'FFFFFFFF';
+      for (let c = 1; c <= 9; c++) {
+        const cell = excelRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+        cell.font = { name: 'Arial', size: 10, color: { argb: 'FF1A2C4E' }, bold: c === 1 };
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: c === 1 || c === 9 ? 'left' : (c >= 3 && c <= 5 ? 'right' : 'center'),
+        };
+        cell.border = cellBorder;
+        if (c >= 3 && c <= 5) cell.numFmt = HOURS_FMT;
+      }
+
+      // ESTADO con color propio para verlo de un vistazo.
+      const statusCell = excelRow.getCell(8);
+      statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: isError ? ERROR_BG : OK_BG } };
+      statusCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: isError ? ERROR_FG : OK_FG } };
+    });
+
+    detail.views = [{ state: 'frozen', ySplit: 1 }];
+    detail.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 9 } };
+
+    // ── Hoja 3: controles de calidad de datos de TCW ───────────────────
+    const controls = wb.addWorksheet('Controles', {
+      properties: { tabColor: { argb: 'FFB45309' } },
+    });
+    controls.columns = [
+      { header: 'CONTROL', key: 'type', width: 32 },
+      { header: 'EMPLEADO', key: 'employee', width: 34 },
+      { header: 'FECHA', key: 'date', width: 14 },
+      { header: 'DETALLE', key: 'detail', width: 90 },
+    ];
+    styleHeaderRow(controls.getRow(1), 4);
+
+    const flagged = findings.length > 0;
+    const controlRows = flagged
+      ? findings
+      : [{
+        type: 'Sin hallazgos',
+        employee: '—',
+        date: '—',
+        detail: 'No se detectaron registros repetidos, marcaciones sin salida, tipos de hora distintos de Regular ni nombres escritos distinto en el rango.',
+      }];
+
+    controlRows.forEach((f) => {
+      const excelRow = controls.addRow(f);
+      excelRow.height = 18;
+      for (let c = 1; c <= 4; c++) {
+        const cell = excelRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: flagged ? 'FFFFF3CD' : 'FFFFFFFF' } };
+        cell.font = { name: 'Arial', size: 10, color: { argb: 'FF1A2C4E' }, bold: c === 1 };
+        cell.alignment = { vertical: 'middle', horizontal: c === 3 ? 'center' : 'left', wrapText: c === 4 };
+        cell.border = cellBorder;
+      }
+    });
+
+    controls.views = [{ state: 'frozen', ySplit: 1 }];
+    if (flagged) {
+      controls.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: 4 } };
+    }
+
+    const buf = await wb.xlsx.writeBuffer();
+    return Buffer.from(buf);
+  }
+
+  async exportNovaVoutReportExcel(
+    start_date: string,
+    end_date: string,
+    employees?: string[],
+  ): Promise<Buffer> {
+    const detailRows = await this.getClockComparisonDetailRecords(start_date, end_date, employees);
+    const reportRows = this.buildNovaVoutReportRows(detailRows);
+    const { days } = this.aggregateNovaVoutDetail(detailRows);
+    const tcwRows = await this.loadFilteredTcwRecords(start_date, end_date, employees);
+    const findings = this.buildTcwDataFindings(tcwRows);
+    return this.buildNovaVoutReportWorkbook(reportRows, days, findings, start_date, end_date);
   }
 
   private async buildClockComparisonDetailWorkbook(

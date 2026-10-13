@@ -1,5 +1,7 @@
 import {
   Controller,
+  Body,
+  Param,
   Post,
   Get,
   Query,
@@ -8,6 +10,7 @@ import {
   UseInterceptors,
   BadRequestException,
 } from '@nestjs/common'
+import { makeProgressReporter, getUploadProgress } from '../common/upload-progress.util'
 import { Response } from 'express'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { InstructorPayrollService } from './instructor-payroll.service'
@@ -19,14 +22,26 @@ export class InstructorPayrollController {
 
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
-  async upload(@UploadedFile() file: Express.Multer.File) {
+  async upload(@UploadedFile() file: Express.Multer.File, @Body('upload_id') uploadId?: string) {
     if (!file) throw new BadRequestException('No file uploaded')
     const ext = file.originalname.toLowerCase()
     if (!ext.endsWith('.xlsx') && !ext.endsWith('.xls')) {
       throw new BadRequestException('El archivo debe ser .xlsx o .xls')
     }
-    const result = await this.service.uploadExcel(file.buffer)
-    return { ok: true, ...result }
+    const report = makeProgressReporter(uploadId)
+    try {
+      const result = await this.service.uploadExcel(file.buffer, report)
+      report({ phase: 'done' })
+      return { ok: true, ...result }
+    } catch (e) {
+      report({ phase: 'error' })
+      throw e
+    }
+  }
+
+  @Get('upload-progress/:id')
+  uploadProgress(@Param('id') id: string) {
+    return getUploadProgress(id) ?? { phase: 'unknown' }
   }
 
   @Get('excel')

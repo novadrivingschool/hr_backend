@@ -442,4 +442,30 @@ export class PayrollController {
     res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
     res.send(buf);
   }
+
+  // Mismo reporte NOVA/V-O pero en Excel (resumen + hoja de detalle por día),
+  // generado con los mismos datos que la imagen.
+  @Post('timesheets/clock-comparison/nova-vo-report/excel')
+  async exportNovaVoutReportExcel(
+    @Body() body: { start_date: string; end_date: string; employees?: string[] },
+    @Res() res: Response,
+  ) {
+    const { start_date, end_date, employees } = body;
+
+    if (!start_date || !end_date) {
+      throw new BadRequestException('start_date and end_date are required');
+    }
+
+    const buf = await this.payrollService.exportNovaVoutReportExcel(
+      start_date,
+      end_date,
+      employees,
+    );
+
+    const fname = `ReporteNovaVO_${start_date}_${end_date}.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.send(buf);
+  }
 }

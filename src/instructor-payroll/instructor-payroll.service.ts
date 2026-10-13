@@ -1,3 +1,4 @@
+import type { UploadProgress } from '../common/upload-progress.util'
 import { Injectable, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, Between } from 'typeorm'
@@ -15,7 +16,8 @@ export class InstructorPayrollService {
 
   // ── Upload & upsert ────────────────────────────────────────────────────────
 
-  async uploadExcel(buffer: Buffer): Promise<{ inserted: number; updated: number; skipped: number; duplicates_in_file: number }> {
+  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void): Promise<{ inserted: number; updated: number; skipped: number; duplicates_in_file: number }> {
+    onProgress?.({ phase: 'parsing' })
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(buffer)
 
@@ -193,12 +195,21 @@ export class InstructorPayrollService {
     }
 
     // ── 6. Bulk save in chunks of 200 ─────────────────────────────────────────
-    const CHUNK = 200
+    const CHUNK = 200        // inserts: una consulta multi-fila por bloque
+    const CHUNK_UPDATE = 50  // updates: TypeORM hace un UPDATE por fila; bloques chicos = progreso más fino
+    let savedCount = 0
+    onProgress?.({ phase: 'saving', done: 0, total: toInsert.length + toUpdate.length, inserted: toInsert.length, updated: toUpdate.length, skipped })
     for (let i = 0; i < toInsert.length; i += CHUNK) {
-      await this.repo.save(toInsert.slice(i, i + CHUNK).map(p => this.repo.create(p)))
+      const batch = toInsert.slice(i, i + CHUNK)
+      await this.repo.save(batch.map(p => this.repo.create(p)))
+      savedCount += batch.length
+      onProgress?.({ done: savedCount })
     }
-    for (let i = 0; i < toUpdate.length; i += CHUNK) {
-      await this.repo.save(toUpdate.slice(i, i + CHUNK) as InstructorPayroll[])
+    for (let i = 0; i < toUpdate.length; i += CHUNK_UPDATE) {
+      const batch = toUpdate.slice(i, i + CHUNK_UPDATE)
+      await this.repo.save(batch as InstructorPayroll[])
+      savedCount += batch.length
+      onProgress?.({ done: savedCount })
     }
 
     return { inserted: toInsert.length, updated: toUpdate.length, skipped, duplicates_in_file }

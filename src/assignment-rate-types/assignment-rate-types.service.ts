@@ -1,3 +1,4 @@
+import type { UploadProgress } from '../common/upload-progress.util'
 import { Injectable, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
@@ -11,11 +12,12 @@ export class AssignmentRateTypesService {
     private readonly repo: Repository<AssignmentRateType>,
   ) {}
 
-  async uploadExcel(buffer: Buffer): Promise<{
+  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void): Promise<{
     upserted: number
     skipped: number
     reassigned: { assignment_name: string; from: string; to: string }[]
   }> {
+    onProgress?.({ phase: 'parsing' })
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(buffer)
 
@@ -93,9 +95,13 @@ export class AssignmentRateTypesService {
     // Borrado de filas viejas en conflicto + upsert, en una sola transacción
     // (o queda todo aplicado, o no queda nada a medias).
     const CHUNK = 100
+    let savedCount = 0
+    onProgress?.({ phase: 'saving', done: 0, total: toDelete.length + uniquePairs.length, skipped })
     await this.repo.manager.transaction(async (trx) => {
       for (const d of toDelete) {
         await trx.delete(AssignmentRateType, { assignment_name: d.assignment_name, rate_type: d.rate_type })
+        savedCount++
+        onProgress?.({ done: savedCount })
       }
       for (let i = 0; i < uniquePairs.length; i += CHUNK) {
         await trx
@@ -105,6 +111,8 @@ export class AssignmentRateTypesService {
           .values(uniquePairs.slice(i, i + CHUNK))
           .orUpdate(['updated_at'], ['assignment_name', 'rate_type'])
           .execute()
+        savedCount += Math.min(CHUNK, uniquePairs.length - i)
+        onProgress?.({ done: savedCount })
       }
     })
 
