@@ -24,6 +24,23 @@ export class DanubenetHistoryService {
   }
 
   /**
+   * Llave alterna independiente del ORDEN de las palabras: "Buddy  Bell" y
+   * "Bell, Buddy" dan la misma llave. Se separa por espacios/comas, se limpia
+   * cada token (apóstrofes, puntos, etc.), se descartan vacíos y se ordenan.
+   * Solo se usa como fallback cuando el match exacto de `normalize` falla,
+   * así el comportamiento previo no cambia.
+   */
+  private normalizeUnordered(name: string | null | undefined): string {
+    const tokens = String(name ?? '')
+      .toLowerCase()
+      .split(/[\s,]+/)
+      .map((t) => t.replace(/[^a-z0-9]/g, ''))
+      .filter(Boolean)
+      .sort();
+    return tokens.length ? `~${tokens.join(' ')}` : '';
+  }
+
+  /**
    * Trae TODO el historial y arma un índice en memoria por danubenet_name
    * normalizado. Se llama una sola vez por request (no por fila) — el
    * volumen esperado de danubenet_history es bajo (altas/bajas manuales de
@@ -65,11 +82,24 @@ export class DanubenetHistoryService {
     const key = this.normalize(danubenetName);
     if (!key || !date) return null;
 
-    const candidates = index.get(key);
-    if (!candidates?.length) return null;
+    const inRange = (r: DanubenetHistory) =>
+      r.start_date <= date && (!r.end_date || r.end_date >= date);
 
-    return (
-      candidates.find((r) => r.start_date <= date && (!r.end_date || r.end_date >= date)) ?? null
-    );
+    // 1) match exacto normalizado (comportamiento previo)
+    const exact = index.get(key)?.find(inRange);
+    if (exact) return exact;
+
+    // 2) fallback: mismas palabras en otro orden ("Buddy Bell" ~ "Bell, Buddy")
+    // (el índice sigue indexado solo por `normalize`; el volumen de
+    // danubenet_history es bajo, así que el barrido solo ocurre si el exacto falló)
+    const unorderedKey = this.normalizeUnordered(danubenetName);
+    if (!unorderedKey) return null;
+    for (const list of index.values()) {
+      const hit = list.find(
+        (r) => inRange(r) && this.normalizeUnordered(r.danubenet_name) === unorderedKey,
+      );
+      if (hit) return hit;
+    }
+    return null;
   }
 }

@@ -45,6 +45,24 @@ describe('DanubenetHistoryService', () => {
   });
 
   describe('resolveEmployeeNumber', () => {
+    it('fallback: mismas palabras en otro orden ("Buddy  Bell" del Excel vs "Bell, Buddy" en historial)', () => {
+      const index: DanubenetIndex = new Map([
+        ['bellbuddy', [row({ danubenet_name: 'Bell, Buddy', employee_number: 'E-500', start_date: '2026-01-01', end_date: null })]],
+      ]);
+
+      expect(service.resolveEmployeeNumber(index, ' Buddy  Bell', '2026-11-04')).toBe('E-500');
+      expect(service.resolveEmployeeNumber(index, 'Bell, Buddy', '2026-11-04')).toBe('E-500');
+    });
+
+    it('fallback respeta el rango de fechas y no inventa matches', () => {
+      const index: DanubenetIndex = new Map([
+        ['bellbuddy', [row({ danubenet_name: 'Bell, Buddy', employee_number: 'E-500', start_date: '2026-01-01', end_date: '2026-06-30' })]],
+      ]);
+
+      expect(service.resolveEmployeeNumber(index, 'Buddy Bell', '2026-11-04')).toBeNull();
+      expect(service.resolveEmployeeNumber(index, 'Buddy Smith', '2026-03-01')).toBeNull();
+    });
+
     it('caso del usuario: mismo empleado, name A del 1-15 y name B del 16-31 → matchea al mismo employee_number en cada tramo', () => {
       const index: DanubenetIndex = new Map([
         ['dna', [row({ danubenet_name: 'DN-A', employee_number: 'E-100', start_date: '2026-08-01', end_date: '2026-08-15' })]],
