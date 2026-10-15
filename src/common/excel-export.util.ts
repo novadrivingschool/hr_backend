@@ -13,6 +13,18 @@ export async function buildRecordsExcel(
   const wb = new Workbook()
   const ws = wb.addWorksheet(opts.sheetName)
 
+  // Fechas en el estándar de los uploads (MM/DD/YYYY) para poder re-subir lo exportado.
+  const DATE_KEYS = new Set(['date_of_btw', 'payment_date', 'session_date'])
+  const toMDY = (v: any) => {
+    const m = typeof v === 'string' ? v.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null
+    return m ? `${m[2]}/${m[3]}/${m[1]}` : v
+  }
+  rows = rows.map((r) => {
+    const out: any = { ...r }
+    for (const k of Object.keys(out)) if (DATE_KEYS.has(k)) out[k] = toMDY(out[k])
+    return out
+  })
+
   const keys = rows.length ? Object.keys(rows[0]).filter((k) => !exclude.has(k)) : []
   const fmtHeader = (k: string) =>
     k.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())

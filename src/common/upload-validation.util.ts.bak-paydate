@@ -1,0 +1,74 @@
+import { BadRequestException } from '@nestjs/common'
+
+/**
+ * Validación explícita de filas en los uploads de Excel (instructor / teacher /
+ * no-show / assignment). Acumula TODOS los problemas del archivo y al final lanza un
+ * 400 con un mensaje legible: qué campo, qué valor, qué filas. No se importa nada
+ * si hay errores (antes las filas inválidas se omitían en silencio o reventaban en
+ * Postgres con un 500 genérico).
+ */
+export const DATE_FORMAT_HINT = 'YYYY-MM-DD, ej. 2026-09-24'
+
+export function isRealIsoDate(iso: string): boolean {
+  const m = String(iso ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return false
+  const y = +m[1], mo = +m[2], d = +m[3]
+  const dt = new Date(Date.UTC(y, mo - 1, d))
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
+}
+
+export class UploadValidator {
+  private missing = new Map<string, number[]>()
+  private badDates = new Map<string, { column: string; value: string; rows: number[] }>()
+  private failedRows = new Set<number>()
+
+  /** Campo obligatorio vacío. */
+  required(column: string, value: string | null | undefined, row: number): void {
+    if (String(value ?? '').trim()) return
+    const rows = this.missing.get(column) ?? []
+    rows.push(row)
+    this.missing.set(column, rows)
+    this.failedRows.add(row)
+  }
+
+  /**
+   * Fecha obligatoria. `raw` = texto tal cual venía en la celda; `parsed` = ISO
+   * (YYYY-MM-DD) que obtuvo el parser, o ''/null si no la reconoció.
+   */
+  date(column: string, raw: string | null | undefined, parsed: string | null | undefined, row: number): void {
+    const r = String(raw ?? '').trim()
+    if (!r) return this.required(column, '', row)
+    if (parsed && isRealIsoDate(parsed)) return
+    const key = `${column}|${r}`
+    const cur = this.badDates.get(key)
+    if (cur) cur.rows.push(row)
+    else this.badDates.set(key, { column, value: r, rows: [row] })
+    this.failedRows.add(row)
+  }
+
+  rowFailed(row: number): boolean {
+    return this.failedRows.has(row)
+  }
+
+  throwIfAny(): void {
+    const lines: string[] = []
+    const rowsText = (rows: number[]) => {
+      const shown = rows.slice(0, 10).join(', ')
+      const extra = rows.length > 10 ? ` … (+${rows.length - 10} más)` : ''
+      return rows.length === 1 ? `fila ${shown}` : `filas ${shown}${extra} (${rows.length} en total)`
+    }
+    for (const [column, rows] of this.missing) {
+      lines.push(`• Falta el campo obligatorio "${column}" en ${rowsText(rows)}.`)
+    }
+    for (const x of this.badDates.values()) {
+      lines.push(`• "${x.column}" = "${x.value}" no es una fecha válida (formato esperado: ${DATE_FORMAT_HINT}) en ${rowsText(x.rows)}.`)
+    }
+    if (!lines.length) return
+    const MAX = 15
+    const shown = lines.slice(0, MAX)
+    if (lines.length > MAX) shown.push(`… y ${lines.length - MAX} problema(s) más.`)
+    throw new BadRequestException(
+      `No se importó nada: el archivo tiene errores.\n${shown.join('\n')}\nCorrige el Excel y vuelve a subirlo.`,
+    )
+  }
+}

@@ -4,6 +4,8 @@ import {
   Param,
   Post,
   Get,
+  Patch,
+  Delete,
   Query,
   Res,
   UploadedFile,
@@ -11,6 +13,7 @@ import {
   BadRequestException,
 } from '@nestjs/common'
 import { makeProgressReporter, getUploadProgress } from '../common/upload-progress.util'
+import { parseCorrections, parseOnlyRows } from '../common/upload-validation.util'
 import { Response } from 'express'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { TeacherPayrollService } from './teacher-payroll.service'
@@ -22,11 +25,11 @@ export class TeacherPayrollController {
 
   @Post('upload')
   @UseInterceptors(FileInterceptor('file'))
-  async upload(@UploadedFile() file: Express.Multer.File, @Body('upload_id') uploadId?: string) {
+  async upload(@UploadedFile() file: Express.Multer.File, @Body('upload_id') uploadId?: string, @Body('corrections') corrections?: string, @Body('only_rows') onlyRows?: string) {
     if (!file) throw new BadRequestException('No se recibió ningún archivo')
     const report = makeProgressReporter(uploadId)
     try {
-      const result = await this.service.uploadExcel(file.buffer, report)
+      const result = await this.service.uploadExcel(file.buffer, report, parseCorrections(corrections), parseOnlyRows(onlyRows))
       report({ phase: 'done' })
       return result
     } catch (e) {
@@ -70,5 +73,15 @@ export class TeacherPayrollController {
       page:  page  ? parseInt(page)  : 1,
       limit: limit ? parseInt(limit) : 100,
     })
+  }
+
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() body: Record<string, any>) {
+    return this.service.update(id, body)
+  }
+
+  @Delete(':id')
+  remove(@Param('id') id: string) {
+    return this.service.remove(id)
   }
 }

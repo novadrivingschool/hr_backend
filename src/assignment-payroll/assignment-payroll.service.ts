@@ -2,9 +2,27 @@ import type { UploadProgress } from '../common/upload-progress.util'
 import { Injectable, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, Between } from 'typeorm'
+import { UploadValidator, applyCorrections, UploadCorrection, UploadValidationInfo } from '../common/upload-validation.util'
+import { updateRecord, deleteRecord, EditableSpec } from '../common/payroll-record-edit.util'
 import * as ExcelJS from 'exceljs'
 import { AssignmentPayroll } from './entities/assignment-payroll.entity'
 import { DanubenetHistoryService } from '../danubenet-history/danubenet-history.service'
+
+const EDITABLE_FIELDS: EditableSpec = {
+    student_name: { type: 'string', required: true },
+    type: { type: 'string' },
+    package: { type: 'string' },
+    date_of_btw: { type: 'date', required: true },
+    payment_date: { type: 'date', required: true },
+    btw_start_time: { type: 'string', max: 20 },
+    btw_end_time: { type: 'string', max: 20 },
+    number_of_hours: { type: 'number' },
+    instructor: { type: 'string', required: true },
+    status: { type: 'string' },
+    location: { type: 'string' },
+    student_notes: { type: 'string' },
+    assigned: { type: 'string' },
+}
 
 @Injectable()
 export class AssignmentPayrollService {
@@ -14,13 +32,15 @@ export class AssignmentPayrollService {
     private readonly danubenetHistory: DanubenetHistoryService,
   ) {}
 
-  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void): Promise<{ inserted: number; updated: number; skipped: number }> {
+  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void, corrections?: UploadCorrection[], onlyRows?: number[]): Promise<{ validation?: UploadValidationInfo; inserted: number; updated: number; skipped: number }> {
     onProgress?.({ phase: 'parsing' })
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(buffer)
 
     const sheet = workbook.worksheets[0]
     if (!sheet) throw new BadRequestException('El archivo Excel no tiene hojas')
+    applyCorrections(sheet, corrections ?? [])
+    const onlyRowsSet = onlyRows && onlyRows.length ? new Set(onlyRows) : null // reintento: solo estas filas
 
     const headerRow = sheet.getRow(1)
     const headers: Record<string, number> = {}
@@ -72,7 +92,6 @@ export class AssignmentPayrollService {
       if (!str || str === EXCEL_ZERO_DATE) return ''
       const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
       if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`
-      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str
       return ''
     }
 
@@ -117,7 +136,6 @@ export class AssignmentPayrollService {
       if (!raw) return null
       const parts = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
       if (parts) return `${parts[3]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
-      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
       return null
     }
 
@@ -130,8 +148,10 @@ export class AssignmentPayrollService {
     // ── 1. Parse all rows ───────────────────────────────────────────────────
     const payloads: Partial<AssignmentPayroll>[] = []
     let skipped = 0
+    const validator = new UploadValidator()
 
     for (let i = 2; i <= sheet.rowCount; i++) {
+      if (onlyRowsSet && !onlyRowsSet.has(i)) continue
       const row        = sheet.getRow(i)
       const studentName = getCellValue(row, colStudentName).trim()
       const dateOfBtw   = getCellDate(row, colDate)
@@ -139,7 +159,12 @@ export class AssignmentPayrollService {
       const instructor  = getCellValue(row, colInstructor).trim()
 
       if (!studentName && !dateOfBtw && !instructor) continue // fila vacía
-      if (!studentName || !dateOfBtw || !instructor || !paymentDate) { skipped++; continue }
+      validator.context(i, [studentName, instructor].filter(Boolean).join(' · '))
+      validator.required('Student Name', studentName, i, colStudentName)
+      validator.date('Date of BTW', getCellValue(row, colDate), dateOfBtw, i, colDate)
+      validator.required('Instructor', instructor, i, colInstructor)
+      validator.date('Payment Date', getCellValue(row, colPaymentDate), paymentDate, i, colPaymentDate)
+      if (validator.rowFailed(i)) continue
 
       payloads.push({
         student_name:  studentName,
@@ -158,7 +183,9 @@ export class AssignmentPayrollService {
       })
     }
 
-    if (payloads.length === 0) return { inserted: 0, updated: 0, skipped }
+    const validation = validator.result() // filas con error: NO se importan, se devuelven al front
+
+    if (payloads.length === 0) return { inserted: 0, updated: 0, skipped, validation }
 
     const rowKey = (s: string, d: string, t: string | null | undefined, ins: string) =>
       `${s}|${d}|${t ?? ''}|${ins}`
@@ -213,7 +240,7 @@ export class AssignmentPayrollService {
       onProgress?.({ done: savedCount })
     }
 
-    return { inserted: toInsert.length, updated: toUpdate.length, skipped }
+    return { inserted: toInsert.length, updated: toUpdate.length, skipped, validation }
   }
 
   async findAll(filters: {
@@ -250,5 +277,14 @@ export class AssignmentPayrollService {
     }))
 
     return { total, page, limit, data: dataWithMatch }
+  }
+
+  // ── Edición / eliminación puntual ──
+  update(id: string, body: Record<string, any>) {
+    return updateRecord(this.repo, id, body, EDITABLE_FIELDS)
+  }
+
+  remove(id: string) {
+    return deleteRecord(this.repo, id)
   }
 }

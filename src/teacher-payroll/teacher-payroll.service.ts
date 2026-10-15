@@ -2,9 +2,24 @@ import type { UploadProgress } from '../common/upload-progress.util'
 import { Injectable, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, Between } from 'typeorm'
+import { UploadValidator, applyCorrections, UploadCorrection, UploadValidationInfo } from '../common/upload-validation.util'
+import { updateRecord, deleteRecord, EditableSpec } from '../common/payroll-record-edit.util'
 import * as ExcelJS from 'exceljs'
 import { TeacherPayroll } from './entities/teacher-payroll.entity'
 import { DanubenetHistoryService } from '../danubenet-history/danubenet-history.service'
+
+const EDITABLE_FIELDS: EditableSpec = {
+    teacher: { type: 'string', required: true },
+    cr_number: { type: 'string' },
+    type_of_cr_product: { type: 'string' },
+    session_date: { type: 'date', required: true },
+    session_start_time: { type: 'string', max: 20 },
+    session_end_time: { type: 'string', max: 20 },
+    location: { type: 'string' },
+    session_number: { type: 'string' },
+    cr_status: { type: 'string' },
+    number_of_hours: { type: 'number' },
+}
 
 @Injectable()
 export class TeacherPayrollService {
@@ -16,13 +31,15 @@ export class TeacherPayrollService {
 
   // ── Upload & upsert ────────────────────────────────────────────────────────
 
-  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void): Promise<{ inserted: number; updated: number; skipped: number }> {
+  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void, corrections?: UploadCorrection[], onlyRows?: number[]): Promise<{ validation?: UploadValidationInfo; inserted: number; updated: number; skipped: number }> {
     onProgress?.({ phase: 'parsing' })
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(buffer)
 
     const sheet = workbook.worksheets[0]
     if (!sheet) throw new BadRequestException('El archivo Excel no tiene hojas')
+    applyCorrections(sheet, corrections ?? [])
+    const onlyRowsSet = onlyRows && onlyRows.length ? new Set(onlyRows) : null // reintento: solo estas filas
 
     const headerRow = sheet.getRow(1)
     const headers: Record<string, number> = {}
@@ -69,7 +86,6 @@ export class TeacherPayrollService {
       if (!str || str === EXCEL_ZERO_DATE) return ''
       const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
       if (m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`
-      if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str
       return ''
     }
 
@@ -107,7 +123,6 @@ export class TeacherPayrollService {
       if (!raw) return null
       const parts = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
       if (parts) return `${parts[3]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
-      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
       return null
     }
 
@@ -119,14 +134,19 @@ export class TeacherPayrollService {
     // ── 1. Parse all rows in memory ──────────────────────────────────────────
     const payloads: Partial<TeacherPayroll>[] = []
     let skipped = 0
+    const validator = new UploadValidator()
 
     for (let i = 2; i <= sheet.rowCount; i++) {
+      if (onlyRowsSet && !onlyRowsSet.has(i)) continue
       const row     = sheet.getRow(i)
       const teacher     = getCellValue(row, colTeacher).trim()
       const sessionDate = getCellDate(row, colDate)
 
       if (!teacher && !sessionDate) continue // fila vacía
-      if (!teacher || !sessionDate) { skipped++; continue }
+      validator.context(i, teacher)
+      validator.required('Teacher', teacher, i, colTeacher)
+      validator.date('Session Date', getCellValue(row, colDate), sessionDate, i, colDate)
+      if (validator.rowFailed(i)) continue
 
       const crNumber = getCellValue(row, colCrNum) || null
 
@@ -144,7 +164,9 @@ export class TeacherPayrollService {
       })
     }
 
-    if (payloads.length === 0) return { inserted: 0, updated: 0, skipped }
+    const validation = validator.result() // filas con error: NO se importan, se devuelven al front
+
+    if (payloads.length === 0) return { inserted: 0, updated: 0, skipped, validation }
 
     // ── 2. Composite key helper ──────────────────────────────────────────────
     const rowKey = (t: string, d: string, s: string | null | undefined, cr: string | null | undefined) =>
@@ -200,7 +222,7 @@ export class TeacherPayrollService {
       onProgress?.({ done: savedCount })
     }
 
-    return { inserted: toInsert.length, updated: toUpdate.length, skipped }
+    return { inserted: toInsert.length, updated: toUpdate.length, skipped, validation }
   }
 
   // ── Query ──────────────────────────────────────────────────────────────────
@@ -239,5 +261,14 @@ export class TeacherPayrollService {
     }))
 
     return { total, page, limit, data: dataWithMatch }
+  }
+
+  // ── Edición / eliminación puntual ──
+  update(id: string, body: Record<string, any>) {
+    return updateRecord(this.repo, id, body, EDITABLE_FIELDS)
+  }
+
+  remove(id: string) {
+    return deleteRecord(this.repo, id)
   }
 }

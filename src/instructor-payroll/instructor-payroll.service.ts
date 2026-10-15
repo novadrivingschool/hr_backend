@@ -2,9 +2,27 @@ import type { UploadProgress } from '../common/upload-progress.util'
 import { Injectable, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, Between } from 'typeorm'
+import { UploadValidator, applyCorrections, UploadCorrection, UploadValidationInfo } from '../common/upload-validation.util'
+import { updateRecord, deleteRecord, EditableSpec } from '../common/payroll-record-edit.util'
 import * as ExcelJS from 'exceljs'
 import { InstructorPayroll } from './entities/instructor-payroll.entity'
 import { DanubenetHistoryService } from '../danubenet-history/danubenet-history.service'
+
+const EDITABLE_FIELDS: EditableSpec = {
+    student_name: { type: 'string', required: true, max: 255 },
+    student_phone_number: { type: 'string', max: 50 },
+    type: { type: 'string' },
+    package: { type: 'string' },
+    date_of_btw: { type: 'date', required: true },
+    btw_start_time: { type: 'string', max: 20 },
+    btw_end_time: { type: 'string', max: 20 },
+    number_of_hours: { type: 'number' },
+    instructor: { type: 'string', required: true, max: 255 },
+    status: { type: 'string', max: 100 },
+    location: { type: 'string', max: 255 },
+    fee_applied: { type: 'number' },
+    student_notes: { type: 'string' },
+}
 
 @Injectable()
 export class InstructorPayrollService {
@@ -16,13 +34,15 @@ export class InstructorPayrollService {
 
   // ── Upload & upsert ────────────────────────────────────────────────────────
 
-  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void): Promise<{ inserted: number; updated: number; skipped: number; duplicates_in_file: number }> {
+  async uploadExcel(buffer: Buffer, onProgress?: (p: Partial<UploadProgress>) => void, corrections?: UploadCorrection[], onlyRows?: number[]): Promise<{ validation?: UploadValidationInfo; inserted: number; updated: number; skipped: number; duplicates_in_file: number }> {
     onProgress?.({ phase: 'parsing' })
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(buffer)
 
     const sheet = workbook.worksheets[0]
     if (!sheet) throw new BadRequestException('El archivo Excel no tiene hojas')
+    applyCorrections(sheet, corrections ?? [])
+    const onlyRowsSet = onlyRows && onlyRows.length ? new Set(onlyRows) : null // reintento: solo estas filas
 
     // Build header map from first row
     const headerRow = sheet.getRow(1)
@@ -98,7 +118,6 @@ export class InstructorPayrollService {
       // MM/DD/YYYY or YYYY-MM-DD
       const parts = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
       if (parts) return `${parts[3]}-${parts[1].padStart(2, '0')}-${parts[2].padStart(2, '0')}`
-      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw
       return null
     }
 
@@ -110,24 +129,25 @@ export class InstructorPayrollService {
     // ── 1. Parse ALL rows in memory (zero DB calls) ──────────────────────────
     const payloads: Partial<InstructorPayroll>[] = []
     let skipped = 0
+    const validator = new UploadValidator()
 
     for (let i = 2; i <= sheet.rowCount; i++) {
+      if (onlyRowsSet && !onlyRowsSet.has(i)) continue
       const row         = sheet.getRow(i)
       const studentName = getCellValue(row, colStudentName).trim()
       const rawDate     = getCellValue(row, colDate).trim()
       const instructor  = getCellValue(row, colInstructor).trim()
 
       if (!studentName && !rawDate && !instructor) continue // fila vacía, no contar
-      if (!studentName || !rawDate || !instructor) {
-        console.warn(`[InstructorPayroll] Fila ${i} OMITIDA (campos vacíos) → student="${studentName}" date="${rawDate}" instructor="${instructor}"`)
-        skipped++; continue
-      }
-
-      const dateOfBtw = parseDate(rawDate)
-      if (!dateOfBtw) {
-        console.warn(`[InstructorPayroll] Fila ${i} OMITIDA (fecha inválida) → student="${studentName}" rawDate="${rawDate}" instructor="${instructor}"`)
-        skipped++; continue
-      }
+      // Celda con fecha real de Excel → getCellValue ya devolvió ISO; texto → solo MM/DD/YYYY.
+      const dateCellValue = colDate ? row.getCell(colDate).value : null
+      const dateOfBtw = dateCellValue instanceof Date ? rawDate : parseDate(rawDate)
+      validator.context(i, [studentName, instructor].filter(Boolean).join(' · '))
+      validator.required('Student Name', studentName, i, colStudentName)
+      validator.date('Date of BTW', rawDate, dateOfBtw, i, colDate)
+      validator.required('Instructor', instructor, i, colInstructor)
+      if (validator.rowFailed(i)) continue
+      if (!dateOfBtw) continue // ya validado arriba (queda registrado como error); acota el tipo a string
 
       payloads.push({
         student_name:         studentName,
@@ -146,7 +166,9 @@ export class InstructorPayrollService {
       })
     }
 
-    if (payloads.length === 0) return { inserted: 0, updated: 0, skipped, duplicates_in_file: 0 }
+    const validation = validator.result() // filas con error: NO se importan, se devuelven al front
+
+    if (payloads.length === 0) return { inserted: 0, updated: 0, skipped, duplicates_in_file: 0, validation }
 
     // ── 2. Composite key helper ──────────────────────────────────────────────
     const rowKey = (s: string, d: string, t: string | null | undefined, ins: string, st: string | null | undefined) =>
@@ -212,7 +234,7 @@ export class InstructorPayrollService {
       onProgress?.({ done: savedCount })
     }
 
-    return { inserted: toInsert.length, updated: toUpdate.length, skipped, duplicates_in_file }
+    return { inserted: toInsert.length, updated: toUpdate.length, skipped, duplicates_in_file, validation }
   }
 
   // ── Query ──────────────────────────────────────────────────────────────────
@@ -248,5 +270,14 @@ export class InstructorPayrollService {
     }))
 
     return { total, page, limit, data: dataWithMatch }
+  }
+
+  // ── Edición / eliminación puntual ──────────────────────────────────────────
+  update(id: string, body: Record<string, any>) {
+    return updateRecord(this.repo, id, body, EDITABLE_FIELDS)
+  }
+
+  remove(id: string) {
+    return deleteRecord(this.repo, id)
   }
 }
