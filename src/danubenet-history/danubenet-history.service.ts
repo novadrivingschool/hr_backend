@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { DanubenetHistory } from './entities/danubenet-history.entity';
 
 /** employee_number resuelto para un danubenet_name, indexado por nombre normalizado. */
@@ -38,6 +38,39 @@ export class DanubenetHistoryService {
       .filter(Boolean)
       .sort();
     return tokens.length ? `~${tokens.join(' ')}` : '';
+  }
+
+  /** Normalización pública (misma regla que el índice) para comparar nicknames/nombres. */
+  normalizeKey(name: string | null | undefined): string {
+    return this.normalize(name);
+  }
+
+  /** Historial de danubenet names de varios empleados (más reciente primero). */
+  async findByEmployees(employeeNumbers: string[]): Promise<DanubenetHistory[]> {
+    if (!employeeNumbers.length) return [];
+    return this.repo.find({
+      where: { employee_number: In(employeeNumbers) },
+      order: { start_date: 'DESC' },
+    });
+  }
+
+  /**
+   * Tramos cuyo danubenet_name contiene `term` (comparación normalizada, tolera
+   * puntuación/espacios). La tabla es chica, se filtra en memoria.
+   */
+  async searchByName(term: string): Promise<DanubenetHistory[]> {
+    const key = this.normalize(term);
+    if (!key) return [];
+    const rows = await this.repo.find();
+    return rows.filter((r) => this.normalize(r.danubenet_name).includes(key));
+  }
+
+  /** Tramo vigente en `date` entre las filas de UN empleado (el de start_date más reciente). */
+  pickAt(rows: DanubenetHistory[], date: string | null | undefined): DanubenetHistory | null {
+    if (!date) return null;
+    const hits = rows.filter((r) => r.start_date <= date && (!r.end_date || r.end_date >= date));
+    hits.sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
+    return hits[0] ?? null;
   }
 
   /**

@@ -598,6 +598,55 @@ export class EmployeesService {
     });
   }
 
+  // ── Identity lookups used by accounting (Earnings & Deductions) ────────────
+  private static readonly IDENTITY_COLUMNS = [
+    'e.employee_number', 'e.name', 'e.last_name', 'e.nickname',
+    'e.multi_company', 'e.hire_date', 'e.status',
+  ];
+
+  /** Identity fields (number, name, nickname, companies, hire date) for the given employee numbers. */
+  async findIdentityByNumbers(employeeNumbers: string[]): Promise<Employee[]> {
+    if (!employeeNumbers.length) return [];
+    return this.employeeRepo
+      .createQueryBuilder('e')
+      .select(EmployeesService.IDENTITY_COLUMNS)
+      .where('e.employee_number IN (:...numbers)', { numbers: employeeNumbers })
+      .getMany();
+  }
+
+  /** Every employee that has a non-empty nickname (used for exact nickname matching). */
+  async findAllWithNickname(): Promise<Employee[]> {
+    return this.employeeRepo
+      .createQueryBuilder('e')
+      .select(EmployeesService.IDENTITY_COLUMNS)
+      .where("e.nickname IS NOT NULL AND e.nickname <> ''")
+      .getMany();
+  }
+
+  /**
+   * Free-text employee search by name, last name, full name, employee number or
+   * nickname. `extraNumbers` adds employees found through other sources
+   * (e.g. a DanubeNet name hit). Active employees first.
+   */
+  async searchIdentity(term: string, limit: number, extraNumbers: string[] = []): Promise<Employee[]> {
+    const like = `%${term.replace(/[\\%_]/g, '\\$&')}%`;
+    const qb = this.employeeRepo
+      .createQueryBuilder('e')
+      .select(EmployeesService.IDENTITY_COLUMNS)
+      .where(new Brackets((b) => {
+        b.where('e.name ILIKE :like', { like })
+          .orWhere('e.last_name ILIKE :like')
+          .orWhere("CONCAT(e.name, ' ', e.last_name) ILIKE :like")
+          .orWhere('e.employee_number ILIKE :like')
+          .orWhere('e.nickname ILIKE :like');
+        if (extraNumbers.length) b.orWhere('e.employee_number IN (:...extra)', { extra: extraNumbers });
+      }))
+      .orderBy('e.status', 'ASC')
+      .addOrderBy('e.last_name', 'ASC')
+      .take(limit);
+    return qb.getMany();
+  }
+
   async updateEmployeeByNumber(employeeNumber: string, updateDto: UpdateEmployeeDto) {
     // 1. Ejecutamos el update directamente usando el employee_number
     const updateResult = await this.employeeRepo.update(

@@ -163,6 +163,10 @@ export class Employee {
     @Column({ type: 'varchar', length: 255, default: '', nullable: true })
     danubanet_name_2: string;
 
+    /** Nickname (Time Clock Wizard name). Column already exists, managed by nova-one-backend. */
+    @Column({ type: 'varchar', length: 100, default: '', nullable: true })
+    nickname: string;
+
     @Column({ type: 'varchar', length: 100, default: '', nullable: true })
     assigned_vehicle: string;
 
