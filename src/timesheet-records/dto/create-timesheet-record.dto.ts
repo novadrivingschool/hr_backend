@@ -4,7 +4,10 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 const toNullableString = ({ value }: { value: unknown }) => {
@@ -19,6 +22,11 @@ const toNumberValue = ({ value }: { value: unknown }) => {
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : 0;
 };
+
+// 24h (H:MM[:SS]) o 12h con AM/PM — los mismos formatos que acepta la comparación
+// TCW vs Activity (toHHMMSS en PayrollService).
+const CLOCK_TIME_REGEX = /^(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?(?:\s?[AaPp][Mm])?$/;
+const CLOCK_TIME_MESSAGE = 'must be a valid time (HH:MM or HH:MM:SS)';
 
 export class CreateTimesheetRecordDto {
   @IsString()
@@ -44,27 +52,33 @@ export class CreateTimesheetRecordDto {
   @Transform(toNullableString)
   @IsString()
   @MaxLength(20)
+  @Matches(CLOCK_TIME_REGEX, { message: CLOCK_TIME_MESSAGE })
   time_in?: string | null;
 
   @IsOptional()
   @Transform(toNullableString)
   @IsString()
   @MaxLength(20)
+  @Matches(CLOCK_TIME_REGEX, { message: CLOCK_TIME_MESSAGE })
   time_out?: string | null;
 
   @IsOptional()
   @Transform(toNumberValue)
   @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(24)
   hours?: number;
 
   @IsOptional()
   @Transform(toNumberValue)
   @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
   paid_break?: number;
 
   @IsOptional()
   @Transform(toNumberValue)
   @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
   unpaid_break?: number;
 
   @IsOptional()

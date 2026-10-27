@@ -6277,6 +6277,7 @@ export class PayrollService {
 
   private buildClockComparisonDetailRows(
     tcwRows: Array<{
+      id: string;
       employee: string;
       day_date: string;
       time_in: string | null;
@@ -6347,6 +6348,11 @@ export class PayrollService {
     }
 
     type DetailRow = {
+      // id del registro TCW (payroll_timesheet_records) al que pertenece la fila.
+      // Un mismo registro puede repartirse en varias filas (varios segmentos de
+      // Activity), así que se repite en todas — lo usa In/Out Auditoría para
+      // editar/borrar el TCW real.
+      tcw_record_id: string;
       tcw_employee: string;
       tcw_date: string;
       tcw_time_in: string | null;
@@ -6557,6 +6563,7 @@ export class PayrollService {
             : 'error';
 
           result.push({
+            tcw_record_id: interval.id,
             tcw_employee: employee,
             tcw_date: date,
             tcw_time_in: isWinIn ? tcwIn : null,

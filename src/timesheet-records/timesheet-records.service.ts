@@ -242,6 +242,14 @@ export class TimesheetRecordsService {
           : record.total_day_wise_total_hours,
     });
 
+    // Si cambió In/Out y no se mandó Hours explícito, Hours se recalcula
+    // (Out - In, cruzando medianoche si hace falta). Si alguno de los dos no es
+    // una hora válida (p.ej. "No Clock Out"), Hours queda como estaba.
+    if (updateDto.hours === undefined && (updateDto.time_in !== undefined || updateDto.time_out !== undefined)) {
+      const recalculated = this.calculateHours(merged.time_in, merged.time_out);
+      if (recalculated !== null) merged.hours = recalculated;
+    }
+
     return this.timesheetRecordRepository.save(merged);
   }
 
@@ -548,6 +556,33 @@ export class TimesheetRecordsService {
     const parsed = Number(String(normalized).replace(/,/g, ''));
     if (!Number.isFinite(parsed)) return 0;
     return this.round2(parsed);
+  }
+
+  private clockToMinutes(value: string | null | undefined): number | null {
+    const raw = this.safeTrim(value);
+    const m = raw.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    if (min > 59) return null;
+    if (m[3]) {
+      if (h < 1 || h > 12) return null;
+      const pm = m[3].toUpperCase() === 'PM';
+      if (pm && h !== 12) h += 12;
+      if (!pm && h === 12) h = 0;
+    } else if (h > 23) {
+      return null;
+    }
+    return h * 60 + min;
+  }
+
+  private calculateHours(timeIn: string | null, timeOut: string | null): number | null {
+    const inMin = this.clockToMinutes(timeIn);
+    const outMin = this.clockToMinutes(timeOut);
+    if (inMin === null || outMin === null) return null;
+    let diff = outMin - inMin;
+    if (diff < 0) diff += 24 * 60;
+    return this.round2(diff / 60);
   }
 
   private round2(value: unknown): number {
