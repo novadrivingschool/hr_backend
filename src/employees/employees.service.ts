@@ -23,11 +23,20 @@ export class EmployeesService {
     });
   }
 
-  async findByDepartment(department: string | string[]): Promise<Employee[]> {
+  async findByDepartment(
+    department: string | string[],
+    includeInactive = false,
+  ): Promise<Employee[]> {
     const qb = this.employeeRepo
       .createQueryBuilder('e')
-      .select(['e.name', 'e.last_name', 'e.employee_number', 'e.multi_department'])
-      .where('e.status = :status', { status: 'Active' });
+      .select(['e.name', 'e.last_name', 'e.employee_number', 'e.multi_department', 'e.status']);
+
+    // Por defecto solo activos (comportamiento histórico); includeInactive trae todos.
+    if (!includeInactive) {
+      qb.where('e.status = :status', { status: 'Active' });
+    } else {
+      qb.where('1 = 1');
+    }
 
     // Normaliza entrada a array
     const depts = Array.isArray(department)

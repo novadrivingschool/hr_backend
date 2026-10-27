@@ -45,11 +45,13 @@ export class EmployeesController {
       new ParseArrayPipe({ items: String, separator: ',', optional: true })
     )
     departments?: string[],   // será undefined, o un array con 1+ valores
+    @Query('include_inactive') includeInactive?: string,
   ) {
     console.log("-------------- findByDepartment -------------")
     console.log("departments:", departments);
     return this.employeesService.findByDepartment(
-      departments?.length ? departments : 'all'
+      departments?.length ? departments : 'all',
+      includeInactive === 'true',
     );
   }
 
