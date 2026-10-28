@@ -47,9 +47,13 @@ export class AssignmentPayrollController {
   async exportExcel(
     @Query('start_date') start_date: string,
     @Query('end_date') end_date: string,
+    @Query('date_field') date_field: string,
     @Res() res: Response,
   ) {
-    const { data } = await this.service.findAll({ start_date, end_date, limit: 100000 })
+    const { data } = await this.service.findAll({
+      start_date, end_date, limit: 100000,
+      date_field: date_field === 'date_of_btw' ? 'date_of_btw' : 'payment_date',
+    })
     const buffer = await buildRecordsExcel(data, { sheetName: 'Assignments', headerColor: 'FFFB8C00' })
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="assignment-payroll_${start_date}_${end_date}.xlsx"`)
@@ -60,6 +64,7 @@ export class AssignmentPayrollController {
   async findAll(
     @Query('start_date') start_date?: string,
     @Query('end_date')   end_date?: string,
+    @Query('date_field') date_field?: string,
     @Query('instructor') instructor?: string,
     @Query('status')     status?: string,
     @Query('page')       page?: string,
@@ -68,6 +73,7 @@ export class AssignmentPayrollController {
     return this.service.findAll({
       start_date,
       end_date,
+      date_field: date_field === 'date_of_btw' ? 'date_of_btw' : 'payment_date',
       instructor,
       status,
       page:  page  ? parseInt(page)  : 1,

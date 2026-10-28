@@ -3276,7 +3276,10 @@ export class PayrollService {
             authorized_outage_hours: authorizedOutageHours,
             outage_day_amount: round(-(authorizedOutageHours * internalRate)),
             payable_hours: payableHours,
-            day_payable_amount: round(payableHours * internalRate),
+            // Sin redondear por día (6 decimales): redondear cada día a centavos y luego
+            // sumar acumulaba error (21 días × $61.90 = $1299.90 en vez de $1300.00).
+            // El redondeo a centavos se hace UNA vez, sobre la suma (daysAmount).
+            day_payable_amount: Math.round(payableHours * internalRate * 1e6) / 1e6,
           },
         };
       });
@@ -3312,7 +3315,7 @@ export class PayrollService {
             authorized_outage_hours: round(d.outage_hours ?? 0),
             outage_day_amount: round(-((d.outage_hours ?? 0) * internalRate)),
             payable_hours: authorizedHours,
-            day_payable_amount: round(authorizedHours * internalRate),
+            day_payable_amount: Math.round(authorizedHours * internalRate * 1e6) / 1e6,
           },
         };
       });
@@ -3439,9 +3442,15 @@ export class PayrollService {
           noRateDates.push(d.date);
         }
       }
+      // Valid Rates (Hours Paid / Earned) = lo REALMENTE pagado por Work Shift: el bruto
+      // de cada tramo escalado por payableHours / authWork, es decir
+      // (rate / hrs autorizadas) * payable hrs. Solo afecta este desglose (display);
+      // daysAmount, Work Shift Amount Authorized y totalPayroll NO cambian (Time Off,
+      // Outage, Extra y TCW shortfall siguen como líneas propias).
+      const payableRatio = authWork > 0 ? payableHours / authWork : 1;
       for (const bucket of officePeriodBreakdown) {
-        bucket.amount_earned = round(bucket.amount_earned);
-        bucket.hours_paid = round(bucket.hours_paid);
+        bucket.amount_earned = round(bucket.amount_earned * payableRatio);
+        bucket.hours_paid = round(bucket.hours_paid * payableRatio);
       }
 
       // time_off y extra_hours: calculamos con getRateForDay directamente (no rawRates)

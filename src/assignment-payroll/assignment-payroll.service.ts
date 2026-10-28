@@ -246,20 +246,24 @@ export class AssignmentPayrollService {
   async findAll(filters: {
     start_date?: string
     end_date?: string
+    /** Columna sobre la que aplica el rango. Default: payment_date (comportamiento previo). */
+    date_field?: 'payment_date' | 'date_of_btw'
     instructor?: string
     status?: string
     page?: number
     limit?: number
   }) {
     const { start_date, end_date, instructor, status, page = 1, limit = 100 } = filters
+    // Whitelist: el nombre de columna se interpola en el SQL, nunca viene crudo del cliente.
+    const dateCol = filters.date_field === 'date_of_btw' ? 'date_of_btw' : 'payment_date'
 
     const qb = this.repo
       .createQueryBuilder('ap')
       .orderBy('ap.payment_date', 'DESC')
       .addOrderBy('ap.btw_start_time', 'ASC')
 
-    if (start_date) qb.andWhere('ap.payment_date >= :start_date', { start_date })
-    if (end_date)   qb.andWhere('ap.payment_date <= :end_date', { end_date })
+    if (start_date) qb.andWhere(`ap.${dateCol} >= :start_date`, { start_date })
+    if (end_date)   qb.andWhere(`ap.${dateCol} <= :end_date`, { end_date })
     if (instructor) qb.andWhere('ap.instructor ILIKE :instructor', { instructor: `%${instructor}%` })
     if (status)     qb.andWhere('ap.status ILIKE :status', { status: `%${status}%` })
 

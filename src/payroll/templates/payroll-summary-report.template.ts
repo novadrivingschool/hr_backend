@@ -18,6 +18,13 @@ export function buildSummaryEmployeeHtml(emp: any): string {
   const fmtMoney = (value: any): string => `$${num(value).toFixed(2)}`;
   const fmtHours = (value: any): string => `${num(value).toFixed(2)} hrs`;
   const fmtMoneyMaybe = (value: any): string => (hasValue(value) ? fmtMoney(value) : '—');
+  // Horas decimales -> "Xh Ym" (Time Off / Outage). Redondea a minutos enteros.
+  const fmtHm = (value: any): string => {
+    const totalMin = Math.round(Math.abs(num(value)) * 60);
+    return `${Math.floor(totalMin / 60)}h ${String(totalMin % 60).padStart(2, '0')}m`;
+  };
+  // 'HH:mm:ss' -> 'HH:mm'
+  const fmtClock = (v: any): string => (hasValue(v) ? String(v).trim().slice(0, 5) : '—');
   const fmtHoursMaybe = (value: any): string => (hasValue(value) ? fmtHours(value) : '—');
 
   const moneyClass = (value: any, fallback: 'green' | 'red' | 'neutral' = 'neutral') => {
@@ -39,6 +46,13 @@ export function buildSummaryEmployeeHtml(emp: any): string {
     d?.has_rate === false
       ? '<span class="tag tag-warning">No Rate</span>'
       : `<span class="tag tag-office">${fmtMoney(d?.rate_period?.rate)}</span>`;
+
+  // Time Off / Outage: el monto se calcula con el valor POR HORA (rate del período
+  // / hrs autorizadas; directo si es Hourly), no con el rate del período.
+  const rateHourTag = (d: any) =>
+    d?.has_rate === false
+      ? '<span class="tag tag-warning">No Rate</span>'
+      : `<span class="tag tag-office">${fmtMoney(d?.internal_rate_per_hour)}/hr</span>`;
 
   const fullName = [emp?.name, emp?.last_name].filter(Boolean).join(' ') || '—';
   const tcwDisplayName = emp?.tcw_display_name || null;
@@ -475,17 +489,19 @@ export function buildSummaryEmployeeHtml(emp: any): string {
           <div class="grid-2 mt-12">
             <div class="box box-red">
               <div class="box-title">🕒 Time Off</div>
-              <div class="box-subtitle">${esc(emp?.time_off?.total_requests ?? 0)} requests · ${fmtHours(emp?.time_off?.total_hours)}</div>
+              <div class="box-subtitle">${esc(emp?.time_off?.total_requests ?? 0)} requests · ${fmtHm(emp?.time_off?.total_hours)}</div>
               ${timeOffDetails.length ? `
                 <table>
-                  <thead><tr><th>Date</th><th>Rate</th><th>Status</th><th class="text-right">Hrs</th><th class="text-right">Deducted</th></tr></thead>
+                  <thead><tr><th>Date</th><th>Rate</th><th>Status</th><th>Start</th><th>End</th><th class="text-right">Hrs</th><th class="text-right">Deducted</th></tr></thead>
                   <tbody>
                     ${timeOffDetails.map((d: any) => `
                       <tr>
                         <td class="nowrap">${esc(d?.date)}</td>
-                        <td>${rateTag(d)}</td>
+                        <td>${rateHourTag(d)}</td>
                         <td>${d?.will_make_up_hours ? '<span class="tag" style="background:#f0fdf4;color:#166534;border-color:#bbf7d0">Recovery</span>' : '<span class="tag" style="background:#fff7f7;color:#b91c1c;border-color:#fecaca">Deducted</span>'}</td>
-                        <td class="text-right">${fmtHours(d?.total_hours)}</td>
+                        <td class="nowrap">${esc(fmtClock(d?.start))}</td>
+                        <td class="nowrap">${esc(fmtClock(d?.end))}</td>
+                        <td class="text-right nowrap">${fmtHm(d?.total_hours)}</td>
                         <td class="text-right ${d?.will_make_up_hours ? '' : moneyClass(d?.calculated_total, 'red')}">${d?.will_make_up_hours ? '—' : fmtMoney(d?.calculated_total)}</td>
                       </tr>
                     `).join('')}
@@ -521,16 +537,18 @@ export function buildSummaryEmployeeHtml(emp: any): string {
           ${outageDetails.length ? `
             <div class="box box-orange mt-12">
               <div class="box-title">⚡ Outage</div>
-              <div class="box-subtitle">${esc(emp?.outage?.total_requests ?? 0)} events · ${fmtHours(emp?.outage?.total_hours)}</div>
+              <div class="box-subtitle">${esc(emp?.outage?.total_requests ?? 0)} events · ${fmtHm(emp?.outage?.total_hours)}</div>
               <table>
-                <thead><tr><th>Date</th><th>Reason</th><th>Rate</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
+                <thead><tr><th>Date</th><th>Reason</th><th>Rate</th><th>Start</th><th>End</th><th class="text-right">Hrs</th><th class="text-right">Amount</th></tr></thead>
                 <tbody>
                   ${outageDetails.map((d: any) => `
                     <tr>
                       <td class="nowrap">${esc(d?.date)}</td>
                       <td>${esc(d?.reason || '—')}</td>
-                      <td>${rateTag(d)}</td>
-                      <td class="text-right">${fmtHours(d?.total_hours)}</td>
+                      <td>${rateHourTag(d)}</td>
+                      <td class="nowrap">${esc(fmtClock(d?.start))}</td>
+                      <td class="nowrap">${esc(fmtClock(d?.end))}</td>
+                      <td class="text-right nowrap">${fmtHm(d?.total_hours)}</td>
                       <td class="text-right ${moneyClass(d?.calculated_total, 'red')}">${fmtMoney(d?.calculated_total)}</td>
                     </tr>
                   `).join('')}
