@@ -71,8 +71,6 @@ type NovaVoutDay = {
   diffExceeded: boolean;
 };
 
-
-
 @Injectable()
 export class PayrollService {
   constructor(
@@ -6358,6 +6356,8 @@ export class PayrollService {
       tcw_time_in: string | null;
       tcw_time_out: string | null;
       tcw_hours: number;
+      // Horas del periodo sin redondear (Out − In); solo para sumar totales.
+      tcw_hours_exact: number;
       tcw_paid_break: number;
       tcw_unpaid_break: number;
       tcw_total_hours: number;
@@ -6502,6 +6502,20 @@ export class PayrollService {
         const tcwOut = toHHMMSS(interval.time_out);
         const tcwWorked = Number(interval.hours ?? 0);
 
+        // Horas EXACTAS del periodo (Out − In en minutos). `hours` en BD viene
+        // redondeado a 2 decimales por periodo, y sumar esos redondeos se desvía
+        // del "Total Hours" de la plataforma TCW (±0.01 a ±0.04 por empleado en un
+        // mes). Se usa Out − In solo si coincide con el `hours` guardado (±0.01):
+        // si no (horas ajustadas a mano u otro criterio), se respeta lo guardado.
+        const tcwInMin = this.timeToMinutes(tcwIn);
+        const tcwOutMin = this.timeToMinutes(tcwOut);
+        let tcwWorkedExact = tcwWorked;
+        if (tcwInMin !== null && tcwOutMin !== null) {
+          let spanMin = tcwOutMin - tcwInMin;
+          if (spanMin < 0) spanMin += 24 * 60;
+          if (Math.abs(spanMin / 60 - tcwWorked) <= 0.011) tcwWorkedExact = spanMin / 60;
+        }
+
         const rowsForInterval = rowsByInterval[i].length ? rowsByInterval[i] : [null];
 
         // El tcw_time_in real va en la fila cuya PROPIA entrada está más
@@ -6569,6 +6583,7 @@ export class PayrollService {
             tcw_time_in: isWinIn ? tcwIn : null,
             tcw_time_out: isWinOut ? tcwOut : null,
             tcw_hours: isWinOut ? tcwWorked : 0,
+            tcw_hours_exact: isWinOut ? tcwWorkedExact : 0,
             tcw_paid_break: isWinOut ? this.round2(Number(interval.paid_break ?? 0)) : 0,
             tcw_unpaid_break: isWinOut ? this.round2(Number(interval.unpaid_break ?? 0)) : 0,
             tcw_total_hours: tcwTotalHours,
@@ -6808,7 +6823,9 @@ export class PayrollService {
         employeesByKey.set(empKey, emp);
       }
 
-      const hours = Number(r.tcw_hours || 0);
+      // Horas exactas (sin redondear por periodo): así el total cuadra con el
+      // Total Hours de la plataforma TCW. Se redondea una sola vez al final.
+      const hours = Number(r.tcw_hours_exact ?? r.tcw_hours ?? 0);
       emp.totalHours += hours;
       if (r.activity_source === 'Activity ONE') emp.hasOne = true;
       if (r.activity_source === 'Activity VOUT') emp.hasVout = true;
