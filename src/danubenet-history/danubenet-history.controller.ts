@@ -1,7 +1,12 @@
-import { Controller, Post, Get, Body, Query, Param, NotFoundException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Query, Param, NotFoundException, Logger } from '@nestjs/common';
 import { DanubenetHistoryService } from './danubenet-history.service';
 import { EmployeesService } from '../employees/employees.service';
 import { DanubenetHistory } from './entities/danubenet-history.entity';
+import {
+  VoutDirectoryService,
+  VoutDirectoryUnavailableError,
+  VoutNicknameRecord,
+} from './vout-directory.service';
 
 interface ResolveItem {
   name: string;
@@ -17,7 +22,7 @@ interface IdentityItem {
   date?: string | null;
 }
 
-type IdentityStatus = 'OK' | 'NOT_FOUND' | 'AMBIGUOUS' | 'INVALID';
+type IdentityStatus = 'OK' | 'NOT_FOUND' | 'AMBIGUOUS' | 'INVALID' | 'UNAVAILABLE';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -31,9 +36,12 @@ interface ResolveResult {
 
 @Controller('danubenet-history')
 export class DanubenetHistoryController {
+  private readonly logger = new Logger('ResolveIdentities');
+
   constructor(
     private readonly service: DanubenetHistoryService,
     private readonly employeesService: EmployeesService,
+    private readonly voutDirectory: VoutDirectoryService,
   ) {}
 
   /**
@@ -107,6 +115,22 @@ export class DanubenetHistoryController {
     };
   }
 
+  /** Misma forma que toIdentity(), pero con datos de V-Out (sin registro en Nova One). */
+  private toVoutIdentity(v: VoutNicknameRecord) {
+    const name = v.first_name ?? '';
+    const lastName = v.last_name ?? '';
+    return {
+      employee_number: v.employee_number,
+      name,
+      last_name: lastName,
+      full_name: `${name} ${lastName}`.trim(),
+      nickname: v.tcw_nickname ?? '',
+      multi_company: [] as string[],
+      hire_date: v.hire_date ?? null,
+      status: v.is_active ? 'Active' : 'Inactive',
+    };
+  }
+
   private toHistory(rows: DanubenetHistory[]) {
     return rows.map((r) => ({
       danubenet_name: r.danubenet_name,
@@ -121,12 +145,16 @@ export class DanubenetHistoryController {
    *   2. `identifier` como NICKNAME (match exacto normalizado).
    *   3. `identifier` como DANUBENET NAME en `danubenet_history`, usando `date`
    *      para elegir el tramo vigente (misma regla que payroll).
+   *   4. Si nada de lo anterior existe en Nova One: `identifier` como TCW NICKNAME
+   *      en V-Outsourcing (vout-auth-users). Los datos del empleado salen de V-Out.
+   *      Si V-Out no responde → UNAVAILABLE (nunca NOT_FOUND, para poder reintentar).
    * 0 coincidencias → NOT_FOUND; 2+ → AMBIGUOUS; nunca se adivina.
    * Además devuelve el danubenet_name que el empleado tiene en `date`.
    */
   @Post('resolve-identities')
   async resolveIdentities(@Body() body: { items: IdentityItem[] }) {
     const items = Array.isArray(body?.items) ? body.items : [];
+    this.logger.log(`[V-OUT-FALLBACK build=2026-10-30] resolve-identities llamado: ${items.length} fila(s); VOUT_AUTH_API=${process.env.VOUT_AUTH_API || '(no definido)'}`);
     const index = await this.service.buildIndex();
 
     const historyByEmp = new Map<string, DanubenetHistory[]>();
@@ -146,6 +174,22 @@ export class DanubenetHistoryController {
       arr.push(e);
       nicknameIndex.set(key, arr);
     }
+
+    // V-Out se consulta solo si alguna fila llega al paso 4, y una sola vez por request.
+    let voutIndex: Map<string, VoutNicknameRecord[]> | null = null;
+    const getVoutIndex = async () => {
+      if (!voutIndex) {
+        voutIndex = new Map();
+        for (const v of await this.voutDirectory.fetchNicknameDirectory()) {
+          const key = this.service.normalizeKey(v.tcw_nickname);
+          if (!key) continue;
+          const arr = voutIndex.get(key) ?? [];
+          arr.push(v);
+          voutIndex.set(key, arr);
+        }
+      }
+      return voutIndex;
+    };
 
     const empCache = new Map<string, any | null>();
     const preload = Array.from(
@@ -190,19 +234,45 @@ export class DanubenetHistoryController {
             `Nickname "${ident}" belongs to ${cands.length} employees (${cands.map((c) => c.employee_number).join(', ')})`));
           continue;
         } else {
-          if (!date) {
-            results.push(out('INVALID',
-              `"${ident}" is not a nickname; a valid date (YYYY-MM-DD) is required to look it up as a DanubeNet name`));
+          // Paso 3: DanubeNet (requiere fecha). Sin fecha o sin tramo, se sigue al paso 4 (V-Out).
+          seg = date ? this.service.resolveSegment(index, ident, date) : null;
+          if (seg) {
+            emp = await getEmp(seg.employee_number);
+            if (!emp) { results.push(out('NOT_FOUND', `Employee ${seg.employee_number} (DanubeNet "${seg.danubenet_name}") not found`)); continue; }
+            matchedBy = 'danubenet';
+          } else {
+            // Paso 4: nickname TCW en V-Outsourcing.
+            let voutCands: VoutNicknameRecord[];
+            try {
+              voutCands = (await getVoutIndex()).get(this.service.normalizeKey(ident)) ?? [];
+            } catch (e) {
+              if (e instanceof VoutDirectoryUnavailableError) {
+                results.push(out('UNAVAILABLE',
+                  `"${ident}" was not found in Nova One and the V-Outsourcing directory is unavailable — try again`));
+                continue;
+              }
+              throw e;
+            }
+            if (voutCands.length > 1) {
+              results.push(out('AMBIGUOUS',
+                `Nickname "${ident}" belongs to ${voutCands.length} V-Outsourcing employees (${voutCands.map((c) => c.employee_number).join(', ')})`));
+              continue;
+            }
+            if (voutCands.length === 1) {
+              results.push({
+                status: 'OK' as IdentityStatus,
+                message: '',
+                matched_by: 'vout_nickname',
+                employee: this.toVoutIdentity(voutCands[0]),
+                danubenet_name: null,
+              });
+              continue;
+            }
+            results.push(out('NOT_FOUND', date
+              ? `"${ident}" is not a nickname or a DanubeNet name on ${date}, and it is not a V-Outsourcing nickname`
+              : `"${ident}" is not a Nova nickname or a V-Outsourcing nickname (no date was given to look it up as a DanubeNet name)`));
             continue;
           }
-          seg = this.service.resolveSegment(index, ident, date);
-          if (!seg) {
-            results.push(out('NOT_FOUND', `"${ident}" is not a nickname and no DanubeNet name matches it on ${date}`));
-            continue;
-          }
-          emp = await getEmp(seg.employee_number);
-          if (!emp) { results.push(out('NOT_FOUND', `Employee ${seg.employee_number} (DanubeNet "${seg.danubenet_name}") not found`)); continue; }
-          matchedBy = 'danubenet';
         }
       } else {
         results.push(out('INVALID', 'employee_number or identifier is required'));
@@ -218,6 +288,15 @@ export class DanubenetHistoryController {
         danubenet_name: current?.danubenet_name ?? null,
       });
     }
+    const summary: Record<string, number> = {};
+    for (const r of results) {
+      const k = `${r.status}${r.matched_by ? `/${r.matched_by}` : ''}`;
+      summary[k] = (summary[k] ?? 0) + 1;
+    }
+    this.logger.log(`[V-OUT-FALLBACK] resultado: ${JSON.stringify(summary)}`);
+    results.forEach((r, i) => {
+      if (r.status !== 'OK') this.logger.warn(`[V-OUT-FALLBACK] fila ${i + 1} "${items[i]?.identifier ?? items[i]?.employee_number ?? ''}" → ${r.status}: ${r.message}`);
+    });
     return { results };
   }
 
